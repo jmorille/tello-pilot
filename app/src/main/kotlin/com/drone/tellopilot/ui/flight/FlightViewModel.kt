@@ -67,7 +67,12 @@ class FlightViewModel @Inject constructor(
     private val autopilot: com.drone.tellopilot.tracking.Autopilot,
     phoneThermal: PhoneThermal,
     settings: SettingsRepository,
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
 ) : ViewModel(), GamepadInput.Listener {
+
+    /** Automatic climb / descent to the chosen height right after takeoff. */
+    private var takeoffAdjust: kotlinx.coroutines.Job? = null
+    @Volatile private var takeoffAdjustRunning = false
 
     private val fastMode = MutableStateFlow(false)
     private val tripod = MutableStateFlow(false)
@@ -220,6 +225,13 @@ class FlightViewModel @Inject constructor(
         viewModelScope.launch { vibrateOnAlerts() }
         viewModelScope.launch {
             autopilot.ends.collect { end ->
+                val takeoffHeight = takeoffAdjustRunning
+                takeoffAdjustRunning = false
+                // The takeoff height adjustment ends silently when it succeeds (a light buzz only).
+                if (takeoffHeight && end == com.drone.tellopilot.tracking.AutopilotEnd.MissionDone) {
+                    haptics.confirm()
+                    return@collect
+                }
                 _messages.trySend(UserMessage.AutopilotEnded(end))
                 when (end) {
                     com.drone.tellopilot.tracking.AutopilotEnd.MissionDone -> haptics.confirm()
@@ -269,6 +281,8 @@ class FlightViewModel @Inject constructor(
     private fun onFlyingChanged(flying: Boolean) {
         val wasFlying = knownFlying.value
         knownFlying.value = flying
+        if (flying && !wasFlying) scheduleTakeoffHeight()
+        if (!flying) takeoffAdjust?.cancel()
         if (flying && !wasFlying && pilot.value.autoRecord && !recorder.isActive) {
             autoRecording = true
             startRecording()
@@ -485,6 +499,38 @@ class FlightViewModel @Inject constructor(
         haptics.confirm()
     }
 
+    /**
+     * The Tello always takes off to about 1 m: once the takeoff is over (stable for a moment),
+     * climb or descend to the pilot's height with the mission runner, which brings the usual
+     * safety (stick takeover, link / battery checks). Nothing happens if the pilot is already
+     * flying, an automatic flight runs or the setting is off.
+     */
+    private fun scheduleTakeoffHeight() {
+        val target = pilot.value.takeoffHeight
+        if (target <= 0f) return
+        takeoffAdjust?.cancel()
+        takeoffAdjust = viewModelScope.launch {
+            kotlinx.coroutines.delay(TAKEOFF_SETTLE_MS)
+            val flight = session.lastFlight ?: return@launch
+            val state = uiState.value
+            if (!flight.flying || flight.isLanding || state.status != ConnectionStatus.CONNECTED ||
+                state.autopilotActive || state.smartVideoRunning || pilotDeflection() > TAKEOFF_STICK_IDLE
+            ) {
+                return@launch
+            }
+            val delta = target - flight.heightMeters
+            if (kotlin.math.abs(delta) < TAKEOFF_TOLERANCE_M) return@launch
+            val step = com.drone.tello.control.MissionStep.Climb(
+                delta.coerceIn(com.drone.tello.control.MissionStep.CLIMB_RANGE),
+            )
+            if (!step.isValid()) return@launch
+            takeoffAdjustRunning = true
+            autopilot.startMission(
+                com.drone.tello.control.Mission(appContext.getString(com.drone.tellopilot.R.string.takeoff_height_mission), listOf(step)),
+            )
+        }
+    }
+
     private fun startRecording() {
         recorder.start()
         // The file can only start on a key frame (SPS/PPS): ask for one now.
@@ -542,6 +588,10 @@ private const val SMART_VIDEO_OVERRIDE_COOLDOWN_MS = 1_000L
 private const val SMART_VIDEO_STOP_RETRIES = 4
 private const val GROUND_HEAT_MS = 3 * 60_000L
 private const val TRACK_STEP_M = 0.1f
+private const val TAKEOFF_SETTLE_MS = 2_000L
+private const val TAKEOFF_TOLERANCE_M = 0.15f
+/** Any stick moved by the pilot after takeoff: no automatic adjustment. */
+private const val TAKEOFF_STICK_IDLE = 0.05f
 private const val TRACK_MAX_POINTS = 2_000
 private const val GROUND_CHECK_MS = 5_000L
 /** Pad deflection that counts as "the pilot flies with the pad" (hides the screen sticks). */

@@ -41,6 +41,11 @@ data class PilotSettings(
     val units: Units = Units.METRIC,
     /** Takeoff requires a slide gesture instead of a tap. */
     val confirmTakeoff: Boolean = true,
+    /**
+     * Height reached automatically right after takeoff (metres above what is under the drone),
+     * 0 = off: the Tello firmware always takes off to about 1 m.
+     */
+    val takeoffHeight: Float = 0f,
     /** Start recording on the phone automatically at takeoff. */
     val autoRecord: Boolean = false,
     /** Fade the screen sticks out while the gamepad flies (a touch brings them back). */
@@ -69,6 +74,8 @@ data class PilotSettings(
         val DEAD_ZONE_RANGE = 0f..0.2f
         val EXPO_RANGE = 0f..0.8f
         val TRIPOD_RANGE = 0.15f..0.6f
+        val TAKEOFF_HEIGHT_RANGE = 0.5f..3f
+        const val TAKEOFF_HEIGHT_DEFAULT = 1.5f
         val JOYSTICK_SIZE_RANGE = 140..280
     }
 }

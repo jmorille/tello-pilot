@@ -65,6 +65,9 @@ internal object SettingsCodec {
             stickMode = p[STICK_MODE].toEnum(d.stickMode),
             deadZone = p[DEAD_ZONE] ?: d.deadZone,
             tripodScale = (p[TRIPOD_SCALE] ?: d.tripodScale).coerceIn(PilotSettings.TRIPOD_RANGE),
+            takeoffHeight = (p[TAKEOFF_HEIGHT] ?: d.takeoffHeight).let {
+                if (it <= 0f) 0f else it.coerceIn(PilotSettings.TAKEOFF_HEIGHT_RANGE)
+            },
             expo = p[EXPO] ?: d.expo,
             joystickSizeDp = p[JOYSTICK_SIZE] ?: d.joystickSizeDp,
             units = p[UNITS].toEnum(d.units),
@@ -88,6 +91,7 @@ internal object SettingsCodec {
         p[STICK_MODE] = s.stickMode.name
         p[DEAD_ZONE] = s.deadZone
         p[TRIPOD_SCALE] = s.tripodScale
+        p[TAKEOFF_HEIGHT] = s.takeoffHeight
         p[EXPO] = s.expo
         p[JOYSTICK_SIZE] = s.joystickSizeDp
         p[UNITS] = s.units.name
@@ -128,6 +132,7 @@ internal object SettingsCodec {
     private val STICK_MODE = stringPreferencesKey("stick_mode")
     private val DEAD_ZONE = floatPreferencesKey("dead_zone")
     private val TRIPOD_SCALE = floatPreferencesKey("tripod_scale")
+    private val TAKEOFF_HEIGHT = floatPreferencesKey("takeoff_height_m")
     private val EXPO = floatPreferencesKey("expo")
     private val JOYSTICK_SIZE = intPreferencesKey("joystick_size_dp")
     private val UNITS = stringPreferencesKey("units")

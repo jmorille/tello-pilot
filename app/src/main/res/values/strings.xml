@@ -206,6 +206,10 @@
     <string name="hud_heading">Cap %1$d° %2$s</string>
     <string name="hud_home_distance">Départ : %1$.1f m</string>
     <string name="hud_temperature">%1$.0f °C</string>
+    <string name="settings_takeoff_height_on">Ajuster la hauteur après le décollage</string>
+    <string name="settings_takeoff_height">Hauteur après le décollage : %1$.1f m</string>
+    <string name="settings_takeoff_height_help">Le Tello décolle toujours à environ 1 m. Juste après, l\'application monte ou descend jusqu\'à cette hauteur, mesurée au-dessus de ce qui est sous le drone. Toucher un manche annule l\'ajustement.</string>
+    <string name="takeoff_height_mission">Hauteur de décollage</string>
     <string name="action_tripod">Trépied</string>
     <string name="settings_tripod_scale">Amplitude des manches en mode trépied : %1$d %%</string>
     <string name="settings_tripod_help">Le mode trépied (icône dans la barre de vol) réduit la course des manches pour des plans lents et fluides. Il désactive le mode rapide.</string>

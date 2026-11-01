@@ -203,6 +203,16 @@ private fun ControlSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
         range = PilotSettings.JOYSTICK_SIZE_RANGE.first.toFloat()..PilotSettings.JOYSTICK_SIZE_RANGE.last.toFloat(),
     ) { v -> updatePilot { it.copy(joystickSizeDp = v.roundToInt()) } }
     SwitchSetting(R.string.settings_confirm_takeoff, pilot.confirmTakeoff) { v -> updatePilot { it.copy(confirmTakeoff = v) } }
+    SwitchSetting(R.string.settings_takeoff_height_on, pilot.takeoffHeight > 0f) { v ->
+        updatePilot { it.copy(takeoffHeight = if (v) PilotSettings.TAKEOFF_HEIGHT_DEFAULT else 0f) }
+    }
+    if (pilot.takeoffHeight > 0f) {
+        SliderSetting(
+            label = { stringResource(R.string.settings_takeoff_height, it) },
+            value = pilot.takeoffHeight, range = PilotSettings.TAKEOFF_HEIGHT_RANGE, steps = 24,
+        ) { v -> updatePilot { it.copy(takeoffHeight = (v * 10).roundToInt() / 10f) } }
+    }
+    Text(stringResource(R.string.settings_takeoff_height_help), style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
