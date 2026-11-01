@@ -621,7 +621,8 @@ private fun trackingModeLabel(mode: com.drone.tello.control.TrackingMode) = when
 
 /**
  * Size of the 4:3 video for [fit]: the visible window is the largest rectangle of the chosen
- * aspect inside the screen, and the video takes its width (its height may exceed the screen).
+ * aspect inside the screen. Cropped modes: the video takes its width (its height may exceed the
+ * screen). Stretched modes: the video fills exactly that window (picture deformed).
  */
 private fun videoSize(
     fit: com.drone.tello.control.VideoFit,
@@ -635,8 +636,8 @@ private fun videoSize(
         com.drone.tello.control.VideoFit.FILL, com.drone.tello.control.VideoFit.STRETCH_FULL -> screenAspect
     }.coerceAtLeast(VIDEO_ASPECT) // never narrower than the full picture
     val width = minOf(maxWidth.value, maxHeight.value * visibleAspect)
-    // Stretched: the whole picture height, widened to the window (proportions not kept).
-    if (fit.stretched) return width.dp to minOf(maxHeight.value, width / VIDEO_ASPECT).dp
+    // Stretched: the whole picture in a window of the chosen aspect (proportions not kept).
+    if (fit.stretched) return width.dp to minOf(maxHeight.value, width / visibleAspect).dp
     return width.dp to (width / VIDEO_ASPECT).dp
 }
 
@@ -648,7 +649,7 @@ private const val VARIO_DEADBAND = 0.1f
 /** Unverified threshold: shown in amber above it. */
 private const val HOT_DRONE_C = 60f
 
-/** Frame around the followed target, drawn over the 4:3 video (same size and place). */
+/** Frame around the followed target, drawn over the video (same size and place, stretched or not). */
 @Composable
 private fun TrackingOverlay(tracking: com.drone.tellopilot.tracking.AutopilotState.Tracking, modifier: Modifier) {
     val box = tracking.target ?: return

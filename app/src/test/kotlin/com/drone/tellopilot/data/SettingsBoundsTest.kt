@@ -23,7 +23,7 @@ class SettingsBoundsTest {
     private val customPilot = PilotSettings(
         stickMode = StickMode.MODE_4, deadZone = 0.1f, expo = 0.5f, tripodScale = 0.45f, joystickSizeDp = 260,
         units = Units.IMPERIAL, confirmTakeoff = false, takeoffHeight = 2.5f, autoRecord = true,
-        hideSticksWithPad = false, videoSharpen = false, videoFit = VideoFit.FIT, hiddenHud = setOf(HudItem.MAP),
+        hideSticksWithPad = false, videoSharpen = false, videoFit = VideoFit.STRETCH_WIDE, hiddenHud = setOf(HudItem.MAP),
         autoTranscode = false, transcodeCodec = TranscodeCodec.AV1, keepOriginal = true, overlayOnTranscode = true,
         trackingTarget = TrackingTarget.FACE,
     )

@@ -160,7 +160,7 @@ internal object SettingsCodec {
     private val AUTO_RECORD = booleanPreferencesKey("auto_record")
     private val PAD_BINDINGS = stringPreferencesKey("pad_bindings")
     private val VIDEO_SHARPEN = booleanPreferencesKey("video_sharpen")
-    private val VIDEO_FIT = stringPreferencesKey("video_fit")
+    private val VIDEO_FIT = stringPreferencesKey("video_fit_v2") // v2: the old key held FILL for everyone who saved any setting
     private val HIDDEN_HUD = androidx.datastore.preferences.core.stringSetPreferencesKey("hidden_hud")
     private val HIDE_STICKS_WITH_PAD = booleanPreferencesKey("hide_sticks_with_pad")
     private val AUTO_TRANSCODE = booleanPreferencesKey("auto_transcode")
