@@ -2,12 +2,19 @@ package com.drone.tellopilot.ui.flight
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.drone.tello.control.DroneEvent
+import com.drone.tello.control.ModeCheck
+import com.drone.tello.control.PadAction
+import com.drone.tello.control.PadSticks
 import com.drone.tello.control.PilotSettings
 import com.drone.tello.control.StickMixer
 import com.drone.tello.control.TelloController
+import com.drone.tello.protocol.FlipDirection
+import com.drone.tello.protocol.SmartVideoMode
 import com.drone.tellopilot.data.DroneSession
 import com.drone.tellopilot.data.RealtimeThreads
 import com.drone.tellopilot.data.SettingsRepository
+import com.drone.tellopilot.input.GamepadInput
 import com.drone.tellopilot.video.FrameSink
 import com.drone.tellopilot.video.RecordingState
 import com.drone.tellopilot.video.VideoRecorder
@@ -24,17 +31,28 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /** One-shot messages shown in a snackbar. */
-enum class UserMessage { PHOTO_SAVED, PHOTO_FAILED, VIDEO_SAVED, VIDEO_FAILED }
+sealed interface UserMessage {
+    data object PhotoSaved : UserMessage
+    data object PhotoFailed : UserMessage
+    data object VideoSaved : UserMessage
+    data object VideoFailed : UserMessage
+    /** Refused by the app before sending (official preconditions). */
+    data class ModeRefused(val reason: ModeCheck) : UserMessage
+    /** Refused by the drone itself. */
+    data object DroneRefused : UserMessage
+}
 
 @HiltViewModel
 class FlightViewModel @Inject constructor(
     private val session: DroneSession,
     private val recorder: VideoRecorder,
+    private val gamepad: GamepadInput,
     settings: SettingsRepository,
-) : ViewModel() {
+) : ViewModel(), GamepadInput.Listener {
 
     private val fastMode = MutableStateFlow(false)
     private val mixer = StickMixer()
@@ -62,11 +80,11 @@ class FlightViewModel @Inject constructor(
     val uiState: StateFlow<FlightUiState> = combine(
         combine(session.wifiAvailable, session.link, session.telemetry, ::Triple),
         combine(session.videoActive, fastMode, knownFlying, ::Triple),
-        recordingUi,
-        session.photoProgress,
+        combine(recordingUi, session.photoProgress, ::Pair),
+        combine(session.maneuvers, gamepad.status, ::Pair),
         pilot,
-    ) { (wifi, link, telemetry), (video, fast, flying), recording, photo, pilot ->
-        FlightUiState.from(wifi, link, telemetry, video, fast, flying, recording, photo, pilot)
+    ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), (maneuvers, pad), pilot ->
+        FlightUiState.from(wifi, link, telemetry, video, fast, flying, recording, photo, pilot, maneuvers, pad)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, FlightUiState())
 
     init {
@@ -75,7 +93,7 @@ class FlightViewModel @Inject constructor(
         viewModelScope.launch {
             session.telemetry.collect { t -> t.flight?.let { onFlyingChanged(it.flying) } }
         }
-        // Stick mapping / shaping are read on the main thread by the touch handler.
+        // Stick mapping / shaping are read on the main thread by the touch / gamepad handlers.
         viewModelScope.launch {
             pilot.collect {
                 mixer.mode = it.stickMode
@@ -83,17 +101,29 @@ class FlightViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            session.photoSaved.collect { _messages.trySend(if (it.isSuccess) UserMessage.PHOTO_SAVED else UserMessage.PHOTO_FAILED) }
+            session.photoSaved.collect { _messages.trySend(if (it.isSuccess) UserMessage.PhotoSaved else UserMessage.PhotoFailed) }
         }
         viewModelScope.launch {
             // drop(1): the recorder is a singleton, its current state is not a new event.
             recorder.state.drop(1).collect {
                 when (it) {
-                    is RecordingState.Saved -> _messages.trySend(UserMessage.VIDEO_SAVED)
-                    is RecordingState.Failed -> _messages.trySend(UserMessage.VIDEO_FAILED)
+                    is RecordingState.Saved -> _messages.trySend(UserMessage.VideoSaved)
+                    is RecordingState.Failed -> _messages.trySend(UserMessage.VideoFailed)
                     else -> Unit
                 }
             }
+        }
+        viewModelScope.launch {
+            session.events.collect { if (it is DroneEvent.ManeuverRefused) _messages.trySend(UserMessage.DroneRefused) }
+        }
+    }
+
+    /** The gamepad flies only while the flight screen is resumed (not from settings / calibration). */
+    fun setGamepadActive(active: Boolean) {
+        if (active) {
+            gamepad.attach(this)
+        } else if (gamepad.isAttached(this)) {
+            gamepad.attach(null) // re-centres the pad sticks through onPadSticks
         }
     }
 
@@ -109,14 +139,65 @@ class FlightViewModel @Inject constructor(
         }
     }
 
-    // Stick events come straight from the touch handler (main thread) and go to an atomic
-    // in the controller: no state flow, no recomposition on the hot path.
+    // Touch and gamepad have separate slots, merged per axis (largest deflection wins): a pad
+    // event never cancels a held touch stick and lifting a finger never cancels a held pad stick.
+    // Everything runs on the main thread and ends in an atomic in the controller: no state flow,
+    // no recomposition on the hot path.
+    private val touch = FloatArray(4) // left x, left y, right x, right y
+    private var pad = PadSticks.Neutral
+
     fun onLeftStick(x: Float, y: Float) {
-        session.controller.value?.setSticks(mixer.setLeft(x, y, fastMode.value))
+        touch[0] = x; touch[1] = y
+        pushSticks()
     }
 
     fun onRightStick(x: Float, y: Float) {
-        session.controller.value?.setSticks(mixer.setRight(x, y, fastMode.value))
+        touch[2] = x; touch[3] = y
+        pushSticks()
+    }
+
+    override fun onPadSticks(sticks: PadSticks) {
+        pad = sticks
+        pushSticks()
+    }
+
+    private fun pushSticks() {
+        val fast = fastMode.value
+        mixer.setLeft(merge(touch[0], pad.leftX), merge(touch[1], pad.leftY), fast)
+        session.controller.value?.setSticks(mixer.setRight(merge(touch[2], pad.rightX), merge(touch[3], pad.rightY), fast))
+    }
+
+    private fun merge(a: Float, b: Float) = if (kotlin.math.abs(a) >= kotlin.math.abs(b)) a else b
+
+    /** Last takeoff/land from the pad combo (anti double-press). */
+    private var lastPadCombo = Long.MIN_VALUE / 2
+
+    override fun onPadAction(action: PadAction) {
+        when (action) {
+            // The R2+Y combo is the gamepad's takeoff guard (slide-to-confirm is touch only).
+            PadAction.TakeoffOrLand -> padTakeoffOrLand()
+            PadAction.StopSmartVideo -> onAction(FlightAction.StopSmartVideo)
+            PadAction.Photo -> onAction(FlightAction.TakePhoto)
+            PadAction.ToggleRecording -> onAction(FlightAction.ToggleRecording)
+            PadAction.ToggleFastMode -> onAction(FlightAction.ToggleFastMode)
+            is PadAction.Flip -> onAction(FlightAction.Flip(action.direction))
+        }
+    }
+
+    /**
+     * Land unless the drone is *certainly* on the ground: a landing in progress, motors on,
+     * unknown state or a recent flying report all mean Land. Takeoff only from a stable
+     * on-ground state, and never within 2 s of the previous combo.
+     */
+    private fun padTakeoffOrLand() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastPadCombo < PAD_COMBO_COOLDOWN_MS) return
+        lastPadCombo = now
+        val controller = session.controller.value
+        val flight = session.lastFlight
+        val onGround = flight != null && !flight.flying && !flight.motorsOn && !knownFlying.value &&
+            controller?.isLanding != true
+        onAction(if (onGround) FlightAction.Takeoff else FlightAction.Land)
     }
 
     fun onAction(action: FlightAction) {
@@ -125,7 +206,10 @@ class FlightViewModel @Inject constructor(
             FlightAction.Land -> command { land() }
             FlightAction.ThrowTakeoff -> command { throwTakeoff() }
             FlightAction.PalmLand -> command { palmLand() }
-            is FlightAction.Flip -> command { flip(action.direction) }
+            is FlightAction.Flip -> modeCommand { flip(action.direction) }
+            is FlightAction.SetBounce -> modeCommand { setBounce(action.enabled) }
+            is FlightAction.StartSmartVideo -> modeCommand { startSmartVideo(action.mode) }
+            FlightAction.StopSmartVideo -> command { stopSmartVideo() }
             FlightAction.TakePhoto -> command { takePicture() }
             FlightAction.ToggleRecording -> {
                 autoRecording = false
@@ -136,7 +220,10 @@ class FlightViewModel @Inject constructor(
                 session.controller.value?.setFastMode(fastMode.value)
             }
             FlightAction.ReleaseSticks -> {
+                touch.fill(0f)
+                pad = PadSticks.Neutral
                 mixer.reset()
+                gamepad.release()
                 session.controller.value?.releaseSticks()
             }
         }
@@ -162,8 +249,43 @@ class FlightViewModel @Inject constructor(
         viewModelScope.launch(RealtimeThreads.control) { controller.block() }
     }
 
+    /** Manoeuvre with preconditions: a refusal is explained to the pilot. */
+    private fun modeCommand(block: suspend TelloController.() -> ModeCheck) {
+        val controller = session.controller.value ?: run {
+            _messages.trySend(UserMessage.ModeRefused(ModeCheck.NOT_CONNECTED))
+            return
+        }
+        viewModelScope.launch {
+            val result = withContext(RealtimeThreads.control) { controller.block() }
+            if (result != ModeCheck.OK) _messages.trySend(UserMessage.ModeRefused(result))
+        }
+    }
+
     override fun onCleared() {
+        if (gamepad.isAttached(this)) gamepad.attach(null)
         session.controller.value?.releaseSticks()
         recorder.stop()
     }
 }
+
+private const val PAD_COMBO_COOLDOWN_MS = 2_000L
+
+/** Convenience used by the UI. */
+val SmartVideoMode.label: Int
+    get() = when (this) {
+        SmartVideoMode.ROTATE_360 -> com.drone.tellopilot.R.string.mode_360
+        SmartVideoMode.CIRCLE -> com.drone.tellopilot.R.string.mode_circle
+        SmartVideoMode.UP_AND_AWAY -> com.drone.tellopilot.R.string.mode_up_and_away
+    }
+
+internal val FlipDirection.arrow: String
+    get() = when (this) {
+        FlipDirection.FORWARD -> "↑"
+        FlipDirection.BACK -> "↓"
+        FlipDirection.LEFT -> "←"
+        FlipDirection.RIGHT -> "→"
+        FlipDirection.FORWARD_LEFT -> "↖"
+        FlipDirection.FORWARD_RIGHT -> "↗"
+        FlipDirection.BACK_LEFT -> "↙"
+        FlipDirection.BACK_RIGHT -> "↘"
+    }

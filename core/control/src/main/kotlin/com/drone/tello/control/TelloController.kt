@@ -7,6 +7,7 @@ import com.drone.tello.protocol.FlipDirection
 import com.drone.tello.protocol.Handshake
 import com.drone.tello.protocol.MessageId
 import com.drone.tello.protocol.PhotoDownload
+import com.drone.tello.protocol.SmartVideoMode
 import com.drone.tello.protocol.PacketCodec
 import com.drone.tello.protocol.PacketType
 import com.drone.tello.protocol.Payloads
@@ -46,7 +47,16 @@ data class Telemetry(
     val activated: Boolean? = null,
     /** Camera reported a fault for 20 consecutive frames. */
     val cameraFault: Boolean = false,
+    /** Drone Wi-Fi name, once queried. */
+    val ssid: String? = null,
 )
+
+/** One-shot results the UI reports to the pilot. */
+sealed interface DroneEvent {
+    data class CenterOfGravityCalibrated(val success: Boolean) : DroneEvent
+    /** A manoeuvre was refused by the drone itself (reply status != 0). */
+    data class ManeuverRefused(val mode: FlightMode) : DroneEvent
+}
 
 data class ControlConfig(
     /** Keep-alive period of the stick stream (the drone expects ~50 Hz). */
@@ -146,6 +156,26 @@ class TelloController(
 
     private var cameraErrorFrames = 0 // control thread only
 
+    private val _maneuvers = MutableStateFlow(ManeuverState())
+    /** Bounce / smart video state. */
+    val maneuvers: StateFlow<ManeuverState> = _maneuvers.asStateFlow()
+    private var requestedBounce = false // control thread only
+    private var requestedSmartVideo: SmartVideoMode?
+        get() = _maneuvers.value.requestedSmartVideo
+        set(value) = _maneuvers.update { it.copy(requestedSmartVideo = value) }
+
+    private val imu = ImuCalibration()
+    private val _imuCalibration = MutableStateFlow<ImuCalibrationState>(ImuCalibrationState.Idle)
+    val imuCalibration: StateFlow<ImuCalibrationState> = _imuCalibration.asStateFlow()
+    private var lastImuPoll = Long.MIN_VALUE / 2
+
+    private val wifiChange = WifiChange()
+    private val _wifiChange = MutableStateFlow<WifiChangeState>(WifiChangeState.Idle)
+    val wifiChangeState: StateFlow<WifiChangeState> = _wifiChange.asStateFlow()
+
+    private val _events = MutableSharedFlow<DroneEvent>(extraBufferCapacity = 8)
+    val events: SharedFlow<DroneEvent> = _events.asSharedFlow()
+
     val isConnected: Boolean get() = _link.value == LinkState.CONNECTED
 
     /** Current stick positions (as they will be sent). */
@@ -185,6 +215,7 @@ class TelloController(
                 retransmitPending()
                 repeatLandingIfNeeded()
                 checkPhotoTimeout()
+                tickCalibrationAndWifi()
 
                 withTimeoutOrNull(config.stickIntervalMs) { wakeUp.receive() }
             }
@@ -269,7 +300,128 @@ class TelloController(
     fun cancelLandingRequest() = landRequested.set(false)
 
     suspend fun palmLand() = command(Command.PALM_LAND)
-    suspend fun flip(direction: FlipDirection) = command(Command.FLIP, Payloads.flip(direction))
+
+    // ------------------------------------------------------- firmware manoeuvres
+
+    private fun check(mode: FlightMode): ModeCheck {
+        if (!isConnected) return ModeCheck.NOT_CONNECTED
+        val threshold = (droneSettings ?: DroneSettings()).lowBatteryPercent
+        return FlightModeRules.check(mode, _telemetry.value.flight, threshold, photoInProgress = _photo.value != null)
+    }
+
+    /** 8-direction flip, with the official preconditions (battery >= 50 %, height <= 4 m). */
+    suspend fun flip(direction: FlipDirection): ModeCheck {
+        val result = check(FlightMode.Flip)
+        if (result == ModeCheck.OK) command(Command.FLIP, Payloads.flip(direction))
+        return result
+    }
+
+    /** Enters / leaves bounce mode (leaving is always allowed). */
+    suspend fun setBounce(enabled: Boolean): ModeCheck {
+        if (!isConnected) return ModeCheck.NOT_CONNECTED
+        if (enabled) {
+            check(FlightMode.Bounce).let { if (it != ModeCheck.OK) return it }
+            if (_maneuvers.value.smartVideoActive) return ModeCheck.BUSY
+        }
+        requestedBounce = enabled
+        command(Command.BOUNCE, Payloads.bounce(enabled))
+        return ModeCheck.OK
+    }
+
+    suspend fun startSmartVideo(mode: SmartVideoMode): ModeCheck {
+        val result = check(FlightMode.SmartVideo(mode))
+        if (result != ModeCheck.OK) return result
+        if (_maneuvers.value.bounce || _maneuvers.value.smartVideoActive) return ModeCheck.BUSY
+        requestedSmartVideo = mode
+        command(Command.SMART_VIDEO, Payloads.smartVideo(start = true, mode = mode))
+        return ModeCheck.OK
+    }
+
+    /**
+     * Stops the smart video (always allowed while connected). Uses the mode the drone reports as
+     * running, else the one requested; if neither is known (app restarted mid-manoeuvre), sends
+     * the stop for every mode.
+     */
+    suspend fun stopSmartVideo(): Boolean {
+        val status = _maneuvers.value.smartVideo
+        val mode = status?.mode?.takeIf { status.running } ?: requestedSmartVideo
+        val modes = mode?.let(::listOf) ?: SmartVideoMode.entries
+        var sent = false
+        modes.forEach { sent = command(Command.SMART_VIDEO, Payloads.smartVideo(start = false, mode = it)) || sent }
+        return sent
+    }
+
+    // ------------------------------------------------------------ calibrations
+
+    /** Centre-of-gravity (level) calibration; on the ground only. Result on [events]. */
+    suspend fun calibrateCenterOfGravity(): ModeCheck {
+        if (!isConnected) return ModeCheck.NOT_CONNECTED
+        FlightModeRules.checkCalibration(_telemetry.value.flight).let { if (it != ModeCheck.OK) return it }
+        command(Command.CALIBRATE_CENTER_OF_GRAVITY, Payloads.singleByte(1))
+        return ModeCheck.OK
+    }
+
+    /** Starts the 6-face IMU calibration; progress on [imuCalibration]. On the ground only. */
+    suspend fun startImuCalibration(): ModeCheck {
+        if (!isConnected) return ModeCheck.NOT_CONNECTED
+        FlightModeRules.checkCalibration(_telemetry.value.flight).let { if (it != ModeCheck.OK) return it }
+        if (!imu.start(clock())) return ModeCheck.BUSY
+        publishImu()
+        command(Command.START_IMU_CALIBRATION)
+        return ModeCheck.OK
+    }
+
+    /** Clears a finished / failed calibration (does not abort one in progress on the drone). */
+    fun resetImuCalibration() {
+        if (!imu.polling) {
+            imu.reset()
+            publishImu()
+        }
+    }
+
+    private fun publishImu() {
+        _imuCalibration.value = imu.state
+    }
+
+    // ------------------------------------------------------------------- Wi-Fi
+
+    suspend fun queryWifiName() = command(Command.QUERY_SSID)
+
+    /**
+     * Renames the drone's network / changes its password, then restarts its Wi-Fi: the link drops
+     * and the phone must join the new network. Returns `false` if the values are invalid.
+     */
+    suspend fun changeWifi(ssid: String, password: String): Boolean {
+        if (!isConnected || _telemetry.value.flight?.flying == true) return false
+        val ssidBytes = runCatching { Payloads.ssid(ssid) }.getOrNull() ?: return false
+        val passwordBytes = runCatching { Payloads.wifiPassword(password) }.getOrNull() ?: return false
+        if (!wifiChange.start(ssid, clock())) return false
+        _wifiChange.value = wifiChange.state
+        command(Command.SET_SSID, ssidBytes)
+        command(Command.SET_WIFI_PASSWORD, passwordBytes)
+        return true
+    }
+
+    fun resetWifiChange() {
+        wifiChange.reset()
+        _wifiChange.value = wifiChange.state
+    }
+
+    private suspend fun tickCalibrationAndWifi() {
+        val now = clock()
+        if (imu.polling && isConnected && now - lastImuPoll >= IMU_POLL_MS) {
+            lastImuPoll = now
+            // Unacknowledged poll (official: never retried).
+            send(PacketCodec.encode(Command.QUERY_IMU_CALIBRATION, nextSequence()))
+        }
+        val before = imu.state
+        imu.onTick(now)
+        if (imu.state != before) publishImu()
+        if (wifiChange.onTick(now, WIFI_CHANGE_TIMEOUT_MS)) {
+            _wifiChange.value = wifiChange.state
+            command(Command.QUERY_SSID) // show what the drone actually stored
+        }
+    }
 
     /**
      * Stores [settings] and sends them to the drone now (if connected) and on every connection.
@@ -398,6 +550,8 @@ class TelloController(
 
     private suspend fun onConnected() {
         centerSticks()
+        // A smart-video status from before the reconnection is stale (the drone resends 129).
+        _maneuvers.update { it.copy(smartVideo = null) }
         _link.value = LinkState.CONNECTED
         lastKeyFrameRequest.set(Long.MIN_VALUE / 2)
         // Same baseline as the reference apps: camera in video mode, no electronic stabilisation
@@ -446,6 +600,8 @@ class TelloController(
 
     private fun onLinkLost() {
         centerSticks()
+        imu.onLinkLost()
+        publishImu()
         _link.value = LinkState.RECONNECTING
     }
 
@@ -460,10 +616,16 @@ class TelloController(
         // Only valid packets prove the link is alive (garbage must not feed the watchdog).
         val packet = PacketCodec.decode(datagram) ?: return
         lastReceived.set(clock())
+        // Like the official handlers (`a.b(seqNum)`), a status reply is only acted upon when it
+        // answers a pending request: a late reply to a retransmission must not undo the state.
+        var answeredPending = false
         if (packet.sequence != 0) {
             pendingLock.withLock {
                 val p = pending[packet.sequence]
-                if (p != null && p.messageId == packet.messageId) pending.remove(packet.sequence)
+                if (p != null && p.messageId == packet.messageId) {
+                    pending.remove(packet.sequence)
+                    answeredPending = true
+                }
             }
         }
         when (val message = DroneMessage.from(packet)) {
@@ -471,6 +633,12 @@ class TelloController(
                 val fault = cameraFault(message.data)
                 _telemetry.update { it.copy(flight = message.data, cameraFault = fault) }
                 if (landRequested.get()) confirmLanding(message.data.flying)
+                // Firmware manoeuvres end on the ground.
+                if (!message.data.flying && _maneuvers.value != ManeuverState()) {
+                    _maneuvers.value = ManeuverState()
+                    requestedBounce = false
+                    requestedSmartVideo = null
+                }
             }
             is DroneMessage.Wifi -> _telemetry.update { it.copy(wifi = message.status) }
             is DroneMessage.Light -> _telemetry.update { it.copy(tooDark = message.tooDark) }
@@ -488,6 +656,19 @@ class TelloController(
             }
             DroneMessage.TimeRequest -> if (isConnected) send(PacketCodec.encode(Command.TIMESTAMP, nextSequence(), Payloads.timestamp()))
             is DroneMessage.LogHeader -> if (isConnected) send(PacketCodec.encode(Command.ACK_LOG, nextSequence(), Payloads.logAck(message.logId)))
+            is DroneMessage.SmartVideo -> {
+                _maneuvers.update { it.copy(smartVideo = message.status) }
+                if (!message.status.running) requestedSmartVideo = null
+                // The official app acks every 129 with [00] (type 0x50).
+                send(PacketCodec.encode(Command.ACK_SMART_VIDEO_STATUS, nextSequence(), byteArrayOf(0)))
+            }
+            is DroneMessage.ImuCalibration -> {
+                imu.onStatus(message.status, clock())
+                publishImu()
+            }
+            is DroneMessage.Ssid -> _telemetry.update { it.copy(ssid = message.name ?: it.ssid) }
+            // FLIP (type 0x70) is never pending: its reply is only informative.
+            is DroneMessage.CommandResult -> if (answeredPending || message.messageId == MessageId.FLIP) onCommandResult(message)
             is DroneMessage.Other -> when (packet.messageId) {
                 // Reply to 76: check the result (official app queries 75 again).
                 MessageId.ACTIVATION_TIMESTAMP -> command(Command.QUERY_ACTIVATION_STATE)
@@ -508,6 +689,33 @@ class TelloController(
                     photoLastData = clock()
                     onPhotoEvent(photoDownload.onFileData(packet))
                 }
+            }
+        }
+    }
+
+    private suspend fun onCommandResult(result: DroneMessage.CommandResult) {
+        when (result.messageId) {
+            MessageId.BOUNCE -> if (result.success) {
+                _maneuvers.update { it.copy(bounce = requestedBounce) }
+            } else if (requestedBounce) {
+                _events.tryEmit(DroneEvent.ManeuverRefused(FlightMode.Bounce))
+            }
+            MessageId.SMART_VIDEO -> if (!result.success) {
+                requestedSmartVideo?.let { _events.tryEmit(DroneEvent.ManeuverRefused(FlightMode.SmartVideo(it))) }
+                requestedSmartVideo = null
+            }
+            MessageId.FLIP -> if (!result.success) _events.tryEmit(DroneEvent.ManeuverRefused(FlightMode.Flip))
+            MessageId.CENTER_OF_GRAVITY_CALIBRATION -> _events.tryEmit(DroneEvent.CenterOfGravityCalibrated(result.success))
+            MessageId.IMU_CALIBRATION_START -> {
+                imu.onStartResult(result.success)
+                publishImu()
+            }
+            MessageId.SET_SSID, MessageId.SET_WIFI_PASSWORD -> {
+                val restart = wifiChange.onResult(ssidReply = result.messageId == MessageId.SET_SSID, success = result.success)
+                _wifiChange.value = wifiChange.state
+                if (restart) command(Command.RESTART_WIFI)
+                // Part of the change may be stored (applied at the next reboot): show the real SSID.
+                if (wifiChange.state == WifiChangeState.Failed) command(Command.QUERY_SSID)
             }
         }
     }
@@ -535,5 +743,7 @@ class TelloController(
 
     private companion object {
         const val CAMERA_FAULT_FRAMES = 20
+        const val IMU_POLL_MS = 100L
+        const val WIFI_CHANGE_TIMEOUT_MS = 5_000L
     }
 }

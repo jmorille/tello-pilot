@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -48,6 +49,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.ui.platform.LocalResources
 import com.drone.tello.control.Units
 import com.drone.tello.protocol.FlipDirection
+import com.drone.tello.protocol.SmartVideoMode
 import com.drone.tellopilot.R
 import com.drone.tellopilot.video.FrameSink
 
@@ -59,24 +61,30 @@ fun FlightRoute(onOpenSettings: () -> Unit, viewModel: FlightViewModel = hiltVie
     LaunchedEffect(viewModel) {
         viewModel.messages.collect { message ->
             val text = when (message) {
-                UserMessage.PHOTO_SAVED -> R.string.message_photo_saved
-                UserMessage.PHOTO_FAILED -> R.string.message_photo_failed
-                UserMessage.VIDEO_SAVED -> R.string.message_video_saved
-                UserMessage.VIDEO_FAILED -> R.string.message_video_failed
+                UserMessage.PhotoSaved -> R.string.message_photo_saved
+                UserMessage.PhotoFailed -> R.string.message_photo_failed
+                UserMessage.VideoSaved -> R.string.message_video_saved
+                UserMessage.VideoFailed -> R.string.message_video_failed
+                UserMessage.DroneRefused -> R.string.message_drone_refused
+                is UserMessage.ModeRefused -> modeCheckText(message.reason)
             }
             snackbar.showSnackbar(resources.getString(text))
         }
     }
 
     // Safety: never keep a stick deflected when the app leaves the foreground.
-    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { viewModel.onAction(FlightAction.ReleaseSticks) }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) {
+        viewModel.setGamepadActive(false)
+        viewModel.onAction(FlightAction.ReleaseSticks)
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.setGamepadActive(true) }
 
     // A back gesture would close the flight screen and cut the link: ignored while flying.
     BackHandler(enabled = state.flying) { }
 
     // Deliver touch events as soon as they arrive instead of batching them per vsync.
     val view = LocalView.current
-    LaunchedEffect(view) { view.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_POINTER) }
+    LaunchedEffect(view) { view.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_POINTER or InputDevice.SOURCE_CLASS_JOYSTICK) }
 
     FlightScreen(
         state = state,
@@ -110,7 +118,8 @@ fun FlightScreen(
                 text = stringResource(statusText(state.status, video = state.status == ConnectionStatus.CONNECTED)),
                 color = Color(0xFFFFD54F),
                 style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.align(Alignment.Center),
+                // Upper third: the action panel occupies the bottom centre.
+                modifier = Modifier.align(Alignment.Center).offset(y = (-96).dp),
             )
         }
 
@@ -185,6 +194,12 @@ private fun TopBar(state: FlightUiState) {
             } ?: "V --")
             HudText(state.flyTimeSeconds?.let { stringResource(R.string.hud_time, it / 60, it % 60) } ?: "--:--")
             HudText(state.wifiStrength?.let { stringResource(R.string.hud_wifi, it) } ?: "Wi-Fi --")
+            when (state.gamepad) {
+                com.drone.tellopilot.input.GamepadStatus.READY -> HudText(stringResource(R.string.hud_gamepad))
+                com.drone.tellopilot.input.GamepadStatus.CENTER_STICKS ->
+                    HudText(stringResource(R.string.hud_gamepad_center), color = Color(0xFFFFCA28))
+                com.drone.tellopilot.input.GamepadStatus.NONE -> Unit
+            }
             when (state.recording) {
                 is RecordingUi.Recording -> HudText(stringResource(R.string.hud_rec), color = Color(0xFFEF5350))
                 RecordingUi.Starting -> HudText(stringResource(R.string.hud_rec_starting), color = Color(0xFFFFCA28))
@@ -237,7 +252,14 @@ private fun ActionPanel(state: FlightUiState, onAction: (FlightAction) -> Unit, 
                 FilledTonalButton(onClick = { onAction(FlightAction.PalmLand) }, enabled = enabled) {
                     Text(stringResource(R.string.action_palm_land))
                 }
-                FlipMenu(enabled) { onAction(FlightAction.Flip(it)) }
+                if (state.smartVideoRunning) {
+                    Button(
+                        onClick = { onAction(FlightAction.StopSmartVideo) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF57C00)),
+                    ) { Text(stringResource(R.string.action_stop_smart_video)) }
+                } else {
+                    ModesMenu(state, enabled, onAction)
+                }
             } else {
                 FilledTonalButton(onClick = { onAction(FlightAction.ThrowTakeoff) }, enabled = enabled) {
                     Text(stringResource(R.string.action_throw))
@@ -286,22 +308,78 @@ private fun ActionPanel(state: FlightUiState, onAction: (FlightAction) -> Unit, 
     }
 }
 
+/** Firmware manoeuvres: 8-direction flips, bounce, smart videos (official "flight modes"). */
 @Composable
-private fun FlipMenu(enabled: Boolean, onFlip: (FlipDirection) -> Unit) {
+private fun ModesMenu(state: FlightUiState, enabled: Boolean, onAction: (FlightAction) -> Unit) {
     var open by remember { mutableStateOf(false) }
+    var flipPad by remember { mutableStateOf(false) }
     Box {
-        FilledTonalButton(onClick = { open = true }, enabled = enabled) { Text(stringResource(R.string.action_flip)) }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            listOf(
-                FlipDirection.FORWARD to R.string.flip_forward,
-                FlipDirection.BACK to R.string.flip_back,
-                FlipDirection.LEFT to R.string.flip_left,
-                FlipDirection.RIGHT to R.string.flip_right,
-            ).forEach { (direction, label) ->
-                DropdownMenuItem(text = { Text(stringResource(label)) }, onClick = { open = false; onFlip(direction) })
+        FilledTonalButton(onClick = { open = true }, enabled = enabled) { Text(stringResource(R.string.action_modes)) }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }, properties = NonFocusablePopup) {
+            DropdownMenuItem(text = { Text(stringResource(R.string.mode_flip)) }, onClick = { open = false; flipPad = true })
+            DropdownMenuItem(
+                text = { Text(stringResource(if (state.bounce) R.string.mode_bounce_off else R.string.mode_bounce_on)) },
+                onClick = { open = false; onAction(FlightAction.SetBounce(!state.bounce)) },
+            )
+            SmartVideoMode.entries.forEach { mode ->
+                DropdownMenuItem(
+                    text = { Text(stringResource(mode.label)) },
+                    onClick = { open = false; onAction(FlightAction.StartSmartVideo(mode)) },
+                )
+            }
+        }
+        if (flipPad) {
+            FlipPad(onFlip = { flipPad = false; onAction(FlightAction.Flip(it)) }, onDismiss = { flipPad = false })
+        }
+    }
+}
+
+/**
+ * In-flight menus must not take the window focus: a focused popup would receive the gamepad
+ * events instead of the activity (sticks frozen while the menu is open).
+ */
+private val NonFocusablePopup = androidx.compose.ui.window.PopupProperties(focusable = false)
+
+/** 3 x 3 pad: the eight flip directions around a cancel button. */
+@Composable
+private fun FlipPad(onFlip: (FlipDirection) -> Unit, onDismiss: () -> Unit) {
+    val grid = listOf(
+        listOf(FlipDirection.FORWARD_LEFT, FlipDirection.FORWARD, FlipDirection.FORWARD_RIGHT),
+        listOf(FlipDirection.LEFT, null, FlipDirection.RIGHT),
+        listOf(FlipDirection.BACK_LEFT, FlipDirection.BACK, FlipDirection.BACK_RIGHT),
+    )
+    DropdownMenu(expanded = true, onDismissRequest = onDismiss, properties = NonFocusablePopup) {
+        Text(
+            stringResource(R.string.mode_flip_hint),
+            Modifier.padding(horizontal = 12.dp),
+            style = MaterialTheme.typography.labelMedium,
+        )
+        grid.forEach { row ->
+            Row(Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { direction ->
+                    if (direction == null) {
+                        TextButton(onClick = onDismiss, modifier = Modifier.size(56.dp)) { Text("✕") }
+                    } else {
+                        FilledTonalButton(onClick = { onFlip(direction) }, modifier = Modifier.size(56.dp)) {
+                            Text(direction.arrow, style = MaterialTheme.typography.titleLarge)
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+private fun modeCheckText(reason: com.drone.tello.control.ModeCheck) = when (reason) {
+    com.drone.tello.control.ModeCheck.OK -> R.string.message_drone_refused // never shown
+    com.drone.tello.control.ModeCheck.NOT_CONNECTED -> R.string.mode_refused_not_connected
+    com.drone.tello.control.ModeCheck.NOT_FLYING -> R.string.mode_refused_not_flying
+    com.drone.tello.control.ModeCheck.LOW_BATTERY -> R.string.mode_refused_battery
+    com.drone.tello.control.ModeCheck.TOO_HIGH -> R.string.mode_refused_height
+    com.drone.tello.control.ModeCheck.WIND -> R.string.mode_refused_wind
+    com.drone.tello.control.ModeCheck.PHOTO_IN_PROGRESS -> R.string.mode_refused_photo
+    com.drone.tello.control.ModeCheck.MUST_BE_ON_GROUND -> R.string.mode_refused_ground
+    com.drone.tello.control.ModeCheck.BUSY -> R.string.mode_refused_busy
 }
 
 @Preview(widthDp = 860, heightDp = 400)

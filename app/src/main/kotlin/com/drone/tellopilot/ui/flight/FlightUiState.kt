@@ -1,6 +1,8 @@
 package com.drone.tellopilot.ui.flight
 
 import com.drone.tello.control.LinkState
+import com.drone.tello.control.ManeuverState
+import com.drone.tello.protocol.SmartVideoMode
 import com.drone.tello.control.PilotSettings
 import com.drone.tello.control.Telemetry
 import com.drone.tello.control.Units
@@ -71,6 +73,11 @@ data class FlightUiState(
     val photoProgress: Float? = null,
     val pilot: PilotSettings = PilotSettings(),
     val firmware: String? = null,
+    val bounce: Boolean = false,
+    /** Smart video currently executed by the drone, if any. */
+    val smartVideo: SmartVideoMode? = null,
+    val smartVideoRunning: Boolean = false,
+    val gamepad: com.drone.tellopilot.input.GamepadStatus = com.drone.tellopilot.input.GamepadStatus.NONE,
 ) {
     val controlsEnabled: Boolean get() = status == ConnectionStatus.CONNECTED
     val warning: Warning? get() = warnings.firstOrNull()
@@ -90,6 +97,8 @@ data class FlightUiState(
             recording: RecordingUi = RecordingUi.Idle,
             photoProgress: Float? = null,
             pilot: PilotSettings = PilotSettings(),
+            maneuvers: ManeuverState = ManeuverState(),
+            gamepad: com.drone.tellopilot.input.GamepadStatus = com.drone.tellopilot.input.GamepadStatus.NONE,
         ): FlightUiState {
             val status = when {
                 !wifiAvailable -> ConnectionStatus.WAITING_WIFI
@@ -116,6 +125,11 @@ data class FlightUiState(
                 photoProgress = photoProgress.takeIf { live },
                 pilot = pilot,
                 firmware = telemetry.firmware,
+                bounce = maneuvers.bounce && live,
+                smartVideo = maneuvers.smartVideo?.mode ?: maneuvers.requestedSmartVideo,
+                // Not gated on the link: Stop must stay reachable while reconnecting.
+                smartVideoRunning = maneuvers.smartVideoActive,
+                gamepad = gamepad,
             )
         }
     }
@@ -127,6 +141,9 @@ sealed interface FlightAction {
     data object ThrowTakeoff : FlightAction
     data object PalmLand : FlightAction
     data class Flip(val direction: FlipDirection) : FlightAction
+    data class SetBounce(val enabled: Boolean) : FlightAction
+    data class StartSmartVideo(val mode: SmartVideoMode) : FlightAction
+    data object StopSmartVideo : FlightAction
     data object ToggleFastMode : FlightAction
     data object TakePhoto : FlightAction
     data object ToggleRecording : FlightAction

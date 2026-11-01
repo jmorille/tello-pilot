@@ -2,6 +2,8 @@ package com.drone.tello.control
 
 import com.drone.tello.protocol.Command
 import com.drone.tello.protocol.FlipDirection
+import com.drone.tello.protocol.ImuFace
+import com.drone.tello.protocol.SmartVideoMode
 import com.drone.tello.protocol.MessageId
 import com.drone.tello.protocol.PacketCodec
 import com.drone.tello.protocol.StickInput
@@ -221,7 +223,7 @@ class TelloControllerTest {
         @Test
         fun `flight commands are refused while not connected`() = session {
             assertFalse(controller.takeoff())
-            assertFalse(controller.flip(FlipDirection.LEFT))
+            assertEquals(ModeCheck.NOT_CONNECTED, controller.flip(FlipDirection.LEFT))
             assertFalse(controller.palmLand())
             assertEquals(0, transport.count(Command.TAKEOFF) + transport.count(Command.FLIP) + transport.count(Command.PALM_LAND))
         }
@@ -229,8 +231,10 @@ class TelloControllerTest {
         @Test
         fun `flight commands carry the expected ids, payloads and increasing sequence`() = session {
             connect()
+            transport.flight()
+            scope.runCurrent()
             assertTrue(controller.takeoff())
-            assertTrue(controller.flip(FlipDirection.BACK_RIGHT))
+            assertEquals(ModeCheck.OK, controller.flip(FlipDirection.BACK_RIGHT))
             assertTrue(controller.throwTakeoff())
             assertTrue(controller.palmLand())
 
@@ -272,6 +276,8 @@ class TelloControllerTest {
         @Test
         fun `flips are not retransmitted`() = session {
             connect()
+            transport.flight()
+            scope.runCurrent()
             controller.flip(FlipDirection.FORWARD)
             advance(500)
             assertEquals(1, transport.count(Command.FLIP), "a repeated flip would flip twice")
@@ -639,6 +645,250 @@ class TelloControllerTest {
             transport.droneMessage(MessageId.FLIGHT_DATA, ByteArray(24))
             scope.runCurrent()
             assertFalse(controller.telemetry.value.cameraFault, "cleared by a good frame")
+        }
+    }
+
+    @Nested
+    inner class FlightModesAndMaintenance {
+        private fun Session.ready(flying: Boolean = true, battery: Int = 80, heightDm: Int = 10, wind: Boolean = false) {
+            connect()
+            transport.flight(flying, battery, heightDm, wind)
+            scope.runCurrent()
+        }
+
+        @Test
+        fun `flips follow the official preconditions`() = session {
+            ready(battery = 49)
+            assertEquals(ModeCheck.LOW_BATTERY, controller.flip(FlipDirection.FORWARD))
+            transport.flight(battery = 50, heightDm = 41); scope.runCurrent()
+            assertEquals(ModeCheck.TOO_HIGH, controller.flip(FlipDirection.FORWARD))
+            transport.flight(flying = false); scope.runCurrent()
+            assertEquals(ModeCheck.NOT_FLYING, controller.flip(FlipDirection.FORWARD))
+            transport.flight(wind = true); scope.runCurrent()
+            assertEquals(ModeCheck.WIND, controller.flip(FlipDirection.FORWARD))
+            assertEquals(0, transport.count(Command.FLIP), "nothing sent when refused")
+            transport.flight(battery = 50, heightDm = 40); scope.runCurrent()
+            assertEquals(ModeCheck.OK, controller.flip(FlipDirection.FORWARD_RIGHT))
+            assertArrayEquals(byteArrayOf(7), transport.all(Command.FLIP).single().packet!!.payload)
+        }
+
+        @Test
+        fun `bounce enters with 0x30, state follows the drone reply, leaving is always allowed`() = session {
+            ready()
+            assertEquals(ModeCheck.OK, controller.setBounce(true))
+            val enter = transport.all(Command.BOUNCE).first().packet!!
+            assertEquals(0x68, enter.packetType)
+            assertArrayEquals(byteArrayOf(0x30), enter.payload)
+            assertFalse(controller.maneuvers.value.bounce, "not before the drone confirms")
+            transport.droneMessage(MessageId.BOUNCE, byteArrayOf(0), sequence = enter.sequence)
+            scope.runCurrent()
+            assertTrue(controller.maneuvers.value.bounce)
+
+            transport.flight(battery = 5, heightDm = 60); scope.runCurrent()
+            assertEquals(ModeCheck.OK, controller.setBounce(false), "leave even with low battery / high")
+            assertArrayEquals(byteArrayOf(0x31), transport.all(Command.BOUNCE).last().packet!!.payload)
+        }
+
+        @Test
+        fun `smart video start, drone status acked with 129, stop uses the same mode`() = session {
+            ready()
+            assertEquals(ModeCheck.OK, controller.startSmartVideo(SmartVideoMode.CIRCLE))
+            assertArrayEquals(byteArrayOf((1 or (2 shl 2)).toByte()), transport.all(Command.SMART_VIDEO).first().packet!!.payload)
+            // drone: running (state 1), mode circle (2)
+            transport.droneMessage(MessageId.SMART_VIDEO_STATUS, byteArrayOf(((1 shl 3) or (2 shl 5)).toByte()))
+            scope.runCurrent()
+            assertTrue(controller.maneuvers.value.smartVideoRunning)
+            assertEquals(SmartVideoMode.CIRCLE, controller.maneuvers.value.smartVideo!!.mode)
+            val ack = transport.all(Command.ACK_SMART_VIDEO_STATUS).single().packet!!
+            assertEquals(0x50, ack.packetType)
+            assertArrayEquals(byteArrayOf(0), ack.payload)
+
+            assertEquals(ModeCheck.BUSY, controller.startSmartVideo(SmartVideoMode.ROTATE_360))
+            assertEquals(ModeCheck.BUSY, controller.setBounce(true))
+            assertTrue(controller.stopSmartVideo())
+            assertArrayEquals(byteArrayOf((2 shl 2).toByte()), transport.all(Command.SMART_VIDEO).last().packet!!.payload)
+        }
+
+        @Test
+        fun `smart video is refused during a photo`() = session {
+            ready()
+            controller.takePicture()
+            assertEquals(ModeCheck.PHOTO_IN_PROGRESS, controller.startSmartVideo(SmartVideoMode.UP_AND_AWAY))
+        }
+
+        @Test
+        fun `calibrations only on the ground`() = session {
+            ready(flying = true)
+            assertEquals(ModeCheck.MUST_BE_ON_GROUND, controller.calibrateCenterOfGravity())
+            assertEquals(ModeCheck.MUST_BE_ON_GROUND, controller.startImuCalibration())
+            transport.flight(flying = false); scope.runCurrent()
+            val events = scope.async { controller.events.first() }
+            scope.runCurrent()
+            assertEquals(ModeCheck.OK, controller.calibrateCenterOfGravity())
+            val cg = transport.all(Command.CALIBRATE_CENTER_OF_GRAVITY).first().packet!!
+            assertArrayEquals(byteArrayOf(1), cg.payload)
+            transport.droneMessage(MessageId.CENTER_OF_GRAVITY_CALIBRATION, byteArrayOf(0), sequence = cg.sequence)
+            scope.runCurrent()
+            assertEquals(DroneEvent.CenterOfGravityCalibrated(true), events.await())
+        }
+
+        @Test
+        fun `IMU calibration starts with 90, polls 91 every 100 ms and completes with six faces`() = session {
+            ready(flying = false)
+            assertEquals(ModeCheck.OK, controller.startImuCalibration())
+            assertEquals(ImuCalibrationState.Starting, controller.imuCalibration.value)
+            advance(300)
+            assertEquals(0, transport.count(Command.QUERY_IMU_CALIBRATION), "no poll before the drone accepts")
+            val start = transport.all(Command.START_IMU_CALIBRATION).first().packet!!
+            transport.droneMessage(MessageId.IMU_CALIBRATION_START, byteArrayOf(0), sequence = start.sequence)
+            scope.runCurrent()
+            assertTrue(controller.imuCalibration.value is ImuCalibrationState.Running)
+            val polls = transport.count(Command.QUERY_IMU_CALIBRATION)
+            advance(1_000)
+            assertTrue(transport.count(Command.QUERY_IMU_CALIBRATION) - polls in 8..12, "~10 polls per second")
+
+            transport.droneMessage(MessageId.IMU_CALIBRATION_STATUS, byteArrayOf(0, 0b010000, 0, 20, 0)) // bottom done
+            scope.runCurrent()
+            val running = controller.imuCalibration.value as ImuCalibrationState.Running
+            assertEquals(ImuFace.RIGHT, running.nextFace)
+
+            transport.droneMessage(MessageId.IMU_CALIBRATION_STATUS, byteArrayOf(0, 0b111111, 0, 100, 0))
+            scope.runCurrent()
+            assertEquals(ImuCalibrationState.Succeeded, controller.imuCalibration.value)
+            val after = transport.count(Command.QUERY_IMU_CALIBRATION)
+            advance(500)
+            assertEquals(after, transport.count(Command.QUERY_IMU_CALIBRATION), "polling stops")
+        }
+
+        @Test
+        fun `IMU calibration refused by the drone`() = session {
+            ready(flying = false)
+            controller.startImuCalibration()
+            val start = transport.all(Command.START_IMU_CALIBRATION).first().packet!!
+            transport.droneMessage(MessageId.IMU_CALIBRATION_START, byteArrayOf(1), sequence = start.sequence)
+            scope.runCurrent()
+            assertEquals(ImuCalibrationState.Failed(ImuCalibrationState.Reason.REFUSED), controller.imuCalibration.value)
+        }
+
+        @Test
+        fun `Wi-Fi change sends SSID and password, restarts Wi-Fi only once both are stored`() = session {
+            ready(flying = false)
+            assertFalse(controller.changeWifi("", "12345678"), "empty SSID")
+            assertFalse(controller.changeWifi("TELLO-X", "short"), "password too short")
+            assertTrue(controller.changeWifi("TELLO-PILOT", "secret123"))
+            val ssid = transport.all(Command.SET_SSID).first().packet!!
+            val pwd = transport.all(Command.SET_WIFI_PASSWORD).first().packet!!
+            assertEquals("TELLO-PILOT", String(ssid.payload, Charsets.US_ASCII))
+            assertEquals("secret123", String(pwd.payload, Charsets.US_ASCII))
+
+            transport.droneMessage(MessageId.SET_SSID, byteArrayOf(0), sequence = ssid.sequence)
+            scope.runCurrent()
+            assertEquals(0, transport.count(Command.RESTART_WIFI), "password not confirmed yet")
+            transport.droneMessage(MessageId.SET_WIFI_PASSWORD, byteArrayOf(0), sequence = pwd.sequence)
+            scope.runCurrent()
+            assertEquals(1, transport.all(Command.RESTART_WIFI).map { it.packet!!.sequence }.toSet().size)
+            assertEquals(WifiChangeState.Applied("TELLO-PILOT"), controller.wifiChangeState.value)
+        }
+
+        @Test
+        fun `Wi-Fi change is refused in flight and fails without restart on error`() = session {
+            ready(flying = true)
+            assertFalse(controller.changeWifi("TELLO-PILOT", ""))
+            transport.flight(flying = false); scope.runCurrent()
+            assertTrue(controller.changeWifi("TELLO-PILOT", ""))
+            val ssid = transport.all(Command.SET_SSID).first().packet!!
+            transport.droneMessage(MessageId.SET_SSID, byteArrayOf(1), sequence = ssid.sequence)
+            scope.runCurrent()
+            assertEquals(WifiChangeState.Failed, controller.wifiChangeState.value)
+            assertEquals(0, transport.count(Command.RESTART_WIFI))
+        }
+
+        @Test
+        fun `a late reply to a retransmission does not undo the state`() = session {
+            ready()
+            controller.setBounce(true)
+            advance(60) // retransmitted once, same sequence
+            val seq = transport.all(Command.BOUNCE).first().packet!!.sequence
+            transport.droneMessage(MessageId.BOUNCE, byteArrayOf(0), sequence = seq)
+            transport.droneMessage(MessageId.BOUNCE, byteArrayOf(1), sequence = seq) // reply to the duplicate
+            scope.runCurrent()
+            assertTrue(controller.maneuvers.value.bounce, "first reply wins")
+        }
+
+        @Test
+        fun `stop uses the requested mode, not a stale finished status, and stops all modes when unknown`() = session {
+            ready()
+            // a previous 360 finished (state 0, mode 1)
+            transport.droneMessage(MessageId.SMART_VIDEO_STATUS, byteArrayOf((1 shl 5).toByte()))
+            scope.runCurrent()
+            controller.startSmartVideo(SmartVideoMode.CIRCLE)
+            assertTrue(controller.maneuvers.value.smartVideoActive, "Stop offered before the first status")
+            controller.stopSmartVideo()
+            assertArrayEquals(byteArrayOf((2 shl 2).toByte()), transport.all(Command.SMART_VIDEO).last().packet!!.payload)
+        }
+
+        @Test
+        fun `stop with no known mode stops every mode`() = session {
+            ready()
+            assertTrue(controller.stopSmartVideo())
+            assertEquals(
+                setOf(1 shl 2, 2 shl 2, 3 shl 2),
+                transport.all(Command.SMART_VIDEO).map { it.packet!!.payload[0].toInt() }.toSet(),
+            )
+        }
+
+        @Test
+        fun `manoeuvre state is cleared on the ground`() = session {
+            ready()
+            controller.setBounce(true)
+            val seq = transport.all(Command.BOUNCE).first().packet!!.sequence
+            transport.droneMessage(MessageId.BOUNCE, byteArrayOf(0), sequence = seq)
+            scope.runCurrent()
+            assertTrue(controller.maneuvers.value.bounce)
+            transport.flight(flying = false); scope.runCurrent()
+            assertEquals(ManeuverState(), controller.maneuvers.value)
+        }
+
+        @Test
+        fun `Wi-Fi change without answer fails after 5 s and re-reads the SSID`() = session {
+            ready(flying = false)
+            controller.changeWifi("TELLO-PILOT", "secret123")
+            val queries = transport.count(Command.QUERY_SSID)
+            advance(4_900)
+            assertEquals(WifiChangeState.Sending, controller.wifiChangeState.value)
+            advance(300)
+            assertEquals(WifiChangeState.Failed, controller.wifiChangeState.value)
+            assertTrue(transport.count(Command.QUERY_SSID) > queries)
+            assertEquals(0, transport.count(Command.RESTART_WIFI))
+        }
+
+        @Test
+        fun `IMU faces accumulate over the run and progress extends the timeout`() = session {
+            ready(flying = false)
+            controller.startImuCalibration()
+            val start = transport.all(Command.START_IMU_CALIBRATION).first().packet!!
+            transport.droneMessage(MessageId.IMU_CALIBRATION_START, byteArrayOf(0), sequence = start.sequence)
+            transport.droneMessage(MessageId.IMU_CALIBRATION_STATUS, byteArrayOf(0, 0b010000, 0, 10, 0)) // bottom
+            transport.droneMessage(MessageId.IMU_CALIBRATION_STATUS, byteArrayOf(0, 0b000100, 0, 20, 0)) // right only
+            scope.runCurrent()
+            val r = controller.imuCalibration.value as ImuCalibrationState.Running
+            assertEquals(setOf(ImuFace.BOTTOM, ImuFace.RIGHT), r.doneFaces)
+            advance(50_000)
+            transport.droneMessage(MessageId.IMU_CALIBRATION_STATUS, byteArrayOf(0, 0b001000, 0, 30, 0)) // left
+            scope.runCurrent()
+            advance(50_000)
+            assertTrue(controller.imuCalibration.value is ImuCalibrationState.Running, "still running 100 s in")
+            advance(15_000)
+            assertEquals(ImuCalibrationState.Failed(ImuCalibrationState.Reason.TIMEOUT), controller.imuCalibration.value)
+        }
+
+        @Test
+        fun `SSID query`() = session {
+            ready(flying = false)
+            controller.queryWifiName()
+            transport.droneMessage(MessageId.SSID, byteArrayOf(0) + "TELLO-ABC123".toByteArray())
+            scope.runCurrent()
+            assertEquals("TELLO-ABC123", controller.telemetry.value.ssid)
         }
     }
 }

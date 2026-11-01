@@ -125,5 +125,26 @@ object Payloads {
 
     fun flip(direction: FlipDirection): ByteArray = byteArrayOf(direction.code.toByte())
 
+    /** Smart video: `(start & 3) | (mode & 7) << 2` (official `d.a(int, int)`). */
+    fun smartVideo(start: Boolean, mode: SmartVideoMode): ByteArray =
+        byteArrayOf(((if (start) 1 else 0) or (mode.code shl 2)).toByte())
+
+    /** Bounce: 0x30 enter, 0x31 leave (official `c(48)` / `c(49)`). */
+    fun bounce(enter: Boolean): ByteArray = byteArrayOf(if (enter) 0x30 else 0x31)
+
+    /** SSID: 1..32 printable ASCII characters (official limit), no terminator. */
+    fun ssid(name: String): ByteArray {
+        require(name.length in 1..32 && name.all { it.code in 0x20..0x7E }) { "SSID: 1..32 printable ASCII characters" }
+        return name.toByteArray(Charsets.US_ASCII)
+    }
+
+    /** Wi-Fi password: empty (open network) or 8..63 printable ASCII characters (WPA2). */
+    fun wifiPassword(password: String): ByteArray {
+        require((password.isEmpty() || password.length in 8..63) && password.all { it.code in 0x20..0x7E }) {
+            "password: empty or 8..63 printable ASCII characters"
+        }
+        return password.toByteArray(Charsets.US_ASCII)
+    }
+
     fun singleByte(value: Int): ByteArray = byteArrayOf(value.toByte())
 }

@@ -79,5 +79,65 @@
     <string name="settings_low_battery">Alerte batterie faible : %1$d %%</string>
     <string name="settings_exposure">Exposition : %1$+.1f EV</string>
     <string name="settings_bitrate">Débit vidéo</string>
+
+    <string name="cancel">Annuler</string>
+    <string name="hud_gamepad">🎮</string>
+    <string name="hud_gamepad_center">🎮 Centrez les manches</string>
+    <string name="action_modes">Modes</string>
+    <string name="action_stop_smart_video">Stop mode</string>
+    <string name="mode_flip">Flip (8 directions)</string>
+    <string name="mode_flip_hint">Direction du flip</string>
+    <string name="mode_bounce_on">Bounce</string>
+    <string name="mode_bounce_off">Arrêter Bounce</string>
+    <string name="mode_360">360°</string>
+    <string name="mode_circle">Cercle</string>
+    <string name="mode_up_and_away">Up &amp; Away</string>
+    <string name="message_drone_refused">Le drone a refusé la manœuvre</string>
+    <string name="mode_refused_not_connected">Drone non connecté</string>
+    <string name="mode_refused_not_flying">Disponible uniquement en vol</string>
+    <string name="mode_refused_battery">Batterie insuffisante (flip : 50 % minimum)</string>
+    <string name="mode_refused_height">Trop haut : 4 m maximum pour cette manœuvre</string>
+    <string name="mode_refused_wind">Vent trop fort</string>
+    <string name="mode_refused_photo">Photo en cours</string>
+    <string name="mode_refused_ground">Posez le drone et arrêtez les moteurs</string>
+    <string name="mode_refused_busy">Une autre manœuvre est en cours</string>
+
+    <string name="settings_section_maintenance">Drone : Wi-Fi et calibration</string>
+    <string name="maintenance_not_connected">Connectez le drone pour accéder à ces fonctions.</string>
+    <string name="maintenance_on_ground">Drone en vol : Wi-Fi et calibrations disponibles au sol, moteurs arrêtés.</string>
+    <string name="maintenance_firmware">Firmware : %1$s</string>
+    <string name="maintenance_ssid">Réseau Wi-Fi : %1$s</string>
+    <string name="maintenance_wifi_edit">Modifier</string>
+    <string name="maintenance_wifi_title">Wi-Fi du drone</string>
+    <string name="maintenance_wifi_ssid">Nom du réseau (1 à 32 caractères)</string>
+    <string name="maintenance_wifi_password">Mot de passe (vide ou 8 à 63)</string>
+    <string name="maintenance_wifi_open_warning">Sans mot de passe, le réseau du drone sera ouvert. Le Wi-Fi du drone redémarrera.</string>
+    <string name="maintenance_wifi_restart_warning">Le Wi-Fi du drone redémarrera : reconnectez ensuite le téléphone au nouveau réseau.</string>
+    <string name="maintenance_wifi_apply">Appliquer</string>
+    <string name="maintenance_wifi_sending">Envoi au drone…</string>
+    <string name="maintenance_wifi_applied">Appliqué : connectez le téléphone au réseau « %1$s ». En cas d\'oubli, réinitialisez le Wi-Fi : drone allumé, maintenez le bouton d\'alimentation 5 secondes.</string>
+    <string name="maintenance_wifi_failed">Modification refusée ou sans réponse. Une partie a pu être enregistrée et s\'appliquerait au prochain redémarrage : vérifiez le nom affiché ci-dessus.</string>
+    <string name="maintenance_wifi_confirm">Confirmer le mot de passe</string>
+    <string name="maintenance_wifi_show">Afficher le mot de passe</string>
+    <string name="maintenance_cg">Calibrer le centre de gravité</string>
+    <string name="maintenance_cg_ok">Calibration du centre de gravité acceptée par le drone</string>
+    <string name="maintenance_cg_failed">Calibration du centre de gravité refusée</string>
+    <string name="maintenance_imu">Calibrer l\'IMU…</string>
+
+    <string name="imu_title">Calibration de l\'IMU</string>
+    <string name="imu_intro">Posez le drone sur une surface plane, moteurs arrêtés. Il faudra ensuite le poser successivement sur ses six faces, sans bouger.</string>
+    <string name="imu_start">Démarrer</string>
+    <string name="imu_starting">Démarrage…</string>
+    <string name="imu_place">Posez le drone : %1$s, et ne le bougez plus</string>
+    <string name="imu_count">%1$d / 6 faces</string>
+    <string name="imu_success">Calibration réussie</string>
+    <string name="imu_failed">Échec de la calibration</string>
+    <string name="imu_retry">Recommencer</string>
+    <string name="imu_face_bottom">à plat</string>
+    <string name="imu_face_right">sur le côté droit</string>
+    <string name="imu_face_left">sur le côté gauche</string>
+    <string name="imu_face_front">sur l\'avant (caméra en bas)</string>
+    <string name="imu_face_back">sur l\'arrière</string>
+    <string name="imu_face_top">à l\'envers</string>
 </resources>
 

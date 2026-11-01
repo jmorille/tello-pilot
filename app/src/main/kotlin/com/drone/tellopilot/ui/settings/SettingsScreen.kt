@@ -74,12 +74,16 @@ class SettingsViewModel @Inject constructor(
 }
 
 @Composable
-fun SettingsRoute(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
+fun SettingsRoute(onBack: () -> Unit, onOpenImuCalibration: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val flying by viewModel.flying.collectAsStateWithLifecycle()
     LaunchedEffect(flying) { if (flying) onBack() }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        settings?.let { SettingsScreen(it, onBack, viewModel::updatePilot, viewModel::updateDrone) }
+        settings?.let {
+            SettingsScreen(it, onBack, viewModel::updatePilot, viewModel::updateDrone) {
+                MaintenanceSection(onOpenImuCalibration)
+            }
+        }
     }
 }
 
@@ -89,6 +93,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     updatePilot: ((PilotSettings) -> PilotSettings) -> Unit,
     updateDrone: ((DroneSettings) -> DroneSettings) -> Unit,
+    maintenance: @Composable () -> Unit = {},
 ) {
     val pilot = settings.pilot
     val drone = settings.drone
@@ -170,6 +175,8 @@ fun SettingsScreen(
                 )
             }
         }
+        Section(R.string.settings_section_maintenance)
+        maintenance()
         Spacer(Modifier.width(1.dp))
     }
 }

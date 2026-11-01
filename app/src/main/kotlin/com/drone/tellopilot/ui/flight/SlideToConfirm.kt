@@ -39,7 +39,7 @@ import kotlin.math.roundToInt
  */
 @Composable
 fun SlideToConfirm(text: String, enabled: Boolean, onConfirm: () -> Unit, modifier: Modifier = Modifier) {
-    val width = 220.dp
+    val width = 250.dp
     val thumb = 52.dp
     val maxPx = with(LocalDensity.current) { (width - thumb - 8.dp).toPx() }
     var offset by remember { mutableFloatStateOf(0f) }
@@ -68,7 +68,8 @@ fun SlideToConfirm(text: String, enabled: Boolean, onConfirm: () -> Unit, modifi
             text,
             Modifier.align(Alignment.Center).padding(start = thumb),
             color = if (enabled) MaterialTheme.colorScheme.onPrimaryContainer else Color.LightGray,
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 1,
         )
         Box(
             Modifier

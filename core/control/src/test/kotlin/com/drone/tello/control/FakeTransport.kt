@@ -52,6 +52,18 @@ class FakeTransport(private val scope: TestScope) : ControlTransport {
     fun flightData(flying: Boolean) =
         droneMessage(MessageId.FLIGHT_DATA, ByteArray(24).also { if (flying) it[17] = 1 })
 
+    /** Realistic flight data: [heightDm] in decimetres, motors on while flying. */
+    fun flight(flying: Boolean = true, battery: Int = 80, heightDm: Int = 10, wind: Boolean = false) =
+        droneMessage(
+            MessageId.FLIGHT_DATA,
+            ByteArray(24).also {
+                it[0] = heightDm.toByte(); it[1] = (heightDm ushr 8).toByte()
+                if (wind) it[10] = 0x80.toByte()
+                it[12] = battery.toByte()
+                it[17] = (if (flying) 0b101 else 0b010).toByte() // flying + motors on / on ground
+            },
+        )
+
     fun sticks() = sent.filter { it.isCommand(Command.STICK) }
     fun all(c: Command) = sent.filter { it.isCommand(c) }
     fun count(c: Command) = sent.count { it.isCommand(c) }

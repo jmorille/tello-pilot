@@ -1,7 +1,12 @@
 package com.drone.tellopilot.data
 
 import android.util.Log
+import com.drone.tello.control.DroneEvent
+import com.drone.tello.control.ImuCalibrationState
 import com.drone.tello.control.LinkState
+import com.drone.tello.control.ManeuverState
+import com.drone.tello.control.WifiChangeState
+import kotlinx.coroutines.flow.emptyFlow
 import com.drone.tello.control.Telemetry
 import com.drone.tello.control.TelloController
 import com.drone.tello.control.VideoFrameGate
@@ -58,6 +63,15 @@ class DroneSession @Inject constructor(
 
     val link: Flow<LinkState> = _controller.flatMapLatest { it?.link ?: flowOf(LinkState.IDLE) }
     val telemetry: Flow<Telemetry> = _controller.flatMapLatest { it?.telemetry ?: flowOf(Telemetry()) }
+
+    /** Latest flight data of the current controller (null when unknown). */
+    val lastFlight: com.drone.tello.protocol.FlightData? get() = _controller.value?.telemetry?.value?.flight
+
+    val maneuvers: Flow<ManeuverState> = _controller.flatMapLatest { it?.maneuvers ?: flowOf(ManeuverState()) }
+    val imuCalibration: Flow<ImuCalibrationState> =
+        _controller.flatMapLatest { it?.imuCalibration ?: flowOf(ImuCalibrationState.Idle) }
+    val wifiChange: Flow<WifiChangeState> = _controller.flatMapLatest { it?.wifiChangeState ?: flowOf(WifiChangeState.Idle) }
+    val events: Flow<DroneEvent> = _controller.flatMapLatest { it?.events ?: emptyFlow() }
 
     /** Photo transfer progress (0..1) or `null` when no photo is in progress. */
     val photoProgress: Flow<Float?> = _controller.flatMapLatest { it?.photoProgress ?: flowOf(null) }

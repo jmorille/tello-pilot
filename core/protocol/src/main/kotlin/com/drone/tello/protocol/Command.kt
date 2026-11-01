@@ -54,6 +54,28 @@ enum class Command(val id: Int, val packetType: Int, val sequenced: Boolean = tr
     SET_ACTIVATION_TIMESTAMP(76, PacketType.DATA_ACK),
     /** Payload: 2 ASCII characters (country code), no terminator (official). */
     SET_REGION(22, PacketType.SET),
+
+    // ---- Phase 3 (ids / types checked in decompiled `gcs/core/cmd/d.java`)
+    /** Payload: u8 `(start & 3) | (mode & 7) << 2`; start 0 = stop. Reply [00] = accepted. */
+    SMART_VIDEO(128, PacketType.SET),
+    /** App ack of the drone's 129 smart-video status: payload [00], type 0x50, unsequenced reply. */
+    ACK_SMART_VIDEO_STATUS(129, PacketType.DATA_ACK),
+    /** Payload: 0x30 = enter bounce, 0x31 = leave. */
+    BOUNCE(4179, PacketType.SET),
+    /** Centre-of-gravity (level) calibration, payload 1. On the ground. */
+    CALIBRATE_CENTER_OF_GRAVITY(4180, PacketType.SET),
+    /** Starts the 6-face IMU calibration (reply [00] = started). */
+    START_IMU_CALIBRATION(90, PacketType.DATA_LOW),
+    /** Polled every 100 ms during the IMU calibration, never retried (official). */
+    QUERY_IMU_CALIBRATION(91, PacketType.DATA_LOW),
+    /** Reply: [00][ASCII SSID]. */
+    QUERY_SSID(17, PacketType.DATA_LOW),
+    /** Payload: ASCII SSID (1..32). Reply [00] = stored. */
+    SET_SSID(18, PacketType.SET),
+    /** Payload: ASCII password (empty = open, or 8..63). Reply [00] = stored. */
+    SET_WIFI_PASSWORD(20, PacketType.SET),
+    /** Restarts the drone's Wi-Fi so that a new SSID / password takes effect. */
+    RESTART_WIFI(25, PacketType.DATA_LOW),
 }
 
 /** Identifiers of messages sent by the drone. */
@@ -68,12 +90,41 @@ object MessageId {
     const val FLIGHT_DATA = 86
     const val FILE_SIZE = 98
     const val FILE_DATA = 99
+    const val SSID = 17
+    const val SET_SSID = 18
+    const val SET_WIFI_PASSWORD = 20
+    const val IMU_CALIBRATION_START = 90
+    const val IMU_CALIBRATION_STATUS = 91
+    const val FLIP = 92
+    const val SMART_VIDEO = 128
+    const val SMART_VIDEO_STATUS = 129
+    const val BOUNCE = 4179
+    const val CENTER_OF_GRAVITY_CALIBRATION = 4180
     const val LOG_HEADER = 4176
     const val LOG_DATA = 4177
 }
 
-/** Flip directions, as encoded in the [Command.FLIP] payload. */
+/**
+ * Flip directions, as encoded in the [Command.FLIP] payload. Checked against the official
+ * 8-direction swipe pad (`ThreeDTouchView`): 0° forward, 45° → 7, 90° → 3 (right), 135° → 6,
+ * 180° → 2 (back), 225° → 5, 270° → 1 (left), 315° → 4.
+ */
 enum class FlipDirection(val code: Int) {
     FORWARD(0), LEFT(1), BACK(2), RIGHT(3),
     FORWARD_LEFT(4), BACK_LEFT(5), BACK_RIGHT(6), FORWARD_RIGHT(7),
+}
+
+/** Smart video modes executed by the firmware ([Command.SMART_VIDEO]). */
+enum class SmartVideoMode(val code: Int) {
+    /** The drone turns 360° on itself while filming. */
+    ROTATE_360(1),
+    /** The drone circles around its starting point. */
+    CIRCLE(2),
+    /** The drone flies up and away backwards. */
+    UP_AND_AWAY(3),
+    ;
+
+    companion object {
+        fun fromCode(code: Int): SmartVideoMode? = entries.firstOrNull { it.code == code }
+    }
 }

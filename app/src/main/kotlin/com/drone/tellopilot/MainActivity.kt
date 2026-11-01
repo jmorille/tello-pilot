@@ -1,5 +1,6 @@
 package com.drone.tellopilot
 
+import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -15,11 +16,38 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.drone.tellopilot.ui.flight.FlightRoute
 import com.drone.tellopilot.ui.settings.SettingsRoute
+import com.drone.tellopilot.ui.settings.ImuCalibrationRoute
+import com.drone.tellopilot.input.GamepadInput
+import android.view.KeyEvent
+import android.view.MotionEvent
+import javax.inject.Inject
 import kotlinx.serialization.Serializable
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject lateinit var gamepad: GamepadInput
+
+    // Gamepad events are handled before Compose sees them (sticks never wait for a frame).
+    // Platform API (Activity.dispatchKeyEvent); lint flags it only because androidx.core's
+    // ComponentActivity also overrides it. Needed: Compose focus would otherwise eat the D-pad.
+    @SuppressLint("RestrictedApi")
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean = gamepad.onKeyEvent(event) || super.dispatchKeyEvent(event)
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean =
+        gamepad.onMotionEvent(event) || super.dispatchGenericMotionEvent(event)
+
+    /** Notification shade, system dialog, split-screen focus…: re-centre the pad sticks. */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) gamepad.release()
+    }
+
+    override fun onPause() {
+        gamepad.release() // never keep a stick deflected in the background
+        super.onPause()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -36,7 +64,13 @@ class MainActivity : ComponentActivity() {
                 // its ViewModel (and the drone session) keeps running.
                 NavHost(nav, startDestination = Flight) {
                     composable<Flight> { FlightRoute(onOpenSettings = { nav.navigate(Settings) { launchSingleTop = true } }) }
-                    composable<Settings> { SettingsRoute(onBack = { nav.popBackStack() }) }
+                    composable<Settings> {
+                        SettingsRoute(
+                            onBack = { nav.popBackStack() },
+                            onOpenImuCalibration = { nav.navigate(ImuCalibration) { launchSingleTop = true } },
+                        )
+                    }
+                    composable<ImuCalibration> { ImuCalibrationRoute(onBack = { nav.popBackStack() }) }
                 }
             }
         }
@@ -48,3 +82,6 @@ private data object Flight
 
 @Serializable
 private data object Settings
+
+@Serializable
+private data object ImuCalibration
