@@ -53,7 +53,7 @@ jobs:
         run: >-
           ./gradlew --no-daemon --no-build-cache --no-configuration-cache --rerun-tasks
           -Pkotlin.compiler.execution.strategy=in-process
-          :core:protocol:compileKotlin :core:control:compileKotlin :app:compileDebugKotlin
+          :core:protocol:compileTestKotlin :core:control:compileTestKotlin :app:compileDebugUnitTestKotlin
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
