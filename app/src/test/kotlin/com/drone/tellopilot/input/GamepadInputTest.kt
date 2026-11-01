@@ -21,7 +21,6 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Test
 
 /**
@@ -414,9 +413,8 @@ class GamepadInputTest {
         assertTrue(listener.actions.isEmpty())
     }
 
-    // ------------------------------------------------------- known bugs
+    // ------------------------------- centred = Neutral (was -0.0 on the Y axes)
 
-    @Ignore("Bug: GamepadMapper.sticks returns -0.0 for centred Y axes, so a centred pad is never PadSticks.Neutral")
     @Test
     fun `another pad takes over once the owner is back to neutral`() {
         val input = ready(1, 2)
@@ -427,7 +425,6 @@ class GamepadInputTest {
         assertSticks(PadSticks(0f, 1f, 0f, 0f), listener.last)
     }
 
-    @Ignore("Bug: GamepadMapper.sticks returns -0.0 for centred Y axes, so a centred pad is never PadSticks.Neutral")
     @Test
     fun `a centred pad sends nothing`() {
         val input = ready()

@@ -122,4 +122,11 @@ class GamepadMapperTest {
         val flip = d.assign(PadCommand.FLIP, PadBinding(PadButton.R2))
         assertTrue(flip is BindingResult.Refused && flip.other == PadCommand.TAKEOFF_LAND)
     }
+
+    @Test
+    fun `centred sticks are exactly Neutral (no negative zero on the inverted axes)`() {
+        assertEquals(PadSticks.Neutral, GamepadMapper.sticks(0f, 0f, 0f, 0f, flat = 0.1f))
+        assertEquals(PadSticks.Neutral, GamepadMapper.sticks(0.05f, -0.05f, -0.02f, 0.08f, flat = 0.1f))
+        assertEquals(PadSticks(0f, 1f, 0f, -1f), GamepadMapper.sticks(0f, -1f, 0f, 1f, flat = 0.1f))
+    }
 }
