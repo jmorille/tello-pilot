@@ -5,6 +5,12 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+// Release signing / versioning come from the environment (CI), see .github/workflows/release.yml.
+// Without them, release builds fall back to the debug key and the default version.
+val releaseKeystore = providers.environmentVariable("TELLO_KEYSTORE_FILE").orNull
+val ciVersionCode = providers.environmentVariable("TELLO_VERSION_CODE").orNull?.toInt()
+val ciVersionName = providers.environmentVariable("TELLO_VERSION_NAME").orNull
+
 android {
     namespace = "com.drone.tellopilot"
     compileSdk = 37
@@ -13,9 +19,20 @@ android {
         applicationId = "com.drone.tellopilot"
         minSdk = 30 // MediaFormat.KEY_LOW_LATENCY, WifiLock low latency
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = ciVersionCode ?: 1
+        versionName = ciVersionName ?: "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = providers.environmentVariable("TELLO_KEYSTORE_PASSWORD").get()
+                keyAlias = providers.environmentVariable("TELLO_KEY_ALIAS").get()
+                keyPassword = providers.environmentVariable("TELLO_KEY_PASSWORD").get()
+            }
+        }
     }
 
     buildTypes {
@@ -23,8 +40,8 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Side-loaded app: signed with the debug key so it can be installed directly.
-            signingConfig = signingConfigs.getByName("debug")
+            // Side-loaded app: signed with the release key in CI, else the debug key so it can be installed directly.
+            signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "release" else "debug")
         }
     }
 

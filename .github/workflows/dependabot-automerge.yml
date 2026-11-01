@@ -1,0 +1,111 @@
+name: Dependabot auto-merge
+
+# Merges Dependabot patch/minor updates only once the CI workflow is green for the PR head commit.
+#
+# Two mechanisms, whichever the repository plan allows:
+#  1. Native auto-merge (`gh pr merge --auto`) - needs "Allow auto-merge" + a required status check
+#     (branch protection / ruleset). Not available on a private repository on GitHub Free, so this
+#     attempt is best-effort and ignored when refused.
+#  2. Fallback (active today): the `merge-after-ci` job runs on completion of the CI workflow and merges
+#     the PR only if CI concluded `success` on the exact head commit (`--match-head-commit`).
+#     `classify` also tries the same gated merge, in case CI finished before the label was set.
+#
+# Eligibility is decided by dependabot/fetch-metadata and stored as the `automerge` label.
+# Optional secret AUTOMERGE_TOKEN (fine-grained PAT: contents, pull-requests, workflows = write) lets
+# the merge also handle github-actions updates (GITHUB_TOKEN may not merge workflow-file changes)
+# and makes the merge commit trigger CI on main.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  classify:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Label eligibility (patch/minor only)
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+        run: |
+          echo "update-type: ${UPDATE_TYPE:-unknown}"
+          if [[ "$UPDATE_TYPE" == "version-update:semver-patch" || "$UPDATE_TYPE" == "version-update:semver-minor" ]]; then
+            gh pr edit "$PR" --repo "$REPO" --add-label automerge
+          else
+            gh pr edit "$PR" --repo "$REPO" --remove-label automerge || true
+            echo "Not eligible for auto-merge (major or unknown update)."
+          fi
+
+      - name: Enable native auto-merge (best-effort)
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        continue-on-error: true
+        run: gh pr merge "$PR" --repo "$REPO" --auto --squash --match-head-commit "$SHA"
+
+      - name: Merge now if CI already green
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        run: |
+          ci=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&event=pull_request" \
+                 --jq '[.workflow_runs[]] | sort_by(.created_at) | last | .conclusion // ""')
+          if [[ "$ci" == "success" ]]; then
+            gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$SHA"
+          else
+            echo "CI not green yet (conclusion='${ci}'); merge-after-ci will handle it."
+          fi
+
+  merge-after-ci:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.actor == 'dependabot[bot]' &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || github.token }}
+      REPO: ${{ github.repository }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
+    steps:
+      - name: Merge the PR if eligible and CI green on its head commit
+        run: |
+          set -euo pipefail
+          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [[ -z "$pr" ]]; then echo "No open PR for $BRANCH"; exit 0; fi
+          info=$(gh pr view "$pr" --repo "$REPO" --json author,headRefOid,labels,isDraft)
+          author=$(jq -r '.author.login' <<<"$info")
+          head=$(jq -r '.headRefOid' <<<"$info")
+          eligible=$(jq -r '[.labels[].name] | index("automerge") != null' <<<"$info")
+          draft=$(jq -r '.isDraft' <<<"$info")
+          echo "PR #$pr author=$author head=$head eligible=$eligible draft=$draft"
+          if [[ "$author" != "app/dependabot" && "$author" != "dependabot[bot]" ]]; then echo "Not a Dependabot PR"; exit 0; fi
+          if [[ "$eligible" != "true" || "$draft" == "true" ]]; then echo "Not eligible (major update or draft)"; exit 0; fi
+          if [[ "$head" != "$SHA" ]]; then echo "PR head moved since this CI run; waiting for the new run"; exit 0; fi
+          gh pr merge "$pr" --repo "$REPO" --squash --match-head-commit "$SHA"

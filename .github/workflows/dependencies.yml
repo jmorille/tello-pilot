@@ -1,0 +1,87 @@
+name: Dependency scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '41 4 * * 1' # weekly, Monday 04:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deps-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-submission:
+    # Sends the resolved Gradle dependency graph (incl. transitive deps) to GitHub so that
+    # Dependabot alerts / security updates cover it (the version catalog alone is not enough).
+    name: Submit Gradle dependency graph
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Generate and submit dependency graph
+        uses: gradle/actions/dependency-submission@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+  osv-scan:
+    # Dependency review (actions/dependency-review-action) requires GitHub Advanced Security on
+    # private repositories, so OSV-Scanner is used instead, on PRs too.
+    name: OSV-Scanner (fail on high/critical)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: true
+
+      - name: Resolve dependency graph into lockfiles (not committed)
+        run: >-
+          ./gradlew --no-configuration-cache
+          --init-script .github/gradle/lock-all-configurations.init.gradle.kts --write-locks
+          dependencies :app:dependencies :core:protocol:dependencies :core:control:dependencies
+          && find . -name '*.lockfile' -not -path './.gradle/*' | xargs wc -l
+
+      - name: Run OSV-Scanner
+        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        continue-on-error: true # exits non-zero on any finding; severity gate below
+        with:
+          scan-args: |-
+            --recursive
+            --format=json
+            --output=osv-results.json
+            ./
+
+      - name: Upload OSV results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: osv-results
+          path: osv-results.json
+          if-no-files-found: ignore
+
+      - name: Fail on high/critical vulnerabilities (CVSS >= 7.0)
+        run: python3 .github/scripts/osv_gate.py osv-results.json 7.0

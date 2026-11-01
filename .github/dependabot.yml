@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # Gradle: build scripts + version catalog (gradle/libs.versions.toml) + wrapper.
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:00'
+      timezone: Europe/Paris
+    open-pull-requests-limit: 10
+    groups:
+      gradle-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:00'
+      timezone: Europe/Paris
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]

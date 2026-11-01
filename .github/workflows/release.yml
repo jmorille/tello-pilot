@@ -1,0 +1,167 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Official Alpine image pinned by digest; Alpine 3.24 ships OpenSSL >= 3.5 (native ML-DSA, FIPS 204).
+  # Ubuntu runners ship OpenSSL 3.0, which has no ML-DSA.
+  PQ_IMAGE: alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+
+jobs:
+  release:
+    name: Signed release APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write     # create the GitHub Release
+      id-token: write     # artifact attestation (only when enabled, see below)
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compute version from tag
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag $tag is not vMAJOR.MINOR.PATCH[-suffix]"; exit 1
+          fi
+          code=$(( BASH_REMATCH[1] * 1000000 + BASH_REMATCH[2] * 1000 + BASH_REMATCH[3] ))
+          (( code > 0 )) || code=1
+          prerelease=false; [[ -n "${BASH_REMATCH[4]}" ]] && prerelease=true
+          { echo "tag=$tag"; echo "name=$version"; echo "code=$code"; echo "prerelease=$prerelease"; } >> "$GITHUB_OUTPUT"
+          echo "versionName=$version versionCode=$code prerelease=$prerelease"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: true
+
+      - name: Restore release keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+
+      - name: Test and build signed release APK
+        env:
+          TELLO_KEYSTORE_FILE: ${{ runner.temp }}/release.p12
+          TELLO_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          TELLO_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          TELLO_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          TELLO_VERSION_CODE: ${{ steps.version.outputs.code }}
+          TELLO_VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: ./gradlew --no-build-cache --no-configuration-cache test :app:assembleRelease --stacktrace
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.p12"
+
+      - name: Collect APK, verify APK signature, compute checksums
+        id: dist
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          apk="tello-pilot-${TAG}.apk"
+          src=$(ls app/build/outputs/apk/release/*.apk | grep -v unsigned | head -1)
+          cp "$src" "dist/$apk"
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner
+          "$apksigner" verify --verbose --print-certs "dist/$apk" | tee apksigner.txt
+          expected=$(tr -d '[:space:]' < .github/release-signing/apk-signing-cert.sha256)
+          actual=$(grep -m1 'certificate SHA-256 digest' apksigner.txt | awk '{print $NF}')
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::APK signed with unexpected certificate ($actual, expected $expected)"; exit 1
+          fi
+          (cd dist && sha256sum "$apk" > SHA256SUMS && cat SHA256SUMS)
+          echo "apk=$apk" >> "$GITHUB_OUTPUT"
+          echo "cert=$actual" >> "$GITHUB_OUTPUT"
+
+      - name: Post-quantum signatures (ML-DSA-65, FIPS 204)
+        env:
+          PQ_SIGNING_KEY: ${{ secrets.PQ_SIGNING_KEY }}
+          APK: ${{ steps.dist.outputs.apk }}
+        run: |
+          set -euo pipefail
+          keydir=$(mktemp -d "$RUNNER_TEMP/pq.XXXXXX")
+          (umask 077; printf '%s\n' "$PQ_SIGNING_KEY" > "$keydir/key.pem")
+          trap 'rm -rf "$keydir"' EXIT
+          docker run --rm \
+            -v "$PWD/dist:/dist" -v "$keydir:/key:ro" \
+            -v "$PWD/.github/release-signing:/pub:ro" \
+            -e APK="$APK" "$PQ_IMAGE" sh -euc '
+              apk add --no-cache openssl >/dev/null
+              openssl version
+              ver=$(openssl version | cut -d" " -f2)
+              major=${ver%%.*}; rest=${ver#*.}; minor=${rest%%.*}
+              if [ "$major" -lt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -lt 5 ]; }; then
+                echo "OpenSSL >= 3.5 required, got $ver" >&2; exit 1
+              fi
+              # The secret key must match the committed public key.
+              openssl pkey -in /key/key.pem -pubout -out /tmp/derived.pub.pem
+              cmp /tmp/derived.pub.pem /pub/ml-dsa-65.pub.pem
+              cd /dist
+              for f in "$APK" SHA256SUMS; do
+                openssl pkeyutl -sign -inkey /key/key.pem -rawin -in "$f" -out "$f.sig"
+                openssl pkeyutl -verify -pubin -inkey /pub/ml-dsa-65.pub.pem -rawin -in "$f" -sigfile "$f.sig"
+              done
+              chmod 644 /dist/*'
+          cp .github/release-signing/ml-dsa-65.pub.pem dist/
+          ls -l dist
+
+      - name: Artifact attestation (build provenance)
+        # Artifact attestations are not available for private repositories on GitHub Free/Pro/Team
+        # (GitHub Enterprise Cloud only). Set repository variable ATTESTATIONS_ENABLED=true when available.
+        if: vars.ATTESTATIONS_ENABLED == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/${{ steps.dist.outputs.apk }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          APK: ${{ steps.dist.outputs.apk }}
+          CERT: ${{ steps.dist.outputs.cert }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<EOF
+          Tello Pilot ${TAG} (versionCode ${{ steps.version.outputs.code }}).
+
+          | Fichier | Contenu |
+          |---|---|
+          | \`${APK}\` | APK signé (clé release, certificat SHA-256 \`${CERT}\`) |
+          | \`SHA256SUMS\` | Empreinte SHA-256 de l'APK |
+          | \`${APK}.sig\`, \`SHA256SUMS.sig\` | Signatures post-quantiques ML-DSA-65 (FIPS 204) |
+          | \`ml-dsa-65.pub.pem\` | Clé publique (référence : \`.github/release-signing/ml-dsa-65.pub.pem\` dans le dépôt) |
+
+          Vérification (OpenSSL >= 3.5) :
+          \`\`\`sh
+          sha256sum -c SHA256SUMS
+          openssl pkeyutl -verify -pubin -inkey ml-dsa-65.pub.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+          openssl pkeyutl -verify -pubin -inkey ml-dsa-65.pub.pem -rawin -in ${APK} -sigfile ${APK}.sig
+          apksigner verify --print-certs ${APK}
+          \`\`\`
+          EOF
+          flags=()
+          [[ "$PRERELEASE" == "true" ]] && flags+=(--prerelease)
+          gh release create "$TAG" --verify-tag --title "Tello Pilot $TAG" --notes-file notes.md "${flags[@]}" dist/*

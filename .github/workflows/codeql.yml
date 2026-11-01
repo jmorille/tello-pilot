@@ -1,0 +1,76 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 4 * * 1' # weekly, Monday 04:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (java-kotlin)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      # Only used when code scanning (GitHub Advanced Security) is enabled, see CODE_SCANNING_ENABLED below.
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: java-kotlin
+          build-mode: manual
+          queries: security-extended
+
+      - name: Build (traced by CodeQL)
+        # CodeQL must observe every compiler invocation: no build cache, no configuration cache,
+        # no Gradle/Kotlin daemon reuse.
+        run: >-
+          ./gradlew --no-daemon --no-build-cache --no-configuration-cache --rerun-tasks
+          -Pkotlin.compiler.execution.strategy=in-process
+          :core:protocol:compileKotlin :core:control:compileKotlin :app:compileDebugKotlin
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:java-kotlin
+          output: sarif-results
+          # Code scanning on a private repository needs GitHub Advanced Security. Until the repository
+          # variable CODE_SCANNING_ENABLED is set to 'true', results are kept as an artifact and gated below.
+          upload: ${{ vars.CODE_SCANNING_ENABLED == 'true' && 'always' || 'never' }}
+
+      - name: Upload SARIF
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codeql-sarif
+          path: sarif-results
+          if-no-files-found: ignore
+
+      - name: Fail on high/critical findings
+        run: python3 .github/scripts/sarif_gate.py sarif-results 7.0
