@@ -42,8 +42,8 @@ data class PilotSettings(
     /** Takeoff requires a slide gesture instead of a tap. */
     val confirmTakeoff: Boolean = true,
     /**
-     * Height reached automatically right after takeoff (metres above what is under the drone),
-     * 0 = off: the Tello firmware always takes off to about 1 m.
+     * Height reached automatically right after the app's takeoff (drone height sensor, i.e.
+     * relative to the ground / takeoff surface), 0 = off: the Tello always takes off to ~1 m.
      */
     val takeoffHeight: Float = 0f,
     /** Start recording on the phone automatically at takeoff. */

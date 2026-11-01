@@ -72,6 +72,8 @@ class FlightViewModel @Inject constructor(
 
     /** Automatic climb / descent to the chosen height right after takeoff. */
     private var takeoffAdjust: kotlinx.coroutines.Job? = null
+    /** Time of the app's own (normal) takeoff command: only that takeoff arms the adjustment. */
+    private var takeoffRequestedAt = Long.MIN_VALUE / 2
     @Volatile private var takeoffAdjustRunning = false
 
     private val fastMode = MutableStateFlow(false)
@@ -320,6 +322,10 @@ class FlightViewModel @Inject constructor(
     }
 
     private fun pushSticks() {
+        // Any stick moved while the takeoff adjustment waits: the pilot flies, no adjustment.
+        if (takeoffAdjust?.isActive == true && !takeoffAdjustRunning && pilotDeflection() > TAKEOFF_STICK_IDLE) {
+            takeoffAdjust?.cancel()
+        }
         // Automatic flight: the pilot's sticks are ignored until one is clearly moved, which
         // takes control back at once (the autopilot never locks the pilot out).
         if (autopilot.active) {
@@ -427,9 +433,16 @@ class FlightViewModel @Inject constructor(
 
     fun onAction(action: FlightAction) {
         // Any manual flight command ends an automatic flight first.
-        if (action.endsAutopilot()) autopilot.stop()
+        if (action.endsAutopilot()) {
+            autopilot.stop()
+            // Land, palm land, flip, manoeuvres…: no automatic height change afterwards.
+            if (action != FlightAction.Takeoff) takeoffAdjust?.cancel()
+        }
         when (action) {
-            FlightAction.Takeoff -> confirmed { takeoff() }
+            FlightAction.Takeoff -> {
+                takeoffRequestedAt = android.os.SystemClock.elapsedRealtime()
+                confirmed { takeoff() }
+            }
             FlightAction.Land -> confirmed { land() }
             FlightAction.ThrowTakeoff -> confirmed { throwTakeoff() }
             FlightAction.PalmLand -> confirmed { palmLand() }
@@ -508,13 +521,18 @@ class FlightViewModel @Inject constructor(
     private fun scheduleTakeoffHeight() {
         val target = pilot.value.takeoffHeight
         if (target <= 0f) return
+        // Only right after the app's own takeoff: never after an app restart in flight (a
+        // "flying" edge with no takeoff), a throw takeoff (height from the hand) or a bounce.
+        if (android.os.SystemClock.elapsedRealtime() - takeoffRequestedAt > TAKEOFF_ARM_MS) return
+        takeoffRequestedAt = Long.MIN_VALUE / 2
         takeoffAdjust?.cancel()
         takeoffAdjust = viewModelScope.launch {
             kotlinx.coroutines.delay(TAKEOFF_SETTLE_MS)
             val flight = session.lastFlight ?: return@launch
             val state = uiState.value
-            if (!flight.flying || flight.isLanding || state.status != ConnectionStatus.CONNECTED ||
-                state.autopilotActive || state.smartVideoRunning || pilotDeflection() > TAKEOFF_STICK_IDLE
+            if (!flight.flying || flight.isLanding || session.controller.value?.isLanding == true ||
+                flight.batteryLow || flight.batteryCritical || state.status != ConnectionStatus.CONNECTED ||
+                autopilot.active || state.smartVideoRunning || state.bounce || pilotDeflection() > TAKEOFF_STICK_IDLE
             ) {
                 return@launch
             }
@@ -590,6 +608,8 @@ private const val GROUND_HEAT_MS = 3 * 60_000L
 private const val TRACK_STEP_M = 0.1f
 private const val TAKEOFF_SETTLE_MS = 2_000L
 private const val TAKEOFF_TOLERANCE_M = 0.15f
+/** The "flying" edge must follow the takeoff command within this delay. */
+private const val TAKEOFF_ARM_MS = 10_000L
 /** Any stick moved by the pilot after takeoff: no automatic adjustment. */
 private const val TAKEOFF_STICK_IDLE = 0.05f
 private const val TRACK_MAX_POINTS = 2_000
