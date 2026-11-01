@@ -116,7 +116,7 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
             unregister()
         }
         val ssid = prefs.getString(KEY_SSID, null)
-        val password = prefs.getString(KEY_PASSWORD, null)
+        val password = storedPassword()
         val specifier = WifiNetworkSpecifier.Builder().apply {
             if (ssid != null) setSsid(ssid) else setSsidPattern(PatternMatcher(DRONE_SSID_PREFIX, PatternMatcher.PATTERN_PREFIX))
             if (ssid != null && !password.isNullOrEmpty()) setWpa2Passphrase(password)
@@ -172,7 +172,21 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
 
     /** The drone's Wi-Fi was renamed / protected from the app: look for it under that name next time. */
     fun rememberDroneNetwork(ssid: String, password: String) {
-        prefs.edit().putString(KEY_SSID, ssid).putString(KEY_PASSWORD, password).apply()
+        // The password is stored encrypted (Android Keystore), never in clear text.
+        val sealed = if (password.isEmpty()) null else SecretBox.encrypt(password)
+        prefs.edit().putString(KEY_SSID, ssid).remove(KEY_PASSWORD).apply {
+            if (sealed != null) putString(KEY_PASSWORD_SEALED, sealed) else remove(KEY_PASSWORD_SEALED)
+        }.apply()
+    }
+
+    /** Decrypted drone Wi-Fi password; an old clear-text value is migrated once. */
+    private fun storedPassword(): String? {
+        prefs.getString(KEY_PASSWORD, null)?.let { legacy ->
+            val sealed = SecretBox.encrypt(legacy)
+            prefs.edit().remove(KEY_PASSWORD).apply { if (sealed != null) putString(KEY_PASSWORD_SEALED, sealed) }.apply()
+            return legacy
+        }
+        return prefs.getString(KEY_PASSWORD_SEALED, null)?.let(SecretBox::decrypt)
     }
 
     private fun classify(network: Network, properties: LinkProperties?): WifiState {
@@ -206,7 +220,9 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
         const val DRONE_IP = "192.168.10.1"
         const val PREFS = "drone_wifi"
         const val KEY_SSID = "ssid"
+        /** Legacy clear-text key (v0.6.0 / v0.6.1), migrated then removed. */
         const val KEY_PASSWORD = "password"
+        const val KEY_PASSWORD_SEALED = "password_sealed"
         const val STALE_REQUEST_MS = 30_000L
     }
 }
