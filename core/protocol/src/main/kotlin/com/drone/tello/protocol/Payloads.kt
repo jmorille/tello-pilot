@@ -76,6 +76,49 @@ object Payloads {
         return out
     }
 
+    /**
+     * Activation date for a brand-new drone, as the official app encodes it:
+     * 7 x u16 = full year, month 1-12, day, hour, minute, second, millisecond.
+     */
+    fun activationTimestamp(now: LocalDateTime = LocalDateTime.now()): ByteArray =
+        shorts(now.year, now.monthValue, now.dayOfMonth, now.hour, now.minute, now.second, now.nano / 1_000_000)
+
+    /** Wi-Fi region: 2 ASCII characters, no terminator (official app). */
+    fun region(code: String): ByteArray {
+        require(code.length == 2 && code.all { it.code < 128 }) { "region must be a 2-letter ASCII code" }
+        return code.toByteArray(Charsets.US_ASCII)
+    }
+
+    /** Max altitude in metres as u16 (clamped to the firmware range 2..30). */
+    fun maxAltitude(meters: Int): ByteArray = shorts(meters.coerceIn(2, 30))
+
+    /** Low-battery warning threshold in percent as u16 (clamped to 10..50). */
+    fun lowBatteryThreshold(percent: Int): ByteArray = shorts(percent.coerceIn(10, 50))
+
+    /** Exposure compensation, i8 in 1/3 EV steps (clamped to -9..9). */
+    fun exposure(steps: Int): ByteArray = byteArrayOf(steps.coerceIn(-9, 9).toByte())
+
+    /** Ack of a file piece (flag 0) or of the whole file (flag 1): [flag][u16 fileId][u32 piece]. */
+    fun filePieceAck(complete: Boolean, fileId: Int, piece: Int): ByteArray = ByteArray(7).also {
+        it[0] = if (complete) 1 else 0
+        PacketCodec.putShortLe(it, 1, fileId)
+        putIntLe(it, 3, piece)
+    }
+
+    /** End of a file transfer: [u16 fileId][u32 size]. */
+    fun fileDone(fileId: Int, size: Int): ByteArray = ByteArray(6).also {
+        PacketCodec.putShortLe(it, 0, fileId)
+        putIntLe(it, 2, size)
+    }
+
+    private fun shorts(vararg values: Int): ByteArray = ByteArray(values.size * 2).also { out ->
+        values.forEachIndexed { i, v -> PacketCodec.putShortLe(out, i * 2, v) }
+    }
+
+    private fun putIntLe(target: ByteArray, offset: Int, value: Int) {
+        for (i in 0 until 4) target[offset + i] = (value ushr (8 * i)).toByte()
+    }
+
     /** Acknowledges a log header so the drone keeps streaming telemetry. */
     fun logAck(logId: Int): ByteArray =
         ByteArray(3).also { PacketCodec.putShortLe(it, 1, logId) }

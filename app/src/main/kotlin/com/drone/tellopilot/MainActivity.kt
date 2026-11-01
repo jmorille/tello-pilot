@@ -10,7 +10,12 @@ import androidx.compose.material3.darkColorScheme
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import com.drone.tellopilot.ui.flight.FlightRoute
+import com.drone.tellopilot.ui.settings.SettingsRoute
+import kotlinx.serialization.Serializable
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -26,8 +31,20 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                FlightRoute()
+                val nav = rememberNavController()
+                // The flight destination stays on the back stack while settings are open:
+                // its ViewModel (and the drone session) keeps running.
+                NavHost(nav, startDestination = Flight) {
+                    composable<Flight> { FlightRoute(onOpenSettings = { nav.navigate(Settings) { launchSingleTop = true } }) }
+                    composable<Settings> { SettingsRoute(onBack = { nav.popBackStack() }) }
+                }
             }
         }
     }
 }
+
+@Serializable
+private data object Flight
+
+@Serializable
+private data object Settings

@@ -123,6 +123,35 @@ object H264 {
         }
     }
 
+    /**
+     * First NAL unit of [type] in [frame], *with* its 4-byte start code (the form expected by
+     * MediaFormat "csd-0"/"csd-1"), or `null` if absent.
+     */
+    fun extractNal(frame: ByteArray, type: Int): ByteArray? {
+        val starts = startCodes(frame)
+        for ((index, start) in starts.withIndex()) {
+            val headerAt = start.first + start.second
+            if (headerAt >= frame.size || (frame[headerAt].toInt() and 0x1F) != type) continue
+            val end = starts.getOrNull(index + 1)?.first ?: frame.size
+            return byteArrayOf(0, 0, 0, 1) + frame.copyOfRange(headerAt, end)
+        }
+        return null
+    }
+
+    /** (offset, length) of every Annex-B start code. */
+    private fun startCodes(frame: ByteArray): List<Pair<Int, Int>> = buildList {
+        var i = 0
+        while (i + 3 <= frame.size) {
+            if (frame[i].toInt() == 0 && frame[i + 1].toInt() == 0) {
+                when {
+                    frame[i + 2].toInt() == 1 -> { add(i to 3); i += 3; continue }
+                    i + 3 < frame.size && frame[i + 2].toInt() == 0 && frame[i + 3].toInt() == 1 -> { add(i to 4); i += 4; continue }
+                }
+            }
+            i++
+        }
+    }
+
     fun containsConfig(frame: ByteArray) = NAL_SPS in nalTypes(frame)
     fun isKeyFrame(frame: ByteArray) = nalTypes(frame).let { NAL_IDR in it || NAL_SPS in it }
 }

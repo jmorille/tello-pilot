@@ -37,7 +37,9 @@ fun VideoView(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e("VideoView", "decoder unavailable", e)
+                // Surface released meanwhile (screen off): a new onSurface call will follow.
+                if (surface.isValid) Log.e("VideoView", "decoder unavailable", e)
+                else Log.w("VideoView", "surface released while creating the decoder")
                 return@onSurface
             }
             if (surface.isValid) {

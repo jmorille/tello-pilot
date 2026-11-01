@@ -14,7 +14,7 @@ class FlightUiStateTest {
     private fun flight(flying: Boolean = true, battery: Int = 80, low: Boolean = false, critical: Boolean = false) = FlightData(
         heightMeters = 1.2f, northSpeed = 3f, eastSpeed = 4f, verticalSpeed = 0f, flyTimeSeconds = 65.4f,
         batteryPercent = battery, flying = flying, onGround = !flying, hovering = false,
-        batteryLow = low, batteryCritical = critical, windWarning = false, imuOk = true, flyMode = 1,
+        batteryLow = low, batteryCritical = critical, flyMode = 6,
     )
 
     private fun state(
@@ -66,5 +66,47 @@ class FlightUiStateTest {
         assertEquals(Warning.BATTERY_LOW, state(telemetry = Telemetry(flight = flight(low = true))).warning)
         assertEquals(Warning.TOO_DARK, state(telemetry = Telemetry(flight = flight(), tooDark = true)).warning)
         assertNull(state(link = LinkState.RECONNECTING, telemetry = Telemetry(flight = flight(critical = true))).warning)
+    }
+
+    @Test
+    fun `alerts are sorted by severity and low battery is hidden by critical`() {
+        val f = flight(low = true, critical = true).copy(windWarning = true, overheating = true, imuCalibrationState = 2)
+        assertEquals(
+            listOf(Warning.BATTERY_CRITICAL, Warning.OVERHEATING, Warning.IMU_ERROR, Warning.WIND),
+            state(telemetry = Telemetry(flight = f)).warnings,
+        )
+    }
+
+    @Test
+    fun `motor code 206 (not activated) is not an alarm, other codes are`() {
+        assertTrue(state(telemetry = Telemetry(flight = flight().copy(motorErrorCode = 206))).warnings.isEmpty())
+        val s = state(telemetry = Telemetry(flight = flight().copy(motorErrorCode = 205)))
+        assertEquals(Warning.MOTOR_ERROR, s.warning)
+        assertEquals(205, s.motorErrorCode)
+    }
+
+    @Test
+    fun `no positioning is only an alert in flight, calibration only on the ground`() {
+        val noVps = flight().copy(flyMode = 1)
+        assertEquals(Warning.NO_POSITIONING, state(telemetry = Telemetry(flight = noVps)).warning)
+        assertNull(state(telemetry = Telemetry(flight = noVps.copy(flying = false))).warning)
+        val calib = flight(flying = false).copy(gravityCalibrationNeeded = true)
+        assertEquals(Warning.CALIBRATION_NEEDED, state(telemetry = Telemetry(flight = calib)).warning)
+        assertNull(state(telemetry = Telemetry(flight = calib.copy(flying = true))).warning)
+    }
+
+    @Test
+    fun `camera fault and photo progress are shown only when connected`() {
+        val live = FlightUiState.from(true, LinkState.CONNECTED, Telemetry(flight = flight(), cameraFault = true), true, false, false, photoProgress = 0.5f)
+        assertEquals(Warning.CAMERA_FAULT, live.warning)
+        assertEquals(0.5f, live.photoProgress!!, 0f)
+        val lost = FlightUiState.from(true, LinkState.RECONNECTING, Telemetry(), true, false, true, photoProgress = 0.5f)
+        assertNull(lost.photoProgress)
+    }
+
+    @Test
+    fun `settings are locked in flight`() {
+        assertFalse(state().settingsAvailable)
+        assertTrue(state(telemetry = Telemetry(flight = flight(flying = false))).settingsAvailable)
     }
 }

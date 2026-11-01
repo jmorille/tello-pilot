@@ -104,6 +104,14 @@ class VideoFrameAssemblerTest {
     }
 
     @Test
+    fun `sps and pps are extracted with a 4-byte start code`() {
+        val frame = byteArrayOf(0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x68, 3, 0, 0, 0, 1, 0x65, 9)
+        assertArrayEquals(byteArrayOf(0, 0, 0, 1, 0x67, 1, 2), H264.extractNal(frame, H264.NAL_SPS))
+        assertArrayEquals(byteArrayOf(0, 0, 0, 1, 0x68, 3), H264.extractNal(frame, H264.NAL_PPS))
+        assertEquals(null, H264.extractNal(byteArrayOf(0, 0, 0, 1, 0x41, 1), H264.NAL_SPS))
+    }
+
+    @Test
     fun `nal types are detected`() {
         val frame = byteArrayOf(0, 0, 0, 1, 0x67, 1, 2, 0, 0, 0, 1, 0x68, 3, 0, 0, 1, 0x65, 9)
         assertEquals(listOf(H264.NAL_SPS, H264.NAL_PPS, H264.NAL_IDR), H264.nalTypes(frame))

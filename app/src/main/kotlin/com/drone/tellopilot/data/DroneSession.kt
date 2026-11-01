@@ -7,12 +7,18 @@ import com.drone.tello.control.TelloController
 import com.drone.tello.control.VideoFrameGate
 import com.drone.tello.protocol.VideoFrameAssembler
 import com.drone.tellopilot.video.FrameSink
+import com.drone.tellopilot.video.VideoRecorder
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,6 +46,9 @@ import javax.inject.Singleton
 @Singleton
 class DroneSession @Inject constructor(
     private val wifi: WifiNetworkMonitor,
+    private val settings: SettingsRepository,
+    private val recorder: VideoRecorder,
+    private val photoStore: PhotoStore,
 ) {
     private val _controller = MutableStateFlow<TelloController?>(null)
     val controller: StateFlow<TelloController?> = _controller.asStateFlow()
@@ -49,6 +58,13 @@ class DroneSession @Inject constructor(
 
     val link: Flow<LinkState> = _controller.flatMapLatest { it?.link ?: flowOf(LinkState.IDLE) }
     val telemetry: Flow<Telemetry> = _controller.flatMapLatest { it?.telemetry ?: flowOf(Telemetry()) }
+
+    /** Photo transfer progress (0..1) or `null` when no photo is in progress. */
+    val photoProgress: Flow<Float?> = _controller.flatMapLatest { it?.photoProgress ?: flowOf(null) }
+
+    private val _photoSaved = MutableSharedFlow<Result<Unit>>(extraBufferCapacity = 4)
+    /** One event per photo received from the drone (saved or failed). */
+    val photoSaved: SharedFlow<Result<Unit>> = _photoSaved.asSharedFlow()
 
     private val _videoActive = MutableStateFlow(false)
     val videoActive: StateFlow<Boolean> = _videoActive.asStateFlow()
@@ -92,6 +108,32 @@ class DroneSession @Inject constructor(
                     coroutineScope {
                         launch(RealtimeThreads.control) { controller.run() }
                         launch(RealtimeThreads.video) { receiveVideo(sockets, controller) }
+                        // Drone settings: stored in the controller, sent on connect and on change.
+                        launch(RealtimeThreads.control) {
+                            try {
+                                settings.settings.map { it.drone }.distinctUntilChanged()
+                                    .collect { controller.applyDroneSettings(it) }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                // Settings must never take the flight session down.
+                                Log.w(TAG, "drone settings unavailable", e)
+                            }
+                        }
+                        launch {
+                            controller.photos.collect { jpeg ->
+                                val result = try {
+                                    photoStore.save(jpeg)
+                                    Result.success(Unit)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    Result.failure(e)
+                                }
+                                result.exceptionOrNull()?.let { Log.w(TAG, "cannot save photo", it) }
+                                _photoSaved.tryEmit(result)
+                            }
+                        }
                         // On cancellation, close the sockets at once: unblocks the pending
                         // receive() calls instead of waiting for their 250 ms timeout.
                         launch {
@@ -142,14 +184,17 @@ class DroneSession @Inject constructor(
             var decision = gate.onResult(assembler.push(buffer, packet.length))
             val frame = decision.frame
             if (frame != null) {
+                recorder.onFrame(frame) // never blocks (bounded queue, dedicated writer thread)
                 val target = sink.get()
                 when {
-                    target == null -> gate.reset() // no surface: decoder will need a key frame
+                    // No surface: the decoder will need a key frame — unless recording, which
+                    // must keep the full stream (settings open / app in background).
+                    target == null -> if (!recorder.isActive) gate.reset()
                     target.decode(frame) -> _videoActive.value = true
                     else -> decision = gate.onDecoderBacklog()
                 }
             }
-            if (decision.requestKeyFrame && sink.get() != null) {
+            if (decision.requestKeyFrame && (sink.get() != null || recorder.isActive)) {
                 launch(RealtimeThreads.control) { controller.requestKeyFrame() }
             }
         }

@@ -41,13 +41,32 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
+import com.drone.tello.control.Units
 import com.drone.tello.protocol.FlipDirection
 import com.drone.tellopilot.R
 import com.drone.tellopilot.video.FrameSink
 
 @Composable
-fun FlightRoute(viewModel: FlightViewModel = hiltViewModel()) {
+fun FlightRoute(onOpenSettings: () -> Unit, viewModel: FlightViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    LaunchedEffect(viewModel) {
+        viewModel.messages.collect { message ->
+            val text = when (message) {
+                UserMessage.PHOTO_SAVED -> R.string.message_photo_saved
+                UserMessage.PHOTO_FAILED -> R.string.message_photo_failed
+                UserMessage.VIDEO_SAVED -> R.string.message_video_saved
+                UserMessage.VIDEO_FAILED -> R.string.message_video_failed
+            }
+            snackbar.showSnackbar(context.getString(text))
+        }
+    }
 
     // Safety: never keep a stick deflected when the app leaves the foreground.
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { viewModel.onAction(FlightAction.ReleaseSticks) }
@@ -66,6 +85,8 @@ fun FlightRoute(viewModel: FlightViewModel = hiltViewModel()) {
         onRightStick = viewModel::onRightStick,
         attachVideo = viewModel::attachVideo,
         detachVideo = viewModel::detachVideo,
+        onOpenSettings = onOpenSettings,
+        snackbar = snackbar,
     )
 }
 
@@ -77,7 +98,10 @@ fun FlightScreen(
     onRightStick: (Float, Float) -> Unit,
     attachVideo: (FrameSink) -> Unit,
     detachVideo: (FrameSink) -> Unit,
+    onOpenSettings: () -> Unit = {},
+    snackbar: SnackbarHostState = remember { SnackbarHostState() },
 ) {
+    val stickSize = state.pilot.joystickSizeDp.dp
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         VideoView(attachVideo, detachVideo, Modifier.align(Alignment.Center))
 
@@ -91,25 +115,41 @@ fun FlightScreen(
         }
 
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
-            TopBar(state)
-            state.warning?.let { WarningBanner(it, Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp)) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TopBar(state)
+                Box(Modifier.weight(1f))
+                TextButton(onClick = onOpenSettings, enabled = state.settingsAvailable) {
+                    Text(stringResource(R.string.action_settings))
+                }
+            }
+            // The two most severe alerts.
+            state.warnings.take(2).forEach {
+                WarningBanner(it, state.motorErrorCode, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp))
+            }
+            state.photoProgress?.let {
+                LinearProgressIndicator(
+                    progress = { it },
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp).size(width = 160.dp, height = 4.dp),
+                )
+            }
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 // Each stick only re-centres itself: lifting one finger must not cut the other axes.
                 Joystick(
                     onMove = onLeftStick,
                     onRelease = { onLeftStick(0f, 0f) },
                     enabled = state.controlsEnabled,
-                    modifier = Modifier.align(Alignment.BottomStart).size(200.dp).systemGestureExclusion(),
+                    modifier = Modifier.align(Alignment.BottomStart).size(stickSize).systemGestureExclusion(),
                 )
                 ActionPanel(state, onAction, Modifier.align(Alignment.BottomCenter))
                 Joystick(
                     onMove = onRightStick,
                     onRelease = { onRightStick(0f, 0f) },
                     enabled = state.controlsEnabled,
-                    modifier = Modifier.align(Alignment.BottomEnd).size(200.dp).systemGestureExclusion(),
+                    modifier = Modifier.align(Alignment.BottomEnd).size(stickSize).systemGestureExclusion(),
                 )
             }
         }
+        SnackbarHost(snackbar, Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(top = 56.dp))
     }
 }
 
@@ -136,10 +176,20 @@ private fun TopBar(state: FlightUiState) {
             Box(Modifier.size(10.dp).background(statusColor, RoundedCornerShape(5.dp)))
             HudText(state.batteryPercent?.let { stringResource(R.string.hud_battery, it) } ?: "--",
                 color = if ((state.batteryPercent ?: 100) <= 20) Color(0xFFEF5350) else Color.White)
-            HudText(state.heightMeters?.let { stringResource(R.string.hud_height, it) } ?: "H --")
-            HudText(state.horizontalSpeed?.let { stringResource(R.string.hud_speed, it) } ?: "V --")
+            val imperial = state.units == Units.IMPERIAL
+            HudText(state.heightMeters?.let {
+                if (imperial) stringResource(R.string.hud_height_ft, it * FEET_PER_METER) else stringResource(R.string.hud_height, it)
+            } ?: "H --")
+            HudText(state.horizontalSpeed?.let {
+                if (imperial) stringResource(R.string.hud_speed_mph, it * MPH_PER_MS) else stringResource(R.string.hud_speed, it)
+            } ?: "V --")
             HudText(state.flyTimeSeconds?.let { stringResource(R.string.hud_time, it / 60, it % 60) } ?: "--:--")
             HudText(state.wifiStrength?.let { stringResource(R.string.hud_wifi, it) } ?: "Wi-Fi --")
+            when (state.recording) {
+                is RecordingUi.Recording -> HudText(stringResource(R.string.hud_rec), color = Color(0xFFEF5350))
+                RecordingUi.Starting -> HudText(stringResource(R.string.hud_rec_starting), color = Color(0xFFFFCA28))
+                RecordingUi.Idle -> Unit
+            }
         }
     }
 }
@@ -150,20 +200,33 @@ private fun HudText(text: String, color: Color = Color.White) {
 }
 
 @Composable
-private fun WarningBanner(warning: Warning, modifier: Modifier = Modifier) {
+private fun WarningBanner(warning: Warning, motorErrorCode: Int, modifier: Modifier = Modifier) {
     val text = when (warning) {
-        Warning.BATTERY_CRITICAL -> R.string.warning_battery_critical
-        Warning.BATTERY_LOW -> R.string.warning_battery_low
-        Warning.TOO_DARK -> R.string.warning_too_dark
+        Warning.BATTERY_CRITICAL -> stringResource(R.string.warning_battery_critical)
+        Warning.OVERHEATING -> stringResource(R.string.warning_overheating)
+        Warning.MOTOR_ERROR -> stringResource(R.string.warning_motor_error, motorErrorCode)
+        Warning.IMU_ERROR -> stringResource(R.string.warning_imu_error)
+        Warning.BATTERY_ERROR -> stringResource(R.string.warning_battery_error)
+        Warning.BATTERY_LOW -> stringResource(R.string.warning_battery_low)
+        Warning.WIND -> stringResource(R.string.warning_wind)
+        Warning.NO_POSITIONING -> stringResource(R.string.warning_no_positioning)
+        Warning.VISION_SENSOR -> stringResource(R.string.warning_vision_sensor)
+        Warning.TOO_DARK -> stringResource(R.string.warning_too_dark)
+        Warning.CAMERA_FAULT -> stringResource(R.string.warning_camera_fault)
+        Warning.IMU_PREHEATING -> stringResource(R.string.warning_imu_preheating)
+        Warning.CALIBRATION_NEEDED -> stringResource(R.string.warning_calibration)
     }
     Surface(
         modifier = modifier,
-        color = if (warning == Warning.TOO_DARK) Color(0xCCF57C00) else Color(0xCCD32F2F),
+        color = if (warning.critical) Color(0xCCD32F2F) else Color(0xCCF57C00),
         shape = RoundedCornerShape(8.dp),
     ) {
-        Text(stringResource(text), color = Color.White, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+        Text(text, color = Color.White, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
     }
 }
+
+private const val FEET_PER_METER = 3.28084f
+private const val MPH_PER_MS = 2.23694f
 
 @Composable
 private fun ActionPanel(state: FlightUiState, onAction: (FlightAction) -> Unit, modifier: Modifier = Modifier) {
@@ -186,6 +249,23 @@ private fun ActionPanel(state: FlightUiState, onAction: (FlightAction) -> Unit, 
                 label = { Text(stringResource(R.string.action_fast)) },
             )
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledTonalButton(onClick = { onAction(FlightAction.TakePhoto) }, enabled = enabled && state.photoProgress == null) {
+                Text(stringResource(R.string.action_photo))
+            }
+            val recording = state.recording != RecordingUi.Idle
+            FilledTonalButton(
+                onClick = { onAction(FlightAction.ToggleRecording) },
+                enabled = enabled || recording, // stopping is always possible
+                colors = if (recording) {
+                    ButtonDefaults.filledTonalButtonColors(containerColor = Color(0xFFD32F2F))
+                } else {
+                    ButtonDefaults.filledTonalButtonColors()
+                },
+            ) {
+                Text(stringResource(if (recording) R.string.action_stop_recording else R.string.action_record))
+            }
+        }
         // Land is always reachable while flying (last known state), even if the link is lost:
         // the controller sends it best-effort and repeats it until the drone reports landed.
         if (state.flying) {
@@ -194,6 +274,8 @@ private fun ActionPanel(state: FlightUiState, onAction: (FlightAction) -> Unit, 
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
                 modifier = Modifier.size(width = 180.dp, height = 56.dp),
             ) { Text(stringResource(R.string.action_land), style = MaterialTheme.typography.titleMedium) }
+        } else if (state.pilot.confirmTakeoff) {
+            SlideToConfirm(stringResource(R.string.action_slide_takeoff), enabled, onConfirm = { onAction(FlightAction.Takeoff) })
         } else {
             Button(
                 onClick = { onAction(FlightAction.Takeoff) },

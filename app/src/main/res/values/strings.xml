@@ -29,4 +29,55 @@
     <string name="warning_battery_critical">Batterie critique – atterrissage</string>
     <string name="warning_too_dark">Luminosité insuffisante pour le capteur de position</string>
     <string name="video_waiting">En attente de la vidéo…</string>
+
+    <string name="action_photo">Photo</string>
+    <string name="action_record">Enregistrer</string>
+    <string name="action_stop_recording">Stop REC</string>
+    <string name="action_slide_takeoff">Glisser pour décoller</string>
+    <string name="action_settings">Réglages</string>
+    <string name="hud_height_ft">H %1$.0f ft</string>
+    <string name="hud_speed_mph">V %1$.1f mph</string>
+    <string name="hud_rec">● REC</string>
+    <string name="hud_rec_starting">● REC…</string>
+
+    <string name="warning_overheating">Surchauffe du drone – atterrissez</string>
+    <string name="warning_motor_error">Erreur moteur (code %1$d)</string>
+    <string name="warning_imu_error">Erreur IMU – calibration nécessaire</string>
+    <string name="warning_battery_error">Erreur batterie</string>
+    <string name="warning_wind">Vent fort</string>
+    <string name="warning_no_positioning">Positionnement visuel indisponible – le drone peut dériver</string>
+    <string name="warning_vision_sensor">Capteur de vision en défaut</string>
+    <string name="warning_camera_fault">Caméra en défaut</string>
+    <string name="warning_imu_preheating">Préchauffage de l\'IMU…</string>
+    <string name="warning_calibration">Calibration requise</string>
+
+    <string name="message_photo_saved">Photo enregistrée dans Images/TelloPilot</string>
+    <string name="message_photo_failed">Échec de l\'enregistrement de la photo</string>
+    <string name="message_video_saved">Vidéo enregistrée dans Films/TelloPilot</string>
+    <string name="message_video_failed">Échec de l\'enregistrement vidéo</string>
+
+    <string name="settings_title">Réglages</string>
+    <string name="settings_back">← Retour</string>
+    <string name="settings_section_control">Pilotage</string>
+    <string name="settings_section_display">Affichage et enregistrement</string>
+    <string name="settings_section_drone">Drone</string>
+    <string name="settings_stick_mode">Mode des manches</string>
+    <string name="settings_mode_n">Mode %1$d</string>
+    <string name="settings_mode1_help">Gauche : lacet / tangage — Droite : roulis / gaz</string>
+    <string name="settings_mode2_help">Gauche : lacet / gaz — Droite : roulis / tangage</string>
+    <string name="settings_mode3_help">Gauche : roulis / tangage — Droite : lacet / gaz</string>
+    <string name="settings_mode4_help">Gauche : roulis / gaz — Droite : lacet / tangage</string>
+    <string name="settings_dead_zone">Zone morte : %1$d %%</string>
+    <string name="settings_expo">Expo : %1$d %%</string>
+    <string name="settings_joystick_size">Taille des manches : %1$d dp</string>
+    <string name="settings_confirm_takeoff">Glisser pour décoller</string>
+    <string name="settings_metric">Métrique</string>
+    <string name="settings_imperial">Impérial</string>
+    <string name="settings_auto_record">Enregistrer automatiquement au décollage</string>
+    <string name="settings_drone_hint">Envoyés au drone à chaque connexion et à chaque modification.</string>
+    <string name="settings_max_altitude">Altitude max : %1$d m</string>
+    <string name="settings_low_battery">Alerte batterie faible : %1$d %%</string>
+    <string name="settings_exposure">Exposition : %1$+.1f EV</string>
+    <string name="settings_bitrate">Débit vidéo</string>
 </resources>
+

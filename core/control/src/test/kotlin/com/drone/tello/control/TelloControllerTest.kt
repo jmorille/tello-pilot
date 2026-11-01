@@ -11,6 +11,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -85,6 +86,55 @@ class TelloControllerTest {
             assertArrayEquals(byteArrayOf(1), transport.all(Command.SET_VIDEO_MODE).first().packet!!.payload)
             assertArrayEquals(byteArrayOf(0), transport.all(Command.SET_EIS).first().packet!!.payload)
             assertEquals(1, transport.count(Command.REQUEST_KEY_FRAME))
+        }
+
+        @Test
+        fun `conn_req heartbeat every second while connected`() = session {
+            connect()
+            val before = transport.handshakes()
+            advance(3_050)
+            assertTrue(transport.handshakes() - before in 3..4, "heartbeats: ${transport.handshakes() - before}")
+        }
+
+        @Test
+        fun `activation state and firmware are queried on connect`() = session {
+            connect()
+            assertEquals(1, transport.count(Command.QUERY_ACTIVATION_STATE))
+            assertEquals(1, transport.count(Command.QUERY_FIRMWARE))
+        }
+
+        @Test
+        fun `a brand-new drone is activated with a timestamp, retried until it reports activated`() = session {
+            connect()
+            transport.droneMessage(MessageId.ACTIVATION_STATE, byteArrayOf(1))
+            transport.droneMessage(MessageId.ACTIVATION_STATE, byteArrayOf(1))
+            scope.runCurrent()
+            assertEquals(false, controller.telemetry.value.activated)
+            val stamp = transport.all(Command.SET_ACTIVATION_TIMESTAMP)
+            assertEquals(1, stamp.map { it.packet!!.sequence }.toSet().size, "not repeated immediately")
+            assertEquals(14, stamp.first().packet!!.payload.size)
+            assertEquals(0, transport.count(Command.SET_REGION), "region is only for RoboMaster TT")
+
+            // reply to 76 → query 75 again
+            val queries = transport.count(Command.QUERY_ACTIVATION_STATE)
+            transport.droneMessage(MessageId.ACTIVATION_TIMESTAMP, byteArrayOf(0))
+            scope.runCurrent()
+            assertTrue(transport.count(Command.QUERY_ACTIVATION_STATE) > queries)
+
+            // the 76 was lost: still not activated 3 s later → activated again
+            advance(3_100)
+            transport.droneMessage(MessageId.ACTIVATION_STATE, byteArrayOf(1))
+            scope.runCurrent()
+            assertEquals(2, transport.all(Command.SET_ACTIVATION_TIMESTAMP).map { it.packet!!.sequence }.toSet().size)
+        }
+
+        @Test
+        fun `an activated drone is left untouched`() = session {
+            connect()
+            transport.droneMessage(MessageId.ACTIVATION_STATE, byteArrayOf(0))
+            scope.runCurrent()
+            assertEquals(true, controller.telemetry.value.activated)
+            assertEquals(0, transport.count(Command.SET_ACTIVATION_TIMESTAMP) + transport.count(Command.SET_REGION))
         }
 
         @Test
@@ -476,6 +526,119 @@ class TelloControllerTest {
             val last = transport.sticks().drop(from)
             assertTrue(last.size >= 3 && last.takeLast(3).all { it.isNeutralStick() }, "neutral packets on stop")
             assertFalse(controller.land(), "no command once stopped")
+        }
+    }
+
+    @Nested
+    inner class CameraAndSettings {
+        private fun le32(v: Int) = ByteArray(4) { (v ushr (8 * it)).toByte() }
+        private fun le16(v: Int) = byteArrayOf(v.toByte(), (v ushr 8).toByte())
+
+        @Test
+        fun `a photo is taken, downloaded, acknowledged and emitted`() = session {
+            connect()
+            val photo = ByteArray(1500) { it.toByte() }
+            val received = scope.async { controller.photos.first() }
+            scope.runCurrent()
+            assertTrue(controller.takePicture())
+            assertFalse(controller.takePicture(), "one photo at a time")
+            assertEquals(1, transport.count(Command.TAKE_PICTURE))
+            assertEquals(0f, controller.photoProgress.value)
+
+            transport.droneMessage(MessageId.FILE_SIZE, byteArrayOf(1) + le32(photo.size) + le16(5))
+            scope.runCurrent()
+            assertEquals(1, transport.count(Command.ACK_FILE_SIZE))
+            listOf(0 to 1024, 1 to 476).forEach { (chunk, len) ->
+                val data = photo.copyOfRange(chunk * 1024, chunk * 1024 + len)
+                transport.droneMessage(MessageId.FILE_DATA, le16(5) + le32(0) + le32(chunk) + le16(len) + data)
+            }
+            scope.runCurrent()
+            assertArrayEquals(photo, received.await())
+            assertEquals(null, controller.photoProgress.value)
+            assertEquals(1, transport.count(Command.FILE_DONE))
+            advance(500)
+            assertEquals(1, transport.count(Command.FILE_DONE), "file acks are not retransmitted")
+        }
+
+        @Test
+        fun `a photo transfer without data is abandoned after the timeout`() = session {
+            connect()
+            assertTrue(controller.takePicture())
+            advance(19_000)
+            assertEquals(0f, controller.photoProgress.value)
+            advance(1_500)
+            assertEquals(null, controller.photoProgress.value)
+            assertTrue(controller.takePicture(), "a new photo can be taken")
+        }
+
+        @Test
+        fun `a photo refused by the drone frees the button at once`() = session {
+            connect()
+            assertTrue(controller.takePicture())
+            val seq = transport.all(Command.TAKE_PICTURE).first().packet!!.sequence
+            transport.droneMessage(MessageId.TAKE_PICTURE, byteArrayOf(1), sequence = seq)
+            scope.runCurrent()
+            assertEquals(null, controller.photoProgress.value)
+        }
+
+        @Test
+        fun `take picture is retried slowly (500 ms, twice) to avoid a double capture`() = session {
+            connect()
+            controller.takePicture()
+            advance(400)
+            assertEquals(1, transport.count(Command.TAKE_PICTURE))
+            advance(2_000)
+            assertEquals(3, transport.count(Command.TAKE_PICTURE))
+        }
+
+        @Test
+        fun `a rejected file announcement does not show a stuck progress`() = session {
+            connect()
+            transport.droneMessage(MessageId.FILE_SIZE, byteArrayOf(1, 0, 0, 0, 0, 1, 0)) // size 0
+            scope.runCurrent()
+            assertEquals(null, controller.photoProgress.value)
+        }
+
+        @Test
+        fun `no photo when disconnected`() = session {
+            assertFalse(controller.takePicture())
+            assertEquals(0, transport.count(Command.TAKE_PICTURE))
+        }
+
+        @Test
+        fun `drone settings are sanitized, stored and sent on every connection`() = session {
+            assertFalse(controller.applyDroneSettings(DroneSettings(maxAltitudeMeters = 99, exposureSteps = 3, bitrate = VideoBitrate.MBPS_2)))
+            assertEquals(0, transport.count(Command.SET_MAX_ALTITUDE))
+            connect()
+            assertArrayEquals(byteArrayOf(30, 0), transport.all(Command.SET_MAX_ALTITUDE).first().packet!!.payload)
+            assertArrayEquals(byteArrayOf(3), transport.all(Command.SET_EXPOSURE).first().packet!!.payload)
+            assertArrayEquals(byteArrayOf(3), transport.all(Command.SET_BITRATE).first().packet!!.payload)
+            assertEquals(1, transport.count(Command.SET_LOW_BATTERY_THRESHOLD))
+
+            val before = transport.all(Command.SET_MAX_ALTITUDE).map { it.packet!!.sequence }.toSet().size
+            assertTrue(controller.applyDroneSettings(DroneSettings(maxAltitudeMeters = 5)))
+            val altitudes = transport.all(Command.SET_MAX_ALTITUDE)
+            assertEquals(before + 1, altitudes.map { it.packet!!.sequence }.toSet().size)
+            assertArrayEquals(byteArrayOf(5, 0), altitudes.last().packet!!.payload)
+
+            val sent = transport.count(Command.SET_BITRATE)
+            assertFalse(controller.applyDroneSettings(DroneSettings(maxAltitudeMeters = 5)), "unchanged: not re-sent")
+            assertEquals(sent, transport.count(Command.SET_BITRATE))
+        }
+
+        @Test
+        fun `camera fault is reported only after 20 consecutive frames`() = session {
+            connect()
+            val faulty = ByteArray(24).also { it[20] = 1 }
+            repeat(19) { transport.droneMessage(MessageId.FLIGHT_DATA, faulty) }
+            scope.runCurrent()
+            assertFalse(controller.telemetry.value.cameraFault)
+            transport.droneMessage(MessageId.FLIGHT_DATA, faulty)
+            scope.runCurrent()
+            assertTrue(controller.telemetry.value.cameraFault)
+            transport.droneMessage(MessageId.FLIGHT_DATA, ByteArray(24))
+            scope.runCurrent()
+            assertFalse(controller.telemetry.value.cameraFault, "cleared by a good frame")
         }
     }
 }
