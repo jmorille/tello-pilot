@@ -60,6 +60,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         return PilotSettings(
             stickMode = p[STICK_MODE].toEnum(d.stickMode),
             deadZone = p[DEAD_ZONE] ?: d.deadZone,
+            tripodScale = (p[TRIPOD_SCALE] ?: d.tripodScale).coerceIn(PilotSettings.TRIPOD_RANGE),
             expo = p[EXPO] ?: d.expo,
             joystickSizeDp = p[JOYSTICK_SIZE] ?: d.joystickSizeDp,
             units = p[UNITS].toEnum(d.units),
@@ -82,6 +83,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
     private fun writePilot(p: MutablePreferences, s: PilotSettings) {
         p[STICK_MODE] = s.stickMode.name
         p[DEAD_ZONE] = s.deadZone
+        p[TRIPOD_SCALE] = s.tripodScale
         p[EXPO] = s.expo
         p[JOYSTICK_SIZE] = s.joystickSizeDp
         p[UNITS] = s.units.name
@@ -122,6 +124,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
     private companion object {
         val STICK_MODE = stringPreferencesKey("stick_mode")
         val DEAD_ZONE = floatPreferencesKey("dead_zone")
+        val TRIPOD_SCALE = floatPreferencesKey("tripod_scale")
         val EXPO = floatPreferencesKey("expo")
         val JOYSTICK_SIZE = intPreferencesKey("joystick_size_dp")
         val UNITS = stringPreferencesKey("units")

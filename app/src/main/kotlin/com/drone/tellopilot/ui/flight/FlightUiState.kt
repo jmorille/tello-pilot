@@ -94,6 +94,11 @@ data class FlightUiState(
     val wifiStrength: Int? = null,
     val flying: Boolean = false,
     val fastMode: Boolean = false,
+    val tripod: Boolean = false,
+    /** From the drone's log stream: attitude, IMU temperature, visual-odometry track. */
+    val attitude: com.drone.tello.protocol.Attitude? = null,
+    val imuTemperatureC: Float? = null,
+    val track: List<androidx.compose.ui.geometry.Offset> = emptyList(),
     val videoActive: Boolean = false,
     val warnings: List<Warning> = emptyList(),
     val motorErrorCode: Int = 0,
@@ -152,6 +157,8 @@ data class FlightUiState(
             autopilot: com.drone.tellopilot.tracking.AutopilotState = com.drone.tellopilot.tracking.AutopilotState.Idle,
             otherWifi: Boolean = false,
             groundTooLong: Boolean = false,
+            tripod: Boolean = false,
+            track: List<androidx.compose.ui.geometry.Offset> = emptyList(),
         ): FlightUiState {
             val status = when {
                 !wifiAvailable -> ConnectionStatus.WAITING_WIFI
@@ -173,6 +180,11 @@ data class FlightUiState(
                 // Last known state, kept while the link is lost: Land must stay reachable.
                 flying = flight?.flying ?: knownFlying,
                 fastMode = fastMode,
+                tripod = tripod,
+                attitude = telemetry.attitude.takeIf { live },
+                // The offset of this field is not confirmed: implausible values are dropped.
+                imuTemperatureC = telemetry.imuTemperatureC?.takeIf { live && it in -10f..100f },
+                track = track,
                 videoActive = videoActive && live,
                 // Phone warnings do not depend on the link; critical ones first (two are shown).
                 warnings = (
@@ -213,6 +225,8 @@ sealed interface FlightAction {
     data class StartSmartVideo(val mode: SmartVideoMode) : FlightAction
     data object StopSmartVideo : FlightAction
     data object ToggleFastMode : FlightAction
+    /** Slow, smooth sticks for filming (exclusive with the fast mode). */
+    data object ToggleTripod : FlightAction
     data object TakePhoto : FlightAction
     data object ToggleRecording : FlightAction
     /** Fingers lifted / app paused: sticks back to neutral. */

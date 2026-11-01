@@ -70,6 +70,9 @@ class FlightViewModel @Inject constructor(
 ) : ViewModel(), GamepadInput.Listener {
 
     private val fastMode = MutableStateFlow(false)
+    private val tripod = MutableStateFlow(false)
+    /** Visual-odometry track of the current flight (valid positions only). */
+    private val track = MutableStateFlow<List<androidx.compose.ui.geometry.Offset>>(emptyList())
 
     /** The gamepad drove last (sticks or buttons); a touch on a screen stick hands back to touch. */
     private val padDriving = MutableStateFlow(false)
@@ -103,15 +106,25 @@ class FlightViewModel @Inject constructor(
         combine(session.videoActive, fastMode, knownFlying, ::Triple),
         combine(recordingUi, session.photoProgress, ::Pair),
         combine(session.maneuvers, gamepad.status, phoneThermal.heat, padDriving, autopilot.state, ::Extras),
-        combine(pilot, groundTooLong, ::Pair),
-    ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), extras, (pilot, groundHot) ->
+        combine(pilot, groundTooLong, tripod, track, ::More),
+    ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), extras, more ->
+        val (pilot, groundHot, tripodOn, trackPoints) = more
         FlightUiState.from(
             wifi is com.drone.tellopilot.data.WifiState.Drone, link, telemetry, video, fast, flying, recording, photo, pilot,
             extras.maneuvers, extras.pad, extras.heat, extras.padDriving, extras.autopilot,
             otherWifi = wifi == com.drone.tellopilot.data.WifiState.OtherNetwork,
             groundTooLong = groundHot,
+            tripod = tripodOn,
+            track = trackPoints,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, FlightUiState())
+
+    private data class More(
+        val pilot: PilotSettings,
+        val groundHot: Boolean,
+        val tripod: Boolean,
+        val track: List<androidx.compose.ui.geometry.Offset>,
+    )
 
     private data class Extras(
         val maneuvers: com.drone.tello.control.ManeuverState,
@@ -128,9 +141,22 @@ class FlightViewModel @Inject constructor(
             // Official app: one tip when the calibration starts, one when it is done; the start
             // tip is re-armed only by a completion (an unstable bit cannot loop the messages).
             var announcedStart = false
+            var wasFlying = false
             session.telemetry.collect { t ->
                 val flight = t.flight ?: return@collect
                 onFlyingChanged(flight.flying)
+                // Track: restarts at each takeoff, a point every 10 cm, bounded.
+                if (flight.flying && !wasFlying) track.value = emptyList()
+                wasFlying = flight.flying
+                val odo = t.odometry
+                if (flight.flying && odo != null && odo.positionValid) {
+                    val p = androidx.compose.ui.geometry.Offset(odo.x, odo.y)
+                    val points = track.value
+                    val last = points.lastOrNull()
+                    if (last == null || (p - last).getDistance() >= TRACK_STEP_M) {
+                        track.value = (if (points.size >= TRACK_MAX_POINTS) points.drop(1) else points) + p
+                    }
+                }
                 when (flight.gravityCalibrationStatus) {
                     1 -> if (!announcedStart) {
                         announcedStart = true
@@ -163,6 +189,7 @@ class FlightViewModel @Inject constructor(
             pilot.collect {
                 mixer.mode = it.stickMode
                 mixer.shaping = it.shaping
+                if (tripod.value) mixer.scale = it.tripodScale
                 gamepad.setBindings(it.padBindings)
             }
         }
@@ -302,6 +329,12 @@ class FlightViewModel @Inject constructor(
 
     private fun touchIdle() = touch.all { it == 0f }
 
+    /** Tripod mode: stick output scaled down (read by the stick handlers on the main thread). */
+    private fun setTripod(on: Boolean) {
+        tripod.value = on
+        mixer.scale = if (on) pilot.value.tripodScale else 1f
+    }
+
     /** Last smart video cancelled by a stick movement (one stop request per second at most). */
     private var lastSmartVideoOverride = Long.MIN_VALUE / 2
     private var smartVideoArmed = false
@@ -398,7 +431,15 @@ class FlightViewModel @Inject constructor(
             }
             FlightAction.ToggleFastMode -> {
                 fastMode.value = !fastMode.value
+                if (fastMode.value) setTripod(false)
                 session.controller.value?.setFastMode(fastMode.value)
+            }
+            FlightAction.ToggleTripod -> {
+                setTripod(!tripod.value)
+                if (tripod.value && fastMode.value) {
+                    fastMode.value = false
+                    session.controller.value?.setFastMode(false)
+                }
             }
             is FlightAction.StartMission -> startAutopilot(tracking = false) { autopilot.startMission(action.mission) }
             is FlightAction.StartTracking -> startAutopilot(tracking = true) {
@@ -422,7 +463,7 @@ class FlightViewModel @Inject constructor(
         FlightAction.StopAutopilot, FlightAction.ReleaseSticks,
         is FlightAction.StartMission, is FlightAction.StartTracking,
         // Speed changes are the pilot's call: they end the (always slow) automatic flight.
-        FlightAction.ToggleFastMode,
+        FlightAction.ToggleFastMode, FlightAction.ToggleTripod,
         -> true
         else -> false
     }
@@ -498,6 +539,8 @@ private const val AUTOPILOT_OVERRIDE = 0.25f
 private const val SMART_VIDEO_OVERRIDE_COOLDOWN_MS = 1_000L
 private const val SMART_VIDEO_STOP_RETRIES = 4
 private const val GROUND_HEAT_MS = 3 * 60_000L
+private const val TRACK_STEP_M = 0.1f
+private const val TRACK_MAX_POINTS = 2_000
 private const val GROUND_CHECK_MS = 5_000L
 /** Pad deflection that counts as "the pilot flies with the pad" (hides the screen sticks). */
 private const val PAD_TAKEOVER = 0.35f

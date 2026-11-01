@@ -152,6 +152,12 @@ fun FlightScreen(
                 TrackingOverlay(it, videoModifier)
             }
         }
+        if (state.pilot.shows(HudItem.HORIZON)) state.attitude?.let {
+            AttitudeIndicator(it, Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp))
+        }
+        if (state.pilot.shows(HudItem.MAP) && state.flying && state.track.size >= 2) {
+            TrackMap(state.track, Modifier.align(Alignment.TopStart).safeDrawingPadding().padding(start = 12.dp, top = 64.dp))
+        }
         if (state.throwCountdown > 0) {
             // Throw takeoff armed: seconds left to throw the drone (official countdown).
             Text(
@@ -293,6 +299,9 @@ private fun TopBar(state: FlightUiState) {
             if (show(HudItem.FLIGHT_TIME)) {
                 HudText(state.flyTimeSeconds?.let { stringResource(R.string.hud_time, it / 60, it % 60) } ?: "--:--")
             }
+            if (show(HudItem.TEMPERATURE)) state.imuTemperatureC?.let {
+                HudText(stringResource(R.string.hud_temperature, it), color = if (it >= HOT_DRONE_C) Color(0xFFFFCA28) else Color.White)
+            }
             if (show(HudItem.WIFI)) {
                 HudText(state.wifiStrength?.let { stringResource(R.string.hud_wifi, it) } ?: "Wi-Fi --")
             }
@@ -356,6 +365,11 @@ private fun TopActions(
             tint = if (state.fastMode) Color(0xFFFFCA28) else Color.White,
             selected = state.fastMode,
         ) { onAction(FlightAction.ToggleFastMode) }
+        HudIcon(
+            R.drawable.ic_tripod, R.string.action_tripod, true,
+            tint = if (state.tripod) Color(0xFF4FC3F7) else Color.White,
+            selected = state.tripod,
+        ) { onAction(FlightAction.ToggleTripod) }
         HudIcon(R.drawable.ic_photo, R.string.action_photo, enabled && state.photoProgress == null) {
             onAction(FlightAction.TakePhoto)
         }
@@ -601,6 +615,8 @@ private fun videoSize(
 
 private const val VIDEO_ASPECT = 4f / 3f
 private const val VARIO_DEADBAND = 0.1f
+/** Unverified threshold: shown in amber above it. */
+private const val HOT_DRONE_C = 60f
 
 /** Frame around the followed target, drawn over the 4:3 video (same size and place). */
 @Composable

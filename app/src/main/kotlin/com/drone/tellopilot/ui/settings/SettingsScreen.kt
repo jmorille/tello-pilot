@@ -193,6 +193,11 @@ private fun ControlSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
         value = pilot.expo, range = PilotSettings.EXPO_RANGE,
     ) { v -> updatePilot { it.copy(expo = v) } }
     SliderSetting(
+        label = { stringResource(R.string.settings_tripod_scale, (it * 100).roundToInt()) },
+        value = pilot.tripodScale, range = PilotSettings.TRIPOD_RANGE,
+    ) { v -> updatePilot { it.copy(tripodScale = v) } }
+    Text(stringResource(R.string.settings_tripod_help), style = MaterialTheme.typography.bodySmall)
+    SliderSetting(
         label = { stringResource(R.string.settings_joystick_size, it.roundToInt()) },
         value = pilot.joystickSizeDp.toFloat(),
         range = PilotSettings.JOYSTICK_SIZE_RANGE.first.toFloat()..PilotSettings.JOYSTICK_SIZE_RANGE.last.toFloat(),
@@ -368,5 +373,8 @@ private fun hudItemLabel(item: com.drone.tello.control.HudItem): Int = when (ite
     com.drone.tello.control.HudItem.WIFI -> R.string.hud_item_wifi
     com.drone.tello.control.HudItem.GAMEPAD -> R.string.hud_item_gamepad
     com.drone.tello.control.HudItem.RECORDING -> R.string.hud_item_recording
+    com.drone.tello.control.HudItem.HORIZON -> R.string.hud_item_horizon
+    com.drone.tello.control.HudItem.MAP -> R.string.hud_item_map
+    com.drone.tello.control.HudItem.TEMPERATURE -> R.string.hud_item_temperature
     com.drone.tello.control.HudItem.INFO_ALERTS -> R.string.hud_item_info_alerts
 }

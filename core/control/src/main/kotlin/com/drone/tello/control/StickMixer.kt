@@ -22,6 +22,12 @@ class StickMixer(
     var mode: StickMode = StickMode.MODE_2,
     var shaping: StickShaping = StickShaping(),
 ) {
+    /** Output scale (0..1] after shaping: < 1 for the tripod mode (slow, smooth shots). */
+    var scale: Float = 1f
+        set(value) {
+            field = value.coerceIn(0.05f, 1f)
+        }
+
     private var leftX = 0f
     private var leftY = 0f
     private var rightX = 0f
@@ -42,7 +48,8 @@ class StickMixer(
     }
 
     fun mix(fastMode: Boolean): StickInput {
-        val s = shaping::apply
+        val k = scale
+        val s = { v: Float -> shaping.apply(v) * k }
         return when (mode) {
             StickMode.MODE_1 -> StickInput(roll = s(rightX), pitch = s(leftY), throttle = s(rightY), yaw = s(leftX), fastMode = fastMode)
             StickMode.MODE_2 -> StickInput(roll = s(rightX), pitch = s(rightY), throttle = s(leftY), yaw = s(leftX), fastMode = fastMode)

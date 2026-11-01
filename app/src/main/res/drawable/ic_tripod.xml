@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tripod: camera head on three legs (drawn for Tello Pilot). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF" android:pathData="M8,2h8v5h-8z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M11,7h2v4h-2z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M11,11h2v11h-2z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M11.1,10.6l1.8,0.8l-5.2,10.8l-1.8,-0.8z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M12.9,10.6l-1.8,0.8l5.2,10.8l1.8,-0.8z" />
+</vector>

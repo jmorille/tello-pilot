@@ -57,4 +57,18 @@ class StickMixerTest {
         assertEquals(0f, input.yaw)
         assertEquals(1f, input.throttle, 1e-6f)
     }
+
+    @Test
+    fun `tripod scale reduces every axis after shaping`() {
+        val mixer = StickMixer(StickMode.MODE_2, StickShaping(deadZone = 0f, expo = 0f))
+        mixer.scale = 0.3f
+        mixer.setLeft(1f, -1f, false)
+        val input = mixer.setRight(0.5f, 1f, false)
+        assertEquals(0.3f, input.yaw, 1e-6f)
+        assertEquals(-0.3f, input.throttle, 1e-6f)
+        assertEquals(0.15f, input.roll, 1e-6f)
+        assertEquals(0.3f, input.pitch, 1e-6f)
+        mixer.scale = 0f // clamped: never a dead stick
+        assertEquals(0.05f, mixer.mix(false).pitch, 1e-6f)
+    }
 }

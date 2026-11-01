@@ -25,7 +25,7 @@ enum class VideoFit { FIT, WIDE, FILL }
  * Information the pilot may show or hide on the flight screen. Critical alerts, the alerts
  * that matter in flight and the throw countdown are not listed: they are always shown.
  */
-enum class HudItem { BATTERY, HEIGHT, SPEED, VARIO, FLIGHT_TIME, WIFI, GAMEPAD, RECORDING, INFO_ALERTS }
+enum class HudItem { BATTERY, HEIGHT, SPEED, VARIO, FLIGHT_TIME, WIFI, GAMEPAD, RECORDING, HORIZON, MAP, TEMPERATURE, INFO_ALERTS }
 
 /** Target format of the post-flight re-encoding of recorded videos. */
 enum class TranscodeCodec(val suffix: String) { HEVC("hevc"), AV1("av1") }
@@ -35,6 +35,8 @@ data class PilotSettings(
     val stickMode: StickMode = StickMode.MODE_2,
     val deadZone: Float = 0.05f,
     val expo: Float = 0.3f,
+    /** Stick amplitude in tripod mode (slow, smooth shots). */
+    val tripodScale: Float = 0.3f,
     val joystickSizeDp: Int = 200,
     val units: Units = Units.METRIC,
     /** Takeoff requires a slide gesture instead of a tap. */
@@ -66,6 +68,7 @@ data class PilotSettings(
     companion object {
         val DEAD_ZONE_RANGE = 0f..0.2f
         val EXPO_RANGE = 0f..0.8f
+        val TRIPOD_RANGE = 0.15f..0.6f
         val JOYSTICK_SIZE_RANGE = 140..280
     }
 }

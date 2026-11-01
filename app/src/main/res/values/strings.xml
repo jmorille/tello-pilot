@@ -200,6 +200,15 @@
     <string name="hud_item_gamepad">Manette</string>
     <string name="hud_item_recording">Enregistrement</string>
     <string name="hud_item_info_alerts">Alertes d\'information</string>
+    <string name="hud_item_horizon">Horizon et cap</string>
+    <string name="hud_item_map">Mini-carte</string>
+    <string name="hud_item_temperature">Température</string>
+    <string name="hud_heading">Cap %1$d° %2$s</string>
+    <string name="hud_home_distance">Départ : %1$.1f m</string>
+    <string name="hud_temperature">%1$.0f °C</string>
+    <string name="action_tripod">Trépied</string>
+    <string name="settings_tripod_scale">Amplitude des manches en mode trépied : %1$d %%</string>
+    <string name="settings_tripod_help">Le mode trépied (icône dans la barre de vol) réduit la course des manches pour des plans lents et fluides. Il désactive le mode rapide.</string>
     <string name="settings_video_fit">Cadrage de la vidéo</string>
     <string name="settings_video_fit_fill">Plein écran</string>
     <string name="settings_video_fit_wide">16:9</string>
