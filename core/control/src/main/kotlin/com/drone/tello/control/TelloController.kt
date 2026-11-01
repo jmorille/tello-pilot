@@ -49,6 +49,12 @@ data class Telemetry(
     val cameraFault: Boolean = false,
     /** Drone Wi-Fi name, once queried. */
     val ssid: String? = null,
+    /** From the internal log stream (4177): attitude of the drone, `null` until received. */
+    val attitude: com.drone.tello.protocol.Attitude? = null,
+    /** IMU temperature, °C (unverified offset), from the log stream. */
+    val imuTemperatureC: Float? = null,
+    /** Last position from the downward camera (visual odometry), from the log stream. */
+    val odometry: com.drone.tello.protocol.LogRecord.VisualOdometry? = null,
 )
 
 /** One-shot results the UI reports to the pilot. */
@@ -152,6 +158,8 @@ class TelloController(
     private var lastActivationAt = Long.MIN_VALUE / 2 // control thread only
 
     private val photoDownload = PhotoDownload()
+    private val logParser = com.drone.tello.protocol.DroneLogParser()
+    private var logPackets = 0
 
     /** Optional diagnostic sink (photo transfer milestones); the core has no logger of its own. */
     @Volatile var diagnostics: ((String) -> Unit)? = null
@@ -585,6 +593,30 @@ class TelloController(
         if (landRequested.get()) sendLand()
     }
 
+    /** Internal log stream: attitude, IMU temperature and visual odometry. */
+    private fun onLogData(payload: ByteArray) {
+        val records = runCatching { logParser.feed(payload) }.getOrDefault(emptyList())
+        if (logPackets++ % LOG_DIAG_EVERY == 0) {
+            diag("log data #$logPackets: ${payload.size} B, records ${records.map { it::class.simpleName }}")
+        }
+        var imu: com.drone.tello.protocol.LogRecord.Imu? = null
+        var mvo: com.drone.tello.protocol.LogRecord.VisualOdometry? = null
+        records.forEach {
+            when (it) {
+                is com.drone.tello.protocol.LogRecord.Imu -> imu = it
+                is com.drone.tello.protocol.LogRecord.VisualOdometry -> mvo = it
+            }
+        }
+        if (imu == null && mvo == null) return
+        _telemetry.update { t ->
+            t.copy(
+                attitude = imu?.attitude ?: t.attitude,
+                imuTemperatureC = imu?.temperatureC ?: t.imuTemperatureC,
+                odometry = mvo ?: t.odometry,
+            )
+        }
+    }
+
     private fun checkPhotoTimeout() {
         if (_photo.value == null) return
         val last = maxOf(photoStartedAt, photoLastData)
@@ -693,6 +725,7 @@ class TelloController(
             // FLIP (type 0x70) is never pending: its reply is only informative.
             is DroneMessage.CommandResult -> if (answeredPending || message.messageId == MessageId.FLIP) onCommandResult(message)
             is DroneMessage.Other -> when (packet.messageId) {
+                MessageId.LOG_DATA -> onLogData(packet.payload)
                 // Reply to 76: check the result (official app queries 75 again).
                 MessageId.ACTIVATION_TIMESTAMP -> command(Command.QUERY_ACTIVATION_STATE)
                 // Reply to 48: a non-zero status means the drone refused (busy, camera error).
@@ -772,5 +805,7 @@ class TelloController(
         const val CAMERA_FAULT_FRAMES = 20
         const val IMU_POLL_MS = 100L
         const val WIFI_CHANGE_TIMEOUT_MS = 5_000L
+        /** One diagnostic line every N log packets (the stream is frequent). */
+        const val LOG_DIAG_EVERY = 200
     }
 }
