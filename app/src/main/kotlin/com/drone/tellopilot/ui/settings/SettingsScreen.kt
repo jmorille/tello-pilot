@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.background
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.VerticalDivider
@@ -21,7 +22,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -131,7 +131,7 @@ fun SettingsScreen(
     var category by rememberSaveable { mutableStateOf(SettingsCategory.CONTROL) }
     Row(Modifier.fillMaxSize().safeDrawingPadding()) {
         Column(
-            Modifier.width(300.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(vertical = 4.dp),
+            Modifier.width(300.dp).fillMaxHeight().selectableGroup().verticalScroll(rememberScrollState()).padding(vertical = 4.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onBack) { Text(stringResource(R.string.settings_back)) }
@@ -288,12 +288,6 @@ private fun CategoryItem(category: SettingsCategory, selected: Boolean, onClick:
     }
 }
 
-/** Sub-heading inside a pane. */
-@Composable
-internal fun Section(title: Int) {
-    HorizontalDivider()
-    Text(stringResource(title), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-}
 
 @Composable
 private fun Label(text: Int) = Text(stringResource(text), style = MaterialTheme.typography.bodyLarge)

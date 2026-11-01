@@ -90,14 +90,27 @@ class MaintenanceViewModel @Inject constructor(private val session: DroneSession
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MaintenanceState())
 
-    /** `true` / `false` for each centre-of-gravity calibration result. */
-    val centerOfGravityResults: Flow<Boolean> =
-        session.events.filterIsInstance<DroneEvent.CenterOfGravityCalibrated>().map { it.success }
+    /**
+     * Last centre-of-gravity calibration result, kept in the ViewModel: it must survive a switch
+     * to another settings pane while the drone answers.
+     */
+    private val _centerOfGravityResult = kotlinx.coroutines.flow.MutableStateFlow<Boolean?>(null)
+    val centerOfGravityResult: StateFlow<Boolean?> = _centerOfGravityResult
+
+    init {
+        viewModelScope.launch {
+            session.events.filterIsInstance<DroneEvent.CenterOfGravityCalibrated>()
+                .collect { _centerOfGravityResult.value = it.success }
+        }
+    }
 
     fun refreshWifiName() = run { queryWifiName() }
     fun changeWifi(ssid: String, password: String) = run { changeWifi(ssid, password) }
     fun resetWifiChange() = run { resetWifiChange() }
-    fun calibrateCenterOfGravity() = run { calibrateCenterOfGravity() }
+    fun calibrateCenterOfGravity() {
+        _centerOfGravityResult.value = null
+        run { calibrateCenterOfGravity() }
+    }
     fun startImuCalibration() = run { startImuCalibration() }
     fun resetImuCalibration() = run { resetImuCalibration() }
 
@@ -118,10 +131,9 @@ class MaintenanceViewModel @Inject constructor(private val session: DroneSession
 @Composable
 fun MaintenanceSection(onOpenImuCalibration: () -> Unit, viewModel: MaintenanceViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    var cgResult by remember { mutableStateOf<Boolean?>(null) }
+    val cgResult by viewModel.centerOfGravityResult.collectAsStateWithLifecycle()
     var editWifi by remember { mutableStateOf(false) }
     LaunchedEffect(state.connected) { if (state.connected) viewModel.refreshWifiName() }
-    LaunchedEffect(viewModel) { viewModel.centerOfGravityResults.collect { cgResult = it } }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (!state.connected) {
@@ -146,7 +158,7 @@ fun MaintenanceSection(onOpenImuCalibration: () -> Unit, viewModel: MaintenanceV
             WifiChangeState.Idle -> Unit
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalButton(onClick = { cgResult = null; viewModel.calibrateCenterOfGravity() }, enabled = state.onGround) {
+            FilledTonalButton(onClick = viewModel::calibrateCenterOfGravity, enabled = state.onGround) {
                 Text(stringResource(R.string.maintenance_cg))
             }
             FilledTonalButton(onClick = onOpenImuCalibration, enabled = state.onGround) {
