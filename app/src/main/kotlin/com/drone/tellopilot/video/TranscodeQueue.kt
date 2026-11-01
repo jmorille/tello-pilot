@@ -145,7 +145,8 @@ class TranscodeQueue @Inject constructor(
 
     private fun enqueue(uris: List<Uri>, overlay: Boolean? = null) {
         synchronized(pending) {
-            uris.forEach { pending[it] = overlay }
+            // A choice made in the gallery is never reset to "as the setting says" by a bulk enqueue.
+            uris.forEach { if (overlay != null || it !in pending) pending[it] = overlay }
             if (worker?.isActive == true) return
             _busy.value = true
             worker = scope.launch { drain() }
@@ -252,19 +253,27 @@ class TranscodeQueue @Inject constructor(
             val bitrate = video.bitrate.takeIf { it > 0 } ?: DEFAULT_SOURCE_BITRATE
             val onProgress: (Float) -> Unit = { p -> _state.update { if (it is TranscodeState.Running) it.copy(progress = p) else it } }
             val overlay = if (overlayChoice ?: pilot.overlayOnTranscode) buildOverlay(video, pilot) else null
-            try {
+            // The overlay must never cost the re-encoding: on a failed export or output check
+            // with it, try again without it.
+            val overlayOk = overlay != null && try {
                 transcoder.transcode(video.uri, tmp, codec, bitrate, overlay, onProgress)
+                transcoder.verify(tmp, codec, video.durationMs).also {
+                    if (!it) Log.w(TAG, "${video.name}: output check failed with overlay, retrying without it")
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // The overlay must never cost the re-encoding: try again without it.
-                if (overlay == null) throw e
                 Log.w(TAG, "${video.name}: transcoding with overlay failed, retrying without it", e)
-                tmp.delete()
-                onProgress(0f)
+                false
+            }
+            if (!overlayOk) {
+                if (overlay != null) {
+                    tmp.delete()
+                    onProgress(0f)
+                }
                 transcoder.transcode(video.uri, tmp, codec, bitrate, null, onProgress)
             }
-            if (!transcoder.verify(tmp, codec, video.durationMs)) {
+            if (!overlayOk && !transcoder.verify(tmp, codec, video.durationMs)) {
                 Log.w(TAG, "${video.name}: output check failed")
                 return Outcome.Failed
             }

@@ -41,8 +41,16 @@ class OverlayTelemetryTest {
         assertEquals(name + 1_200, VideoStartTime.resolve(name, name + 1_200))
         // Scanner replaced it with the end of the recording: the name wins.
         assertEquals(name + VideoStartTime.NAME_ROUNDING_MS, VideoStartTime.resolve(name, name + 60_000))
-        // Before the name (insertion time rounded down, time zone mix-up): the name wins.
-        assertEquals(name + VideoStartTime.NAME_ROUNDING_MS, VideoStartTime.resolve(name, name - 3_600_000))
+        // First frame queued just before the file was created.
+        assertEquals(name - 800, VideoStartTime.resolve(name, name - 800))
+        assertEquals(name + VideoStartTime.NAME_ROUNDING_MS, VideoStartTime.resolve(name, name - 2_000))
+        // Time zone changed since the recording: exact DATE_TAKEN still recognised.
+        assertEquals(name - 3_600_000 + 1_200, VideoStartTime.resolve(name, name - 3_600_000 + 1_200, 60_000))
+        assertEquals(name + 5_400_000 + 300, VideoStartTime.resolve(name, name + 5_400_000 + 300, 60_000))
+        // Shifted match that is the end of a 15 min recording: the name wins.
+        assertEquals(name + VideoStartTime.NAME_ROUNDING_MS, VideoStartTime.resolve(name, name + 900_000 + 500, 900_000))
+        // Not a whole zone offset away: the name wins.
+        assertEquals(name + VideoStartTime.NAME_ROUNDING_MS, VideoStartTime.resolve(name, name - 3_600_000 + 400_000))
         assertEquals(name + VideoStartTime.NAME_ROUNDING_MS, VideoStartTime.resolve(name, null))
         // Not a recorder file: DATE_TAKEN alone, or nothing.
         assertEquals(1234L, VideoStartTime.resolve(null, 1234L))

@@ -16,6 +16,7 @@ import androidx.media3.effect.StaticOverlaySettings
 import androidx.media3.effect.TextureOverlay
 import com.drone.tello.control.Units
 import com.drone.tellopilot.flightlog.FlightLogStore
+import com.drone.tellopilot.flightlog.FlightSampler
 import kotlinx.coroutines.delay
 import java.time.ZoneId
 import java.util.Locale
@@ -39,7 +40,7 @@ class TelemetryOverlayFactory @Inject constructor(private val flights: FlightLog
     suspend fun build(video: DroneVideo, units: Units): TextureOverlay? {
         val zone = ZoneId.systemDefault()
         val nameMs = VideoStartTime.fromName(video.name, zone)
-        val startMs = VideoStartTime.resolve(nameMs, video.dateTakenMs) ?: run {
+        val startMs = VideoStartTime.resolve(nameMs, video.dateTakenMs, video.durationMs) ?: run {
             Log.i(TAG, "${video.name}: start time unknown, no overlay")
             return null
         }
@@ -58,7 +59,8 @@ class TelemetryOverlayFactory @Inject constructor(private val flights: FlightLog
 
     /**
      * Right after landing the flight file stays open for a few seconds (landing tail) and is
-     * not listed yet: wait for it, so the automatic re-encoding gets the whole flight.
+     * not listed yet: wait for it, so the automatic re-encoding gets the whole flight. Link
+     * lost before the landing tail: the recorder only closes it after its no-data timeout.
      */
     private suspend fun awaitClosedFlight() {
         var waited = 0L
@@ -70,7 +72,7 @@ class TelemetryOverlayFactory @Inject constructor(private val flights: FlightLog
 
     private companion object {
         const val TAG = "TelemetryOverlay"
-        const val MAX_FLIGHT_WAIT_MS = 20_000L
+        const val MAX_FLIGHT_WAIT_MS = FlightSampler.NO_DATA_TIMEOUT_MS + FlightSampler.TAIL_MS + 10_000L
         const val POLL_MS = 500L
     }
 }

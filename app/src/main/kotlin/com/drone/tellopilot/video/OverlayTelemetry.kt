@@ -36,6 +36,13 @@ data class TimedSample(val epochMs: Long, val values: OverlayValues)
 object VideoStartTime {
     /** Maximum delay between pressing "record" (file name) and the first key frame (file start). */
     const val MAX_FIRST_FRAME_DELAY_MS = 3_000L
+    /** The first frame may have been queued just before the file (and its name) was created. */
+    const val MAX_FIRST_FRAME_ADVANCE_MS = 1_000L
+    /** Time zone offsets are whole multiples of 15 minutes. */
+    const val ZONE_STEP_MS = 15 * 60_000L
+    const val MAX_ZONE_OFFSET_MS = 14 * 3_600_000L
+    /** DATE_TAKEN this close to the end of the recording is the MP4 creation time, not the start. */
+    const val END_TIME_MARGIN_MS = 5_000L
     /** Without an exact start, the second of the file name is truncated: assume its middle. */
     const val NAME_ROUNDING_MS = 500L
 
@@ -61,12 +68,21 @@ object VideoStartTime {
      * MP4 creation time (written when the file is closed, i.e. the END of the recording) or
      * the insertion time. So DATE_TAKEN is trusted only when it is consistent with the file
      * name (between the "record" press and a few seconds after); otherwise the name is used.
-     * Without a recorder name, DATE_TAKEN is the only (rough) source.
+     * Without a recorder name, DATE_TAKEN is the only (rough) source. The name is local time:
+     * if the time zone changed since the recording, DATE_TAKEN (UTC epoch, exact) is still
+     * recognised when it matches the name up to a whole zone offset.
      */
-    fun resolve(nameMs: Long?, dateTakenMs: Long?): Long? = when {
-        nameMs == null -> dateTakenMs?.takeIf { it > 0 }
-        dateTakenMs != null && dateTakenMs >= nameMs && dateTakenMs - nameMs <= MAX_FIRST_FRAME_DELAY_MS -> dateTakenMs
-        else -> nameMs + NAME_ROUNDING_MS
+    fun resolve(nameMs: Long?, dateTakenMs: Long?, durationMs: Long = 0): Long? {
+        if (nameMs == null) return dateTakenMs?.takeIf { it > 0 }
+        if (dateTakenMs == null || dateTakenMs <= 0) return nameMs + NAME_ROUNDING_MS
+        val diff = dateTakenMs - nameMs
+        val zoneShift = Math.round(diff.toDouble() / ZONE_STEP_MS) * ZONE_STEP_MS
+        val residual = diff - zoneShift
+        val consistent = residual in -MAX_FIRST_FRAME_ADVANCE_MS..MAX_FIRST_FRAME_DELAY_MS &&
+            kotlin.math.abs(zoneShift) <= MAX_ZONE_OFFSET_MS &&
+            // Shifted match that is really the end of the recording (scanner value): reject.
+            (zoneShift == 0L || durationMs <= 0 || kotlin.math.abs(dateTakenMs - (nameMs + durationMs)) > END_TIME_MARGIN_MS)
+        return if (consistent) dateTakenMs else nameMs + NAME_ROUNDING_MS
     }
 }
 
