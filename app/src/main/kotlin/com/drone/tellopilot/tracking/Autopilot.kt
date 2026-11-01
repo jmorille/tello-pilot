@@ -328,7 +328,9 @@ class Autopilot @Inject constructor(
                     is TrackerTick.Tracking -> {
                         if (tick.target == null) box = null
                         publish(token, AutopilotState.Tracking(mode, box))
-                        apply(token, limitTrackingHeight(tick.sticks, controller?.telemetry?.value?.flight?.heightMeters))
+                        // Bubble on but no position yet: hover until one comes (or the timeout aborts).
+                        val sticks = if (geofence != null && !geofence.positionKnown) StickInput.Neutral else tick.sticks
+                        apply(token, limitTrackingHeight(sticks, controller?.telemetry?.value?.flight?.heightMeters))
                     }
                 }
                 delay(TICK_MS)

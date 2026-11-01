@@ -487,7 +487,11 @@ class FlightViewModel @Inject constructor(
                 confirmed { takeoff() }
             }
             FlightAction.Land -> confirmed { land() }
-            FlightAction.ThrowTakeoff -> confirmed { throwTakeoff() }
+            FlightAction.ThrowTakeoff -> {
+                // Motors idling in the hand, then the throw itself: never a shock.
+                safety.suppressImpacts(android.os.SystemClock.elapsedRealtime(), THROW_QUIET_MS)
+                confirmed { throwTakeoff() }
+            }
             FlightAction.PalmLand -> {
                 // Touching the hand is not a shock.
                 safety.suppressImpacts(android.os.SystemClock.elapsedRealtime(), PALM_LAND_QUIET_MS)
@@ -656,6 +660,8 @@ private const val IMPACT_ALERT_MS = 5_000L
 private const val FLIP_QUIET_MS = 3_000L
 /** Palm landing: from the command to the motors stopping on the hand. */
 private const val PALM_LAND_QUIET_MS = 15_000L
+/** Throw takeoff: countdown in the hand (about 5 s), throw, stabilisation, + margin. */
+private const val THROW_QUIET_MS = 15_000L
 private const val ALERT_REPEAT_MS = 30_000L
 /** Stick deflection (touch or pad) that ends an automatic flight. */
 private const val AUTOPILOT_OVERRIDE = 0.25f

@@ -163,6 +163,17 @@ class ImpactDetectorTest {
     }
 
     @Test
+    fun `a late sample followed by an on-time one does not inflate the acceleration`() {
+        val f = Flight()
+        (1..12).forEach { f.feed(S(vn = it * 0.5f, pitch = -25f)) }
+        // Hard brake, 7 m/s² real, but samples received 175 ms then 25 ms apart.
+        f.feed(S(vn = 5.3f, pitch = 25f), stepMs = 175)
+        f.feed(S(vn = 4.6f, pitch = 25f), stepMs = 25)
+        f.feed(S(vn = 3.9f, pitch = 25f), stepMs = 100)
+        assertEquals(emptyList<ImpactKind>(), f.detected)
+    }
+
+    @Test
     fun `samples too far apart are not differentiated`() {
         val f = Flight()
         listOf(0.5f, 1f, 1.5f, 2f).forEach { f.feed(S(vn = it)) }

@@ -126,7 +126,7 @@ class SettingsCodecTest {
             PilotSettings(impactDetection = false),
             PilotSettings(missionNoseFirst = false),
             PilotSettings(missionSpeedLimit = false),
-            PilotSettings(missionMaxSpeed = 0.8f),
+            PilotSettings(missionMaxSpeed = 0.3f),
         )
         variants.forEach { custom ->
             val prefs = mutablePreferencesOf()

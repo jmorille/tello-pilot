@@ -11,9 +11,12 @@ data class GeofenceConfig(
     val warnRatio: Float = 0.8f,
     /** Without a valid position for this long, the position is unknown. */
     val positionTimeoutMs: Long = 1_500,
-    /** Largest believable jump between two positions (plus [maxSpeed] x elapsed time). */
+    /**
+     * Largest believable jump between two positions (plus [maxSpeed] x elapsed time); a gap
+     * longer than [positionTimeoutMs] also makes the position untrustworthy for good.
+     */
     val maxJumpMeters: Float = 1.0f,
-    val maxSpeed: Float = 8f,
+    val maxSpeed: Float = 5f,
 )
 
 enum class FenceStatus {
@@ -33,9 +36,10 @@ enum class FenceStatus {
  * differences to the first position are used: the orientation of the odometry axes does not
  * matter (their scale, assumed to be metres, is not validated in flight yet). Pure, clock-driven.
  *
- * A position jump that the drone cannot have flown (odometry reset, corrupt record) makes
- * the position untrustworthy for the rest of the flight: [FenceStatus.NO_POSITION], never a
- * silent re-anchoring that could hide a real distance.
+ * A position jump that the drone cannot have flown (odometry reset, corrupt record), or a
+ * position coming back after a long gap, makes the position untrustworthy for the rest of the
+ * flight: [FenceStatus.NO_POSITION], never a silent re-anchoring. A reset that lands close to
+ * the last position cannot be told apart from real motion.
  */
 class Geofence(val config: GeofenceConfig) {
     private var startedAt = -1L
@@ -65,8 +69,13 @@ class Geofence(val config: GeofenceConfig) {
             originX = x
             originY = y
         } else {
-            val elapsed = (nowMs - lastValidAt).coerceAtLeast(0) / 1000f
-            if (hypot(x - lastX, y - lastY) > config.maxJumpMeters + config.maxSpeed * elapsed) {
+            val gapMs = (nowMs - lastValidAt).coerceAtLeast(0)
+            val elapsed = gapMs / 1000f
+            // After a long gap, continuity cannot be checked: an odometry restarted from a new
+            // origin would look like a plausible position and hide the real distance.
+            if (gapMs > config.positionTimeoutMs ||
+                hypot(x - lastX, y - lastY) > config.maxJumpMeters + config.maxSpeed * elapsed
+            ) {
                 lost = true
                 distance = null
                 return

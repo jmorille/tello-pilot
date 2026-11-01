@@ -21,6 +21,12 @@ data class ImpactConfig(
     val maxAccel: Float = 10f,
     /** …for a velocity change of at least this much (noise on close samples), m/s. */
     val minDeltaV: Float = 0.7f,
+    /**
+     * Shortest time a velocity change is assumed to take (the log stream runs at about 10 Hz;
+     * sample times are reception times, jittered by the network and the main thread).
+     * With [maxAccel], a change under 1 m/s is never a shock.
+     */
+    val nominalSampleMs: Long = 100,
     /** Samples closer than this are not differentiated (the reference is kept). */
     val minSampleGapMs: Long = 20,
     /** Samples further apart than this are not compared (a link gap is not a shock). */
@@ -142,8 +148,11 @@ class ImpactDetector(val config: ImpactConfig = ImpactConfig()) {
 
         // 3. Velocity shock: a sudden change, then confirmed like the attitude jump (the
         //    velocity of a drone stopped or bounced back by an obstacle does not come back).
+        //    Times are reception times (the records carry no timestamp): a late sample followed
+        //    by an on-time one would shrink dt, so dt never counts as less than a nominal period.
         val dv = velocityChange(ref, s)
-        if (dv >= config.minDeltaV && dv / (dt / 1000f) >= config.maxAccel) shockFrom = ref
+        val seconds = maxOf(dt, config.nominalSampleMs) / 1000f
+        if (dv >= config.minDeltaV && dv / seconds >= config.maxAccel) shockFrom = ref
         return null
     }
 

@@ -15,7 +15,7 @@ class GeofenceTest {
         val f = fence()
         f.onOdometry(12f, -7f, valid = true, nowMs = 0)
         assertEquals(0f, f.distance!!, 1e-4f)
-        f.onOdometry(12f + 3f, -7f - 4f, valid = true, nowMs = 2_000)
+        f.onOdometry(12f + 3f, -7f - 4f, valid = true, nowMs = 1_000)
         assertEquals(5f, f.distance!!, 1e-4f)
     }
 
@@ -28,7 +28,7 @@ class GeofenceTest {
         assertEquals(FenceStatus.INSIDE, f.status(1f, 1_000))
         f.onOdometry(4.1f, 0f, true, 1_100)
         assertEquals(FenceStatus.NEAR, f.status(1f, 1_100))
-        f.onOdometry(0f, 5f, true, 2_000)
+        f.onOdometry(5f, 0.5f, true, 2_000)
         assertEquals(FenceStatus.OUTSIDE, f.status(1f, 2_000))
     }
 
@@ -77,10 +77,19 @@ class GeofenceTest {
     fun `a believable fast move is not a jump`() {
         val f = fence(radius = 30f)
         f.onOdometry(0f, 0f, true, 0)
-        f.onOdometry(1.5f, 0f, true, 200) // 7.5 m/s, fast mode
+        f.onOdometry(1.4f, 0f, true, 200) // 7 m/s, fast mode
         assertTrue(f.positionKnown)
-        f.onOdometry(1.5f, 10f, true, 3_200) // after a 3 s gap
+        f.onOdometry(1.4f, 4f, true, 1_200) // after a 1 s gap
         assertTrue(f.positionKnown)
+    }
+
+    @Test
+    fun `a position coming back after a long gap is not trusted`() {
+        val f = fence(radius = 30f)
+        f.onOdometry(4f, 0f, true, 0)
+        f.onOdometry(0f, 0f, true, 3_000) // odometry restarted from a new origin?
+        assertFalse(f.positionKnown)
+        assertEquals(FenceStatus.NO_POSITION, f.status(1f, 3_000))
     }
 
     @Test

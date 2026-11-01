@@ -107,7 +107,7 @@ data class PilotSettings(
         val JOYSTICK_SIZE_RANGE = 140..280
         val GEOFENCE_RADIUS_RANGE = 2f..30f
         const val GEOFENCE_RADIUS_DEFAULT = 5f
-        val MISSION_SPEED_RANGE = 0.2f..1.0f
+        val MISSION_SPEED_RANGE = 0.2f..0.6f
         const val MISSION_SPEED_DEFAULT = 0.5f
     }
 }

@@ -221,6 +221,6 @@ class MissionSafetyTest {
         val off = PilotSettings(missionNoseFirst = false, missionSpeedLimit = false, geofence = false)
         assertEquals(MissionConfig(), off.missionConfig())
         assertEquals(null, off.geofenceConfig(10))
-        assertEquals(1.0f, PilotSettings(missionMaxSpeed = 9f).missionConfig().maxHorizontalSpeed)
+        assertEquals(0.6f, PilotSettings(missionMaxSpeed = 9f).missionConfig().maxHorizontalSpeed)
     }
 }

@@ -272,7 +272,7 @@ class MissionRunner(
                 geofence.start(nowMs)
                 val c = geofence.config
                 if (mission.plannedMaxDistance() > c.radiusMeters ||
-                    flight.heightMeters + mission.plannedMaxClimb() > c.maxHeightMeters
+                    flight.heightMeters + mission.plannedMaxClimb() > c.maxHeightMeters - CEILING_MARGIN
                 ) {
                     return abort(MissionAbort.GEOFENCE)
                 }
@@ -287,7 +287,9 @@ class MissionRunner(
         }
         if (stepStart < 0) {
             startStep(step, flight, nowMs)
-            if (geofence != null && step is MissionStep.Climb && targetHeight > geofence.config.maxHeightMeters) {
+            if (geofence != null && step is MissionStep.Climb && step.meters > 0f &&
+                targetHeight > geofence.config.maxHeightMeters - CEILING_MARGIN
+            ) {
                 return abort(MissionAbort.GEOFENCE)
             }
         }
@@ -386,16 +388,18 @@ class MissionRunner(
      */
     private fun moveStick(speed: Float): Float {
         val limit = config.maxHorizontalSpeed ?: return config.moveStick
-        val base = (limit * config.stickPerMps).coerceIn(MIN_MOVE_STICK, MAX_MOVE_STICK)
+        // Never above the historical stick: braking distance and timeouts were tuned for it.
+        val base = (limit * config.stickPerMps).coerceIn(MIN_MOVE_STICK, maxOf(MIN_MOVE_STICK, config.moveStick))
         val over = speed - limit
         if (over <= 0f) return base
         return base * (1f - over / config.speedMargin).coerceIn(0f, 1f)
     }
 
     private companion object {
-        /** Below this, the Tello barely moves; above, the "slow" mission is no longer slow. */
+        /** Below this, the Tello barely moves. */
         const val MIN_MOVE_STICK = 0.08f
-        const val MAX_MOVE_STICK = 0.6f
+        /** Margin under the ceiling for a climb target (overshoot of the height loop). */
+        const val CEILING_MARGIN = 0.3f
 
         /** Turn of a nose-first plan, in (-180, 180] degrees. */
         fun normalize(degrees: Float): Float {
