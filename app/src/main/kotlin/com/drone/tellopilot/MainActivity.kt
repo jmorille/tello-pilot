@@ -1,6 +1,13 @@
 package com.drone.tellopilot
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import com.drone.tellopilot.data.DroneSession
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -28,6 +35,26 @@ import dagger.hilt.android.AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     @Inject lateinit var gamepad: GamepadInput
+    @Inject lateinit var session: DroneSession
+
+    /**
+     * Android 17 blocks traffic to the local network (EPERM on every send) for apps targeting
+     * API 37 until ACCESS_LOCAL_NETWORK is granted: ask for it, then reopen the sockets.
+     */
+    private val localNetworkPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            session.reconnect()
+        } else {
+            Toast.makeText(this, R.string.local_network_denied, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun requestLocalNetworkIfNeeded() {
+        if (Build.VERSION.SDK_INT < LOCAL_NETWORK_API) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_LOCAL_NETWORK) != PackageManager.PERMISSION_GRANTED) {
+            localNetworkPermission.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        }
+    }
 
     // Gamepad events are handled before Compose sees them (sticks never wait for a frame).
     // Platform API (Activity.dispatchKeyEvent); lint flags it only because androidx.core's
@@ -52,6 +79,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) requestLocalNetworkIfNeeded()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -85,3 +113,6 @@ private data object Settings
 
 @Serializable
 private data object ImuCalibration
+
+/** First release enforcing the local network permission (Android 17). */
+private const val LOCAL_NETWORK_API = 37

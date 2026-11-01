@@ -139,5 +139,6 @@
     <string name="imu_face_front">sur l\'avant (caméra en bas)</string>
     <string name="imu_face_back">sur l\'arrière</string>
     <string name="imu_face_top">à l\'envers</string>
+    <string name="local_network_denied">Sans l\'autorisation « Réseau local », Tello Pilot ne peut pas joindre le drone. Activez-la dans les paramètres de l\'application.</string>
 </resources>
 

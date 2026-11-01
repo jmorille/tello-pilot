@@ -22,7 +22,10 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -124,12 +127,12 @@ fun FlightScreen(
         }
 
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // Discreet top strip: compact HUD on the left, icon actions on the right. The video
+            // stays clear; only takeoff / land (safety) remain large, at the bottom.
+            Row(verticalAlignment = Alignment.Top) {
                 TopBar(state)
                 Box(Modifier.weight(1f))
-                TextButton(onClick = onOpenSettings, enabled = state.settingsAvailable) {
-                    Text(stringResource(R.string.action_settings))
-                }
+                TopActions(state, onAction, onOpenSettings)
             }
             // The two most severe alerts.
             state.warnings.take(2).forEach {
@@ -171,10 +174,10 @@ private fun statusText(status: ConnectionStatus, video: Boolean) = when (status)
 
 @Composable
 private fun TopBar(state: FlightUiState) {
-    Surface(color = Color.Black.copy(alpha = 0.45f), shape = RoundedCornerShape(12.dp)) {
+    Surface(color = Color.Black.copy(alpha = 0.3f), shape = RoundedCornerShape(10.dp)) {
         Row(
-            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             val statusColor = when (state.status) {
@@ -211,7 +214,68 @@ private fun TopBar(state: FlightUiState) {
 
 @Composable
 private fun HudText(text: String, color: Color = Color.White) {
-    Text(text, color = color, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    Text(text, color = color, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+}
+
+/** Icon actions, top right: small translucent circles that leave the video visible. */
+@Composable
+private fun TopActions(state: FlightUiState, onAction: (FlightAction) -> Unit, onOpenSettings: () -> Unit) {
+    val enabled = state.controlsEnabled
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (state.flying) {
+            HudIcon(R.drawable.ic_palm, R.string.action_palm_land, enabled) { onAction(FlightAction.PalmLand) }
+            if (state.smartVideoRunning) {
+                HudIcon(R.drawable.ic_stop, R.string.action_stop_smart_video, true, tint = Color(0xFFFFA726)) {
+                    onAction(FlightAction.StopSmartVideo)
+                }
+            } else {
+                ModesMenu(state, enabled, onAction)
+            }
+        } else {
+            HudIcon(R.drawable.ic_throw, R.string.action_throw, enabled) { onAction(FlightAction.ThrowTakeoff) }
+        }
+        HudIcon(
+            R.drawable.ic_bolt, R.string.action_fast, true,
+            tint = if (state.fastMode) Color(0xFFFFCA28) else Color.White,
+            selected = state.fastMode,
+        ) { onAction(FlightAction.ToggleFastMode) }
+        HudIcon(R.drawable.ic_photo, R.string.action_photo, enabled && state.photoProgress == null) {
+            onAction(FlightAction.TakePhoto)
+        }
+        val recording = state.recording != RecordingUi.Idle
+        HudIcon(
+            if (recording) R.drawable.ic_stop else R.drawable.ic_videocam,
+            if (recording) R.string.action_stop_recording else R.string.action_record,
+            enabled || recording, // stopping is always possible
+            tint = if (recording) Color(0xFFEF5350) else Color.White,
+            selected = recording,
+        ) { onAction(FlightAction.ToggleRecording) }
+        HudIcon(R.drawable.ic_settings, R.string.action_settings, state.settingsAvailable, onClick = onOpenSettings)
+    }
+}
+
+@Composable
+private fun HudIcon(
+    icon: Int,
+    label: Int,
+    enabled: Boolean,
+    tint: Color = Color.White,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+) {
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.size(44.dp),
+        colors = IconButtonDefaults.iconButtonColors(
+            containerColor = Color.Black.copy(alpha = if (selected) 0.55f else 0.3f),
+            contentColor = tint,
+            disabledContainerColor = Color.Black.copy(alpha = 0.2f),
+            disabledContentColor = Color.White.copy(alpha = 0.35f),
+        ),
+    ) {
+        Icon(painterResource(icon), contentDescription = stringResource(label), modifier = Modifier.size(22.dp))
+    }
 }
 
 @Composable
@@ -246,48 +310,8 @@ private const val MPH_PER_MS = 2.23694f
 @Composable
 private fun ActionPanel(state: FlightUiState, onAction: (FlightAction) -> Unit, modifier: Modifier = Modifier) {
     val enabled = state.controlsEnabled
-    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (state.flying) {
-                FilledTonalButton(onClick = { onAction(FlightAction.PalmLand) }, enabled = enabled) {
-                    Text(stringResource(R.string.action_palm_land))
-                }
-                if (state.smartVideoRunning) {
-                    Button(
-                        onClick = { onAction(FlightAction.StopSmartVideo) },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF57C00)),
-                    ) { Text(stringResource(R.string.action_stop_smart_video)) }
-                } else {
-                    ModesMenu(state, enabled, onAction)
-                }
-            } else {
-                FilledTonalButton(onClick = { onAction(FlightAction.ThrowTakeoff) }, enabled = enabled) {
-                    Text(stringResource(R.string.action_throw))
-                }
-            }
-            FilterChip(
-                selected = state.fastMode,
-                onClick = { onAction(FlightAction.ToggleFastMode) },
-                label = { Text(stringResource(R.string.action_fast)) },
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalButton(onClick = { onAction(FlightAction.TakePhoto) }, enabled = enabled && state.photoProgress == null) {
-                Text(stringResource(R.string.action_photo))
-            }
-            val recording = state.recording != RecordingUi.Idle
-            FilledTonalButton(
-                onClick = { onAction(FlightAction.ToggleRecording) },
-                enabled = enabled || recording, // stopping is always possible
-                colors = if (recording) {
-                    ButtonDefaults.filledTonalButtonColors(containerColor = Color(0xFFD32F2F))
-                } else {
-                    ButtonDefaults.filledTonalButtonColors()
-                },
-            ) {
-                Text(stringResource(if (recording) R.string.action_stop_recording else R.string.action_record))
-            }
-        }
+    // Only the safety-critical takeoff / land stay at the bottom; the rest is in TopActions.
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         // Land is always reachable while flying (last known state), even if the link is lost:
         // the controller sends it best-effort and repeats it until the drone reports landed.
         if (state.flying) {
@@ -314,7 +338,7 @@ private fun ModesMenu(state: FlightUiState, enabled: Boolean, onAction: (FlightA
     var open by remember { mutableStateOf(false) }
     var flipPad by remember { mutableStateOf(false) }
     Box {
-        FilledTonalButton(onClick = { open = true }, enabled = enabled) { Text(stringResource(R.string.action_modes)) }
+        HudIcon(R.drawable.ic_modes, R.string.action_modes, enabled) { open = true }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }, properties = NonFocusablePopup) {
             DropdownMenuItem(text = { Text(stringResource(R.string.mode_flip)) }, onClick = { open = false; flipPad = true })
             DropdownMenuItem(

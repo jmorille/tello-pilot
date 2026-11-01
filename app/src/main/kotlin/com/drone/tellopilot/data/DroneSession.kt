@@ -84,6 +84,11 @@ class DroneSession @Inject constructor(
     val videoActive: StateFlow<Boolean> = _videoActive.asStateFlow()
 
     private val restart = MutableStateFlow(0)
+
+    /** Reopens the sockets (e.g. once the local network permission is granted). */
+    fun reconnect() {
+        restart.value++
+    }
     private val sink = AtomicReference<FrameSink?>(null)
     private val resync = AtomicBoolean(true)
 
@@ -100,11 +105,25 @@ class DroneSession @Inject constructor(
 
     /** Runs until cancelled; follows Wi-Fi changes and reconnects automatically. */
     suspend fun run() {
+        val instance = runs.incrementAndGet()
+        Log.i(TAG, "session run #$instance start (concurrent runs: ${active.incrementAndGet()})")
+        try {
+            runSession()
+        } finally {
+            Log.i(TAG, "session run #$instance end (concurrent runs: ${active.decrementAndGet()})")
+        }
+    }
+
+    private val runs = java.util.concurrent.atomic.AtomicInteger()
+    private val active = java.util.concurrent.atomic.AtomicInteger()
+
+    private suspend fun runSession() {
         val wifiLock = wifi.createLowLatencyLock()
         try {
             wifiLock.acquire()
             combine(wifi.wifiNetwork, restart) { network, _ -> network }.collectLatest { network ->
                 _wifiAvailable.value = network != null
+                Log.i(TAG, "Wi-Fi network: $network")
                 if (network == null) return@collectLatest
                 val sockets = try {
                     withContext(RealtimeThreads.control) { DroneSockets.open(network) }
@@ -116,10 +135,19 @@ class DroneSession @Inject constructor(
                     restart.value++
                     return@collectLatest
                 }
+                Log.i(TAG, "sockets open: ${sockets.stats}")
                 try {
                     val controller = TelloController(sockets)
                     _controller.value = controller
                     coroutineScope {
+                        // Diagnostics: link state changes; traffic counters every 5 s with `setprop log.tag.DroneSession DEBUG`.
+                        launch { controller.link.collect { Log.i(TAG, "link $it (${sockets.stats})") } }
+                        if (Log.isLoggable(TAG, Log.DEBUG)) launch {
+                            while (true) {
+                                delay(5_000)
+                                Log.d(TAG, "traffic: ${sockets.stats}, link ${controller.link.value}")
+                            }
+                        }
                         launch(RealtimeThreads.control) { controller.run() }
                         launch(RealtimeThreads.video) { receiveVideo(sockets, controller) }
                         // Drone settings: stored in the controller, sent on connect and on change.
