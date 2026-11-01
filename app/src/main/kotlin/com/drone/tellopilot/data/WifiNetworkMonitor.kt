@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import java.net.Inet4Address
+import java.net.InetAddress
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -189,21 +190,18 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
         return prefs.getString(KEY_PASSWORD_SEALED, null)?.let(SecretBox::decrypt)
     }
 
-    private fun classify(network: Network, properties: LinkProperties?): WifiState {
-        val addresses = properties?.linkAddresses.orEmpty().map { it.address }.filterIsInstance<Inet4Address>()
-        // No IPv4 yet (DHCP in progress): not usable yet, onLinkPropertiesChanged will follow.
-        if (addresses.isEmpty()) return WifiState.Off
-        val inSubnet = addresses.any { isDroneSubnet(it) }
-        // A home router on 192.168.10.x must not pass for the drone: the drone is the gateway / DHCP server .1.
-        val droneIsServer = properties?.dhcpServerAddress?.hostAddress == DRONE_IP ||
-            properties?.routes.orEmpty().any { it.gateway?.hostAddress == DRONE_IP }
-        return if (inSubnet && droneIsServer) WifiState.Drone(network) else WifiState.OtherNetwork
-    }
-
-    private fun isDroneSubnet(address: Inet4Address): Boolean {
-        val b = address.address
-        return (b[0].toInt() and 0xFF) == 192 && (b[1].toInt() and 0xFF) == 168 && (b[2].toInt() and 0xFF) == 10
-    }
+    private fun classify(network: Network, properties: LinkProperties?): WifiState =
+        when (
+            isDroneWifi(
+                addresses = properties?.linkAddresses.orEmpty().map { it.address },
+                dhcpServer = properties?.dhcpServerAddress,
+                gateways = properties?.routes.orEmpty().map { it.gateway },
+            )
+        ) {
+            null -> WifiState.Off
+            true -> WifiState.Drone(network)
+            false -> WifiState.OtherNetwork
+        }
 
     /**
      * Disables Wi-Fi power save while flying (active only while the app is in the foreground
@@ -217,7 +215,6 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
     private companion object {
         const val TAG = "WifiNetworkMonitor"
         const val DRONE_SSID_PREFIX = "TELLO-"
-        const val DRONE_IP = "192.168.10.1"
         const val PREFS = "drone_wifi"
         const val KEY_SSID = "ssid"
         /** Legacy clear-text key (v0.6.0 / v0.6.1), migrated then removed. */
@@ -225,4 +222,26 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
         const val KEY_PASSWORD_SEALED = "password_sealed"
         const val STALE_REQUEST_MS = 30_000L
     }
+}
+
+private const val DRONE_IP = "192.168.10.1"
+
+/**
+ * Pure part of the Wi-Fi classification (link properties of the current network): `null` = no
+ * IPv4 address yet (DHCP in progress, not usable yet), `true` = the drone's network, `false` =
+ * another one. The Tello access point gives addresses in 192.168.10.0/24 and is itself
+ * 192.168.10.1: a home router on 192.168.10.x must not pass for the drone, so the drone must
+ * also be the DHCP server or a gateway.
+ */
+internal fun isDroneWifi(addresses: List<InetAddress>, dhcpServer: InetAddress?, gateways: List<InetAddress?>): Boolean? {
+    val ipv4 = addresses.filterIsInstance<Inet4Address>()
+    if (ipv4.isEmpty()) return null
+    val inSubnet = ipv4.any { isDroneSubnet(it) }
+    val droneIsServer = dhcpServer?.hostAddress == DRONE_IP || gateways.any { it?.hostAddress == DRONE_IP }
+    return inSubnet && droneIsServer
+}
+
+private fun isDroneSubnet(address: Inet4Address): Boolean {
+    val b = address.address
+    return (b[0].toInt() and 0xFF) == 192 && (b[1].toInt() and 0xFF) == 168 && (b[2].toInt() and 0xFF) == 10
 }

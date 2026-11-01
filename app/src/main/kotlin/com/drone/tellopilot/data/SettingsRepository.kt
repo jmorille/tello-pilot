@@ -44,18 +44,22 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
     /** Never fails: an unreadable store yields the default settings. */
     val settings: Flow<AppSettings> = store.data
         .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
-        .map { AppSettings(readPilot(it), readDrone(it)) }
+        .map { AppSettings(SettingsCodec.readPilot(it), SettingsCodec.readDrone(it)) }
         .distinctUntilChanged()
 
     suspend fun updatePilot(transform: (PilotSettings) -> PilotSettings) {
-        store.edit { p -> writePilot(p, transform(readPilot(p))) }
+        store.edit { p -> SettingsCodec.writePilot(p, transform(SettingsCodec.readPilot(p))) }
     }
 
     suspend fun updateDrone(transform: (DroneSettings) -> DroneSettings) {
-        store.edit { p -> writeDrone(p, transform(readDrone(p)).sanitized()) }
+        store.edit { p -> SettingsCodec.writeDrone(p, transform(SettingsCodec.readDrone(p)).sanitized()) }
     }
+}
 
-    private fun readPilot(p: Preferences): PilotSettings {
+/** Mapping between the settings and their DataStore preferences (pure, no I/O). */
+internal object SettingsCodec {
+
+    fun readPilot(p: Preferences): PilotSettings {
         val d = PilotSettings()
         return PilotSettings(
             stickMode = p[STICK_MODE].toEnum(d.stickMode),
@@ -80,7 +84,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         )
     }
 
-    private fun writePilot(p: MutablePreferences, s: PilotSettings) {
+    fun writePilot(p: MutablePreferences, s: PilotSettings) {
         p[STICK_MODE] = s.stickMode.name
         p[DEAD_ZONE] = s.deadZone
         p[TRIPOD_SCALE] = s.tripodScale
@@ -101,7 +105,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         p[TRACKING_TARGET] = s.trackingTarget.name
     }
 
-    private fun readDrone(p: Preferences): DroneSettings {
+    fun readDrone(p: Preferences): DroneSettings {
         val d = DroneSettings()
         return DroneSettings(
             maxAltitudeMeters = p[MAX_ALTITUDE] ?: d.maxAltitudeMeters,
@@ -111,7 +115,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         ).sanitized()
     }
 
-    private fun writeDrone(p: MutablePreferences, s: DroneSettings) {
+    fun writeDrone(p: MutablePreferences, s: DroneSettings) {
         p[MAX_ALTITUDE] = s.maxAltitudeMeters
         p[LOW_BATTERY] = s.lowBatteryPercent
         p[EXPOSURE] = s.exposureSteps
@@ -121,28 +125,26 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
     private inline fun <reified E : Enum<E>> String?.toEnum(default: E): E =
         this?.let { name -> enumValues<E>().firstOrNull { it.name == name } } ?: default
 
-    private companion object {
-        val STICK_MODE = stringPreferencesKey("stick_mode")
-        val DEAD_ZONE = floatPreferencesKey("dead_zone")
-        val TRIPOD_SCALE = floatPreferencesKey("tripod_scale")
-        val EXPO = floatPreferencesKey("expo")
-        val JOYSTICK_SIZE = intPreferencesKey("joystick_size_dp")
-        val UNITS = stringPreferencesKey("units")
-        val CONFIRM_TAKEOFF = booleanPreferencesKey("confirm_takeoff")
-        val AUTO_RECORD = booleanPreferencesKey("auto_record")
-        val PAD_BINDINGS = stringPreferencesKey("pad_bindings")
-        val VIDEO_SHARPEN = booleanPreferencesKey("video_sharpen")
-        val VIDEO_FIT = stringPreferencesKey("video_fit")
-        val HIDDEN_HUD = androidx.datastore.preferences.core.stringSetPreferencesKey("hidden_hud")
-        val HIDE_STICKS_WITH_PAD = booleanPreferencesKey("hide_sticks_with_pad")
-        val AUTO_TRANSCODE = booleanPreferencesKey("auto_transcode")
-        val TRANSCODE_CODEC = stringPreferencesKey("transcode_codec")
-        val KEEP_ORIGINAL = booleanPreferencesKey("keep_original")
-        val CUSTOM_MISSIONS = stringPreferencesKey("custom_missions")
-        val TRACKING_TARGET = stringPreferencesKey("tracking_target")
-        val MAX_ALTITUDE = intPreferencesKey("max_altitude_m")
-        val LOW_BATTERY = intPreferencesKey("low_battery_percent")
-        val EXPOSURE = intPreferencesKey("exposure_steps")
-        val BITRATE = stringPreferencesKey("bitrate")
-    }
+    private val STICK_MODE = stringPreferencesKey("stick_mode")
+    private val DEAD_ZONE = floatPreferencesKey("dead_zone")
+    private val TRIPOD_SCALE = floatPreferencesKey("tripod_scale")
+    private val EXPO = floatPreferencesKey("expo")
+    private val JOYSTICK_SIZE = intPreferencesKey("joystick_size_dp")
+    private val UNITS = stringPreferencesKey("units")
+    private val CONFIRM_TAKEOFF = booleanPreferencesKey("confirm_takeoff")
+    private val AUTO_RECORD = booleanPreferencesKey("auto_record")
+    private val PAD_BINDINGS = stringPreferencesKey("pad_bindings")
+    private val VIDEO_SHARPEN = booleanPreferencesKey("video_sharpen")
+    private val VIDEO_FIT = stringPreferencesKey("video_fit")
+    private val HIDDEN_HUD = androidx.datastore.preferences.core.stringSetPreferencesKey("hidden_hud")
+    private val HIDE_STICKS_WITH_PAD = booleanPreferencesKey("hide_sticks_with_pad")
+    private val AUTO_TRANSCODE = booleanPreferencesKey("auto_transcode")
+    private val TRANSCODE_CODEC = stringPreferencesKey("transcode_codec")
+    private val KEEP_ORIGINAL = booleanPreferencesKey("keep_original")
+    private val CUSTOM_MISSIONS = stringPreferencesKey("custom_missions")
+    private val TRACKING_TARGET = stringPreferencesKey("tracking_target")
+    private val MAX_ALTITUDE = intPreferencesKey("max_altitude_m")
+    private val LOW_BATTERY = intPreferencesKey("low_battery_percent")
+    private val EXPOSURE = intPreferencesKey("exposure_steps")
+    private val BITRATE = stringPreferencesKey("bitrate")
 }

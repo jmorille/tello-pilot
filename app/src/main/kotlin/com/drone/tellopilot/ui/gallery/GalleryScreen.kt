@@ -167,12 +167,7 @@ class GalleryViewModel @Inject constructor(
             extractor.setDataSource(context, uri, null)
             val mime = (0 until extractor.trackCount).map { extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME) }
                 .firstOrNull { it?.startsWith("video/") == true }
-            when (mime) {
-                MediaFormat.MIMETYPE_VIDEO_AVC -> "H.264"
-                MediaFormat.MIMETYPE_VIDEO_HEVC -> "HEVC"
-                MediaFormat.MIMETYPE_VIDEO_AV1 -> "AV1"
-                else -> mime?.removePrefix("video/")?.uppercase()
-            }
+            codecLabel(mime)
         } finally {
             extractor.release()
         }
@@ -324,6 +319,14 @@ private fun GalleryCard(
             }
         }
     }
+}
+
+/** Short codec name shown on a video card ("H.264", "HEVC", "AV1"...), from its MIME type. */
+internal fun codecLabel(mime: String?): String? = when (mime) {
+    MediaFormat.MIMETYPE_VIDEO_AVC -> "H.264"
+    MediaFormat.MIMETYPE_VIDEO_HEVC -> "HEVC"
+    MediaFormat.MIMETYPE_VIDEO_AV1 -> "AV1"
+    else -> mime?.removePrefix("video/")?.uppercase()
 }
 
 private fun mimeOf(item: GalleryItem) = if (item.video) "video/mp4" else "image/jpeg"
