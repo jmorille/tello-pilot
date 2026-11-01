@@ -739,7 +739,6 @@ private fun hintOf(label: Int): Int = when (label) {
     R.string.action_throw -> R.string.hint_throw
     R.string.action_modes -> R.string.hint_modes
     R.string.action_autopilot -> R.string.hint_autopilot
-    R.string.autopilot_tracking -> R.string.hint_tracking
     R.string.action_record -> R.string.hint_record
     R.string.action_photo -> R.string.hint_photo
     R.string.action_gallery -> R.string.hint_gallery
