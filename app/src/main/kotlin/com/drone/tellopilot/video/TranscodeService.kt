@@ -20,7 +20,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -109,37 +112,52 @@ class TranscodeService : Service() {
         super.onDestroy()
     }
 
-    /** Updates the notification with the queue's progress (at most once a second). */
+    /**
+     * Mirrors the queue's [TranscodeQueue.board] in the notification: step, progress, stalled,
+     * paused. At most one update a second, but the latest state always ends up shown (conflate:
+     * a dropped intermediate value can no longer leave a stale percentage on screen).
+     */
     private suspend fun showProgress() {
         val manager = androidx.core.app.NotificationManagerCompat.from(this)
-        var last = 0L
-        queue.state.collect { state ->
-            val running = state as? TranscodeState.Running ?: return@collect
-            val now = android.os.SystemClock.elapsedRealtime()
-            if (now - last < PROGRESS_UPDATE_MS && !running.paused) return@collect
-            last = now
-            if (!manager.areNotificationsEnabled()) return@collect
-            val text = if (running.paused) {
-                getString(R.string.transcode_paused, running.index, running.total, running.name)
-            } else {
-                getString(R.string.transcode_running, running.index, running.total, running.name, (running.progress * 100).toInt())
+        queue.board.map { content(it) }.distinctUntilChanged().conflate().collect { (text, progress) ->
+            if (manager.areNotificationsEnabled()) {
+                try {
+                    manager.notify(NOTIFICATION_ID, notification(text, progress))
+                } catch (_: SecurityException) {
+                    // Permission revoked meanwhile: the service keeps working without updates.
+                }
             }
-            try {
-                manager.notify(NOTIFICATION_ID, notification(text, if (running.paused) null else running.progress))
-            } catch (_: SecurityException) {
-                // Permission revoked meanwhile: the service keeps working without updates.
-            }
+            delay(PROGRESS_UPDATE_MS)
         }
+    }
+
+    /** Notification text and progress (null: none) of [board]; the generic text between two videos. */
+    private fun content(board: TranscodeBoard): Pair<String, Int?> {
+        val active = board.active ?: return getString(R.string.transcode_notification_text) to null
+        val waiting = board.queued.size
+        val percent = (active.progress * 100).toInt()
+        val text = when {
+            active.paused -> getString(R.string.transcode_notif_paused, active.name, waiting)
+            active.stalled -> getString(R.string.transcode_notif_stalled, active.name, percent, waiting)
+            active.stage == TranscodeStage.WAITING_FLIGHT_LOG -> getString(R.string.transcode_notif_waiting_log, active.name, waiting)
+            active.stage == TranscodeStage.VERIFYING -> getString(R.string.transcode_notif_verifying, active.name, waiting)
+            active.stage == TranscodeStage.PUBLISHING -> getString(R.string.transcode_notif_publishing, active.name, waiting)
+            else -> getString(R.string.transcode_notif_running, active.name, percent, waiting)
+        }
+        val progress = if (active.paused || active.stage != TranscodeStage.EXPORTING) null else percent
+        return text to progress
     }
 
     private fun notification(
         text: String = getString(R.string.transcode_notification_text),
-        progress: Float? = null,
+        progress: Int? = null,
     ) = NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_videocam)
         .setContentTitle(getString(R.string.transcode_notification_title))
         .setContentText(text)
-        .apply { progress?.let { setProgress(100, (it * 100).toInt(), false) } }
+        .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+        .apply { progress?.let { setProgress(100, it, false) } }
+        .setContentIntent(openGallery())
         .setOnlyAlertOnce(true)
         .setOngoing(true)
         .setSilent(true)
@@ -150,6 +168,14 @@ class TranscodeService : Service() {
                 NotificationChannel(CHANNEL_ID, getString(R.string.transcode_channel), NotificationManager.IMPORTANCE_LOW),
             )
         }
+
+    /** Tapping the notification brings the app back (the queue is followed from the gallery). */
+    private fun openGallery(): android.app.PendingIntent? = packageManager.getLaunchIntentForPackage(packageName)?.let {
+        android.app.PendingIntent.getActivity(
+            this, 0, it.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
 
     companion object {
         private const val TAG = "Transcode"

@@ -49,6 +49,9 @@ class TranscodeQueueTest {
         var exportMs = 1_000L
         var outputBytes = 400L
         var failWithOverlay = false
+        var overlayError: Exception = IllegalStateException("GL error")
+        var plainError: Exception? = null
+        var onExportEnd: () -> Unit = {}
         var verifyWithOverlay = true
         var verifyPlain = true
         val overlay: TextureOverlay = mockk(relaxed = true)
@@ -60,20 +63,23 @@ class TranscodeQueueTest {
             coEvery { library.list() } answers { videos.values.toList() }
             coEvery { library.publish(any(), any(), any()) } answers { published += secondArg<DroneVideo>(); mockk() }
             coEvery { library.delete(any()) } answers { deleted += firstArg<Uri>(); true }
+            coEvery { library.recoverOrphans(any()) } returns emptyList()
         }
         val transcoder: VideoTranscoder = mockk {
             every { isSupported(any()) } returns true
-            coEvery { transcode(any(), any(), any(), any(), any(), any()) } coAnswers {
+            coEvery { transcode(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
                 val withOverlay = arg<TextureOverlay?>(4)
                 exports += withOverlay
-                arg<(Float) -> Unit>(5)(0.5f)
+                arg<(Float) -> Unit>(6)(0.5f)
                 delay(exportMs)
-                if (withOverlay != null && failWithOverlay) throw IllegalStateException("GL error")
+                if (withOverlay != null && failWithOverlay) throw overlayError
+                if (withOverlay == null) plainError?.let { throw it }
+                onExportEnd()
                 arg<File>(1).writeBytes(ByteArray(outputBytes.toInt()))
             }
             coEvery { verify(any(), any(), any()) } answers { if (exports.last() != null) verifyWithOverlay else verifyPlain }
         }
-        val overlays: TelemetryOverlayFactory = mockk { coEvery { build(any(), any()) } returns overlay }
+        val overlays: TelemetryOverlayFactory = mockk { coEvery { build(any(), any(), any()) } returns TelemetryOverlayFactory.Built(overlay, OverlayStatus.ACTIVE) }
         val context: Context = object : ContextWrapper(null) {
             override fun getCacheDir(): File = tmp.root
             override fun startForegroundService(service: android.content.Intent?) = null
@@ -242,7 +248,7 @@ class TranscodeQueueTest {
 
     @Test
     fun `overlay unavailable - plain re-encoding`() = test {
-        coEvery { overlays.build(any(), any()) } throws IllegalStateException("no flight log")
+        coEvery { overlays.build(any(), any(), any()) } throws IllegalStateException("no flight log")
         val q = queue()
         q.enqueueVideo(video().uri, overlay = true)
         scope.advanceTimeBy(2_000)
@@ -373,5 +379,129 @@ class TranscodeQueueTest {
         scope.advanceTimeBy(2_000)
         assertEquals(1, exports.size)
         assertEquals(1, published.size)
+    }
+
+    // ------------------------------------------------- follow-up board
+
+    @Test
+    fun `board - active video with step and progress, then listed as converted`() = test {
+        val q = queue()
+        val v = video(size = 1_000)
+        q.enqueueVideo(v.uri, overlay = false)
+        scope.runCurrent()
+        val active = q.board.value.active!!
+        assertEquals(v.name, active.name)
+        assertEquals(TranscodeStage.EXPORTING, active.stage)
+        assertEquals(OverlayStatus.OFF, active.overlay)
+        assertEquals(0.5f, active.progress, 0f)
+        scope.advanceTimeBy(2_000)
+        val done = q.board.value.finished.single()
+        assertEquals(FinishedOutcome.Converted(400, true), done.outcome)
+        assertEquals(1_000L, done.beforeBytes)
+        assertTrue(q.board.value.isIdle)
+    }
+
+    @Test
+    fun `board - a stalled export with overlay is redone without it`() = test {
+        val q = queue()
+        failWithOverlay = true
+        overlayError = TranscodeStalledException(120_000)
+        q.enqueueVideo(video().uri, overlay = true)
+        scope.advanceTimeBy(5_000)
+        assertEquals(listOf(overlay, null), exports)
+        val done = q.board.value.finished.single()
+        assertEquals(OverlayStatus.DROPPED, done.overlay)
+        assertTrue(done.outcome is FinishedOutcome.Converted)
+        assertFalse(q.busy.value)
+    }
+
+    @Test
+    fun `board - a stalled plain export fails cleanly and the queue goes on`() = test {
+        val q = queue()
+        plainError = TranscodeStalledException(120_000)
+        q.enqueueVideo(video("tello_1.mp4").uri, overlay = false)
+        q.enqueueVideo(video("tello_2.mp4").uri, overlay = false)
+        scope.advanceTimeBy(5_000)
+        assertEquals(
+            listOf(FailReason.STALLED, FailReason.STALLED),
+            q.board.value.finished.map { (it.outcome as FinishedOutcome.Failed).reason },
+        )
+        assertFalse(q.busy.value)
+        assertEquals(TranscodeState.Done(0, 0, 2, 0), q.state.value)
+    }
+
+    @Test
+    fun `board - original deleted during the export - the copy is not published`() = test {
+        val q = queue()
+        val v = video()
+        onExportEnd = { videos.remove(v.uri) }
+        q.enqueueVideo(v.uri, overlay = false)
+        scope.advanceTimeBy(2_000)
+        assertTrue(published.isEmpty())
+        assertEquals(FailReason.SOURCE_MISSING, (q.board.value.finished.single().outcome as FinishedOutcome.Failed).reason)
+    }
+
+    @Test
+    fun `board - a video gone before its turn is reported`() = test {
+        val q = queue()
+        val gone: Uri = mockk(relaxed = true)
+        q.enqueueVideo(gone)
+        scope.advanceTimeBy(1_000)
+        assertEquals(FailReason.SOURCE_MISSING, (q.board.value.finished.single().outcome as FinishedOutcome.Failed).reason)
+    }
+
+    @Test
+    fun `board - cancel the current video, remove a waiting one, retry the cancelled one`() = test {
+        val q = queue()
+        val a = video("tello_1.mp4")
+        val b = video("tello_2.mp4")
+        val c = video("tello_3.mp4")
+        q.enqueueVideo(a.uri, overlay = false)
+        q.enqueueVideo(b.uri, overlay = false)
+        q.enqueueVideo(c.uri, overlay = false)
+        scope.runCurrent()
+        assertEquals(a.name, q.board.value.active?.name)
+        assertEquals(2, q.board.value.queued.size)
+        q.remove(b.uri.toString())
+        q.cancelCurrent()
+        scope.advanceTimeBy(3_000)
+        val cancelled = q.board.value.finished.first { it.id == a.uri.toString() }
+        assertEquals(FailReason.CANCELLED, (cancelled.outcome as FinishedOutcome.Failed).reason)
+        assertEquals(listOf(c), published) // b removed, a cancelled
+        q.retry(a.uri.toString())
+        scope.advanceTimeBy(3_000)
+        assertEquals(listOf(c, a), published)
+        assertFalse(q.busy.value)
+    }
+
+    @Test
+    fun `board - the last video cancelled then retried is really redone`() = test {
+        val q = queue()
+        val a = video()
+        q.enqueueVideo(a.uri, overlay = false)
+        scope.runCurrent()
+        q.cancelCurrent()
+        scope.advanceTimeBy(2_000)
+        assertFalse(q.busy.value)
+        q.retry(a.uri.toString())
+        scope.advanceTimeBy(3_000)
+        assertEquals(listOf(a), published)
+        assertTrue(q.board.value.finished.single().outcome is FinishedOutcome.Converted)
+    }
+
+    @Test
+    fun `board - takeoff puts the video back in the queue, shown paused`() = test {
+        val q = queue()
+        val v = video()
+        q.enqueueVideo(v.uri, overlay = false)
+        scope.advanceTimeBy(500)
+        q.setFlying(this, true)
+        scope.advanceTimeBy(500)
+        val active = q.board.value.active!!
+        assertTrue(active.paused)
+        assertEquals(v.name, active.name)
+        q.setFlying(this, false)
+        scope.advanceTimeBy(3_000)
+        assertEquals(listOf(v), published)
     }
 }

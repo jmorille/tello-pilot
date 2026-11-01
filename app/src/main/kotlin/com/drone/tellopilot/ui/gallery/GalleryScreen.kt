@@ -64,6 +64,7 @@ import androidx.lifecycle.viewModelScope
 import com.drone.tellopilot.R
 import com.drone.tellopilot.data.DroneSession
 import com.drone.tellopilot.data.SettingsRepository
+import com.drone.tellopilot.video.TranscodeBoard
 import com.drone.tellopilot.video.TranscodeQueue
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -121,6 +122,9 @@ class GalleryViewModel @Inject constructor(
     }
 
     fun reencode(item: GalleryItem, overlay: Boolean) = transcodeQueue.enqueueVideo(item.uri, overlay)
+
+    /** Re-encoding queue, summarised at the top of the gallery. */
+    val transcodes: StateFlow<TranscodeBoard> = transcodeQueue.board
 
     suspend fun thumbnail(uri: Uri): Bitmap? = thumbnails.get(uri) ?: withContext(Dispatchers.IO) {
         runCatching { context.contentResolver.loadThumbnail(uri, Size(THUMB_W, THUMB_H), null) }.getOrNull()
@@ -189,11 +193,19 @@ class GalleryViewModel @Inject constructor(
 }
 
 @Composable
-fun GalleryRoute(onBack: () -> Unit, onOpenFlights: () -> Unit, viewModel: GalleryViewModel = hiltViewModel()) {
+fun GalleryRoute(
+    onBack: () -> Unit,
+    onOpenFlights: () -> Unit,
+    onOpenTranscodes: () -> Unit,
+    viewModel: GalleryViewModel = hiltViewModel(),
+) {
     val items by viewModel.items.collectAsStateWithLifecycle()
     val flying by viewModel.flying.collectAsStateWithLifecycle()
     val overlayDefault by viewModel.overlayDefault.collectAsStateWithLifecycle()
+    val transcodes by viewModel.transcodes.collectAsStateWithLifecycle()
     LaunchedEffect(flying) { if (flying) onBack() }
+    // A re-encoding just finished: its copy (or the original's deletion) shows up at once.
+    LaunchedEffect(transcodes.finished.firstOrNull()) { viewModel.refresh() }
     // Back from the viewer / a deletion: the list may have changed.
     LifecycleResumeEffect(Unit) {
         viewModel.refresh()
@@ -204,7 +216,9 @@ fun GalleryRoute(onBack: () -> Unit, onOpenFlights: () -> Unit, viewModel: Galle
         GalleryScreen(items, onBack, viewModel::thumbnail, overlayDefault, reencode = { item, overlay ->
             viewModel.reencode(item, overlay)
             android.widget.Toast.makeText(context, R.string.gallery_reencode_started, android.widget.Toast.LENGTH_SHORT).show()
-        }, refresh = viewModel::refresh, onOpenFlights = onOpenFlights)
+        }, refresh = viewModel::refresh, onOpenFlights = onOpenFlights) {
+            TranscodeQueueSummary(transcodes, onOpenTranscodes)
+        }
     }
 }
 
@@ -217,6 +231,7 @@ private fun GalleryScreen(
     reencode: (GalleryItem, overlay: Boolean) -> Unit,
     refresh: () -> Unit,
     onOpenFlights: () -> Unit,
+    queueSummary: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
     var filter by remember { mutableStateOf(GalleryFilter.ALL) }
@@ -256,6 +271,7 @@ private fun GalleryScreen(
             // Flight logs and statistics (ground-only screen, like the gallery itself).
             TextButton(onClick = onOpenFlights) { Text(stringResource(R.string.gallery_flights)) }
         }
+        queueSummary()
         when {
             items == null -> Unit
             shown.isEmpty() -> Text(

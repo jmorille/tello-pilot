@@ -36,25 +36,44 @@ import kotlin.math.max
 @Singleton
 class TelemetryOverlayFactory @Inject constructor(private val flights: FlightLogStore) {
 
+    /** Overlay of one video ([overlay] null: plain re-encoding) and why ([status]). */
     @OptIn(UnstableApi::class)
-    suspend fun build(video: DroneVideo, units: Units): TextureOverlay? {
+    class Built(val overlay: TextureOverlay?, val status: OverlayStatus)
+
+    /** [onWaitingFlightLog]: called once if the flight file is still open (landing tail). */
+    @OptIn(UnstableApi::class)
+    suspend fun build(video: DroneVideo, units: Units, onWaitingFlightLog: () -> Unit = {}): Built {
         val zone = ZoneId.systemDefault()
         val nameMs = VideoStartTime.fromName(video.name, zone)
-        val startMs = VideoStartTime.resolve(nameMs, video.dateTakenMs, video.durationMs) ?: run {
-            Log.i(TAG, "${video.name}: start time unknown, no overlay")
-            return null
+        val start = VideoStartTime.resolveDetailed(nameMs, video.dateTakenMs, video.durationMs) ?: run {
+            Log.i(TAG, "${video.name}: overlay OFF, start time unknown (name=$nameMs, taken=${video.dateTakenMs})")
+            return Built(null, OverlayStatus.NO_START_TIME)
         }
-        awaitClosedFlight()
-        val endMs = startMs + video.durationMs
-        val ranges = flights.list().map { FlightLogMatch.Range(it.id, it.startEpochMs, it.summary.durationMs) }
-        val logs = FlightLogMatch.overlapping(ranges, startMs, endMs).mapNotNull { flights.load(it) }
-        val track = OverlayTrack.of(logs)
         Log.i(
             TAG,
-            "${video.name}: start=$startMs (name=$nameMs, taken=${video.dateTakenMs}), ${logs.size} flight log(s)" +
-                if (track.isEmpty) ", time only" else "",
+            "${video.name}: start=${start.epochMs} from ${start.source} (name=$nameMs, taken=${video.dateTakenMs}, " +
+                "duration=${video.durationMs} ms)",
         )
-        return TelemetryBitmapOverlay(track, startMs, units, zone, Locale.getDefault())
+        if (flights.activeId != null) {
+            Log.i(TAG, "${video.name}: flight log ${flights.activeId} still open, waiting for it")
+            onWaitingFlightLog()
+            awaitClosedFlight()
+        }
+        val endMs = start.epochMs + video.durationMs
+        val entries = flights.list()
+        val ranges = entries.map { FlightLogMatch.Range(it.id, it.startEpochMs, it.summary.durationMs) }
+        val ids = FlightLogMatch.overlapping(ranges, start.epochMs, endMs)
+        val logs = ids.mapNotNull { flights.load(it) }
+        val track = OverlayTrack.of(logs)
+        val covered = track.countBetween(start.epochMs, endMs)
+        Log.i(
+            TAG,
+            "${video.name}: ${entries.size} flight log(s) on file, overlapping=$ids, loaded=${logs.size}, " +
+                "samples=${track.size} (in the video: $covered)",
+        )
+        val status = if (covered == 0) OverlayStatus.TIME_ONLY else OverlayStatus.ACTIVE
+        Log.i(TAG, "${video.name}: overlay ON, $status")
+        return Built(TelemetryBitmapOverlay(track, start.epochMs, units, zone, Locale.getDefault()), status)
     }
 
     /**
@@ -68,6 +87,7 @@ class TelemetryOverlayFactory @Inject constructor(private val flights: FlightLog
             delay(POLL_MS)
             waited += POLL_MS
         }
+        if (flights.activeId != null) Log.w(TAG, "flight log still open after $waited ms, going on without it")
     }
 
     private companion object {
@@ -118,7 +138,11 @@ class TelemetryBitmapOverlay(
     override fun getBitmap(presentationTimeUs: Long): Bitmap {
         val epochMs = startEpochMs + presentationTimeUs / 1_000
         val lines = OverlayText.lines(epochMs, track.at(epochMs), units, zone, locale)
-        val current = bitmap ?: createBitmap().also { bitmap = it }
+        val current = bitmap ?: createBitmap().also {
+            bitmap = it
+            // Proof that Media3 really draws the overlay (and with which geometry).
+            Log.i(OVERLAY_TAG, "overlay drawn: frame ${frameWidth}x$frameHeight, box ${it.width}x${it.height}, first t=$presentationTimeUs us")
+        }
         if (lines != lastLines) {
             draw(current, lines)
             lastLines = lines
@@ -166,6 +190,7 @@ class TelemetryBitmapOverlay(
     }
 
     private companion object {
+        const val OVERLAY_TAG = "TelemetryOverlay"
         const val DEFAULT_WIDTH = 960
         const val DEFAULT_HEIGHT = 720
         const val TEXT_RATIO = 0.032f
