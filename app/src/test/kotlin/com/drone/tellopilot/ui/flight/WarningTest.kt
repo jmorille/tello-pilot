@@ -132,7 +132,7 @@ class WarningTest {
     @Test
     fun `always shown warnings are the critical ones plus those that matter in flight`() {
         val expected = Warning.entries.filter { it.critical }.toSet() +
-            setOf(Warning.BATTERY_LOW, Warning.NO_POSITIONING, Warning.WIFI_INTERFERENCE)
+            setOf(Warning.BATTERY_LOW, Warning.NO_POSITIONING, Warning.WIFI_INTERFERENCE, Warning.GEOFENCE_OUT, Warning.GEOFENCE_NEAR)
         assertEquals(expected, Warning.entries.filter { it.alwaysShown }.toSet())
         assertFalse(Warning.WIND.alwaysShown)
         assertFalse(Warning.PHONE_HOT.alwaysShown)

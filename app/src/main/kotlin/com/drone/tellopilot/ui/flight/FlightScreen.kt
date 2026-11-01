@@ -433,6 +433,9 @@ private fun HudIcon(
 private fun WarningBanner(warning: Warning, motorErrorCode: Int, modifier: Modifier = Modifier) {
     val text = when (warning) {
         Warning.BATTERY_CRITICAL -> stringResource(R.string.warning_battery_critical)
+        Warning.IMPACT -> stringResource(R.string.warning_impact)
+        Warning.GEOFENCE_OUT -> stringResource(R.string.warning_geofence_out)
+        Warning.GEOFENCE_NEAR -> stringResource(R.string.warning_geofence_near)
         Warning.OVERHEATING -> stringResource(R.string.warning_overheating)
         Warning.SENSOR_ERROR -> stringResource(R.string.warning_sensor_error)
         Warning.WIFI_INTERFERENCE -> stringResource(R.string.warning_wifi_interference)
@@ -662,6 +665,8 @@ private fun autopilotEndText(end: com.drone.tellopilot.tracking.AutopilotEnd) = 
         com.drone.tello.control.MissionAbort.LOW_BATTERY -> R.string.autopilot_abort_battery
         com.drone.tello.control.MissionAbort.NO_POSITIONING -> R.string.autopilot_abort_positioning
         com.drone.tello.control.MissionAbort.STEP_TIMEOUT -> R.string.autopilot_abort_timeout
+        com.drone.tello.control.MissionAbort.GEOFENCE -> R.string.autopilot_abort_geofence
+        com.drone.tello.control.MissionAbort.IMPACT -> R.string.autopilot_abort_impact
     }
 }
 

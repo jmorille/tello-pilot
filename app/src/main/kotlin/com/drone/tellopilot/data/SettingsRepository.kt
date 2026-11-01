@@ -85,6 +85,17 @@ internal object SettingsCodec {
             overlayOnTranscode = p[OVERLAY_ON_TRANSCODE] ?: d.overlayOnTranscode,
             customMissions = p[CUSTOM_MISSIONS].orEmpty().lines().mapNotNull { com.drone.tello.control.Mission.decode(it) },
             trackingTarget = p[TRACKING_TARGET].toEnum(d.trackingTarget),
+            geofence = p[GEOFENCE] ?: d.geofence,
+            geofenceRadius = (p[GEOFENCE_RADIUS] ?: d.geofenceRadius).let {
+                if (it.isFinite()) it.coerceIn(PilotSettings.GEOFENCE_RADIUS_RANGE) else d.geofenceRadius
+            },
+            geofenceManualAlert = p[GEOFENCE_MANUAL_ALERT] ?: d.geofenceManualAlert,
+            impactDetection = p[IMPACT_DETECTION] ?: d.impactDetection,
+            missionNoseFirst = p[MISSION_NOSE_FIRST] ?: d.missionNoseFirst,
+            missionSpeedLimit = p[MISSION_SPEED_LIMIT] ?: d.missionSpeedLimit,
+            missionMaxSpeed = (p[MISSION_MAX_SPEED] ?: d.missionMaxSpeed).let {
+                if (it.isFinite()) it.coerceIn(PilotSettings.MISSION_SPEED_RANGE) else d.missionMaxSpeed
+            },
         )
     }
 
@@ -109,6 +120,13 @@ internal object SettingsCodec {
         p[OVERLAY_ON_TRANSCODE] = s.overlayOnTranscode
         p[CUSTOM_MISSIONS] = s.customMissions.joinToString("\n") { it.encode() }
         p[TRACKING_TARGET] = s.trackingTarget.name
+        p[GEOFENCE] = s.geofence
+        p[GEOFENCE_RADIUS] = s.geofenceRadius
+        p[GEOFENCE_MANUAL_ALERT] = s.geofenceManualAlert
+        p[IMPACT_DETECTION] = s.impactDetection
+        p[MISSION_NOSE_FIRST] = s.missionNoseFirst
+        p[MISSION_SPEED_LIMIT] = s.missionSpeedLimit
+        p[MISSION_MAX_SPEED] = s.missionMaxSpeed
     }
 
     fun readDrone(p: Preferences): DroneSettings {
@@ -151,6 +169,13 @@ internal object SettingsCodec {
     private val OVERLAY_ON_TRANSCODE = booleanPreferencesKey("overlay_on_transcode")
     private val CUSTOM_MISSIONS = stringPreferencesKey("custom_missions")
     private val TRACKING_TARGET = stringPreferencesKey("tracking_target")
+    private val GEOFENCE = booleanPreferencesKey("geofence")
+    private val GEOFENCE_RADIUS = floatPreferencesKey("geofence_radius_m")
+    private val GEOFENCE_MANUAL_ALERT = booleanPreferencesKey("geofence_manual_alert")
+    private val IMPACT_DETECTION = booleanPreferencesKey("impact_detection")
+    private val MISSION_NOSE_FIRST = booleanPreferencesKey("mission_nose_first")
+    private val MISSION_SPEED_LIMIT = booleanPreferencesKey("mission_speed_limit")
+    private val MISSION_MAX_SPEED = floatPreferencesKey("mission_max_speed_mps")
     private val MAX_ALTITUDE = intPreferencesKey("max_altitude_m")
     private val LOW_BATTERY = intPreferencesKey("low_battery_percent")
     private val EXPOSURE = intPreferencesKey("exposure_steps")

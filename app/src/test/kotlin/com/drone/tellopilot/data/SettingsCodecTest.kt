@@ -1,6 +1,7 @@
 package com.drone.tellopilot.data
 
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -102,6 +103,49 @@ class SettingsCodecTest {
         assertEquals(GamepadBindings.Default, pilot.padBindings)
         assertEquals(VideoBitrate.AUTO, SettingsCodec.readDrone(prefs).bitrate)
         assertEquals(listOf(Mission("Ok", listOf(MissionStep.Hover(2f), MissionStep.Climb(1f)))), pilot.customMissions)
+    }
+
+    @Test
+    fun `safety options default on, manual bubble alert off`() {
+        val d = SettingsCodec.readPilot(emptyPreferences())
+        assertEquals(true, d.geofence)
+        assertEquals(5f, d.geofenceRadius)
+        assertEquals(false, d.geofenceManualAlert)
+        assertEquals(true, d.impactDetection)
+        assertEquals(true, d.missionNoseFirst)
+        assertEquals(true, d.missionSpeedLimit)
+        assertEquals(0.5f, d.missionMaxSpeed)
+    }
+
+    @Test
+    fun `each safety option survives a write and read back independently`() {
+        val variants = listOf(
+            PilotSettings(geofence = false),
+            PilotSettings(geofenceRadius = 12.5f),
+            PilotSettings(geofenceManualAlert = true),
+            PilotSettings(impactDetection = false),
+            PilotSettings(missionNoseFirst = false),
+            PilotSettings(missionSpeedLimit = false),
+            PilotSettings(missionMaxSpeed = 0.8f),
+        )
+        variants.forEach { custom ->
+            val prefs = mutablePreferencesOf()
+            SettingsCodec.writePilot(prefs, custom)
+            assertEquals(custom, SettingsCodec.readPilot(prefs))
+        }
+    }
+
+    @Test
+    fun `out of range safety values are clamped on read`() {
+        val prefs = mutablePreferencesOf(
+            floatPreferencesKey("geofence_radius_m") to 500f,
+            floatPreferencesKey("mission_max_speed_mps") to 0f,
+        )
+        val read = SettingsCodec.readPilot(prefs)
+        assertEquals(PilotSettings.GEOFENCE_RADIUS_RANGE.endInclusive, read.geofenceRadius)
+        assertEquals(PilotSettings.MISSION_SPEED_RANGE.start, read.missionMaxSpeed)
+        val nan = mutablePreferencesOf(floatPreferencesKey("geofence_radius_m") to Float.NaN)
+        assertEquals(PilotSettings.GEOFENCE_RADIUS_DEFAULT, SettingsCodec.readPilot(nan).geofenceRadius)
     }
 
     @Test

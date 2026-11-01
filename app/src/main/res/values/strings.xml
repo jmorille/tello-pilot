@@ -59,6 +59,9 @@
     <string name="warning_camera_fault">Caméra en défaut</string>
     <string name="warning_imu_preheating">Préchauffage de l\'IMU…</string>
     <string name="warning_calibration">Calibration requise</string>
+    <string name="warning_impact">Choc détecté : vérifiez le drone</string>
+    <string name="warning_geofence_out">Hors de la bulle de sécurité</string>
+    <string name="warning_geofence_near">Bord de la bulle de sécurité proche</string>
 
     <string name="message_photo_failed">Échec de l\'enregistrement de la photo</string>
     <string name="message_video_saved">Vidéo enregistrée dans Films/TelloPilot</string>
@@ -275,6 +278,19 @@
     <string name="autopilot_abort_positioning">Vol automatique interrompu : positionnement indisponible (sol trop uniforme ou trop sombre)</string>
     <string name="autopilot_end_failed">Vol automatique interrompu : erreur interne (drone en vol stationnaire)</string>
     <string name="autopilot_abort_timeout">Mission interrompue : une étape n\'aboutissait pas</string>
+    <string name="autopilot_abort_geofence">Vol automatique interrompu : sortie (ou trajet prévu hors) de la bulle de sécurité</string>
+    <string name="autopilot_abort_impact">Vol automatique interrompu : choc détecté</string>
+    <string name="settings_safety_title">Sécurité</string>
+    <string name="settings_geofence">Bulle de sécurité (missions et suivi)</string>
+    <string name="settings_geofence_radius">Rayon de la bulle : %1$.0f m</string>
+    <string name="settings_geofence_manual">Alerte hors bulle en vol manuel</string>
+    <string name="settings_geofence_help">Cylindre centré sur le point de départ du vol automatique, plafonné à l\'altitude max du drone. En sortir arrête le vol automatique (vol stationnaire). La position vient de la caméra de sol : sans position fiable, les déplacements de mission et le suivi s\'arrêtent. En vol manuel, l\'alerte ne bloque jamais les manches.</string>
+    <string name="settings_impact_detection">Détection de choc</string>
+    <string name="settings_impact_help">Un choc ou une inclinaison anormale arrête le vol automatique (vol stationnaire) et déclenche une alerte. Rien n\'est détecté pendant les décollages, atterrissages, flips et modes intelligents, ni juste après.</string>
+    <string name="settings_nose_first">Toujours avancer face caméra</string>
+    <string name="settings_nose_first_help">Les missions tournent le drone vers chaque déplacement pour que la caméra voie où il va, puis le remettent dans son cap d\'origine à la fin.</string>
+    <string name="settings_mission_speed_limit">Limiter la vitesse en mission</string>
+    <string name="settings_mission_speed">Vitesse max en mission : %1$.1f m/s</string>
     <string name="settings_section_autopilot">Vol automatique</string>
     <string name="settings_summary_autopilot">Suivi de cible, missions programmées</string>
     <string name="settings_tracking_target">Cible du suivi</string>

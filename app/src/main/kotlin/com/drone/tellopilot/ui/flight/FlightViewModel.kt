@@ -108,14 +108,24 @@ class FlightViewModel @Inject constructor(
     /** Recording started automatically at takeoff: stopped automatically at landing. */
     private var autoRecording = false
 
+    /** Shock detection and manual bubble alert; fed on the main thread by the telemetry collector. */
+    private val safety = com.drone.tello.control.FlightSafetyMonitor()
+    /** Alerts raised by the app's own safety checks (shock, bubble). */
+    private val safetyAlerts = MutableStateFlow<Set<Warning>>(emptySet())
+    private var impactAlertJob: kotlinx.coroutines.Job? = null
+
+    private val safetyWarnings: Flow<Set<Warning>> = combine(safetyAlerts, autopilot.nearFence) { alerts, near ->
+        if (near) alerts + Warning.GEOFENCE_NEAR else alerts
+    }
+
     val uiState: StateFlow<FlightUiState> = combine(
         combine(session.wifiState, session.link, session.telemetry, ::Triple),
         combine(session.videoActive, fastMode, knownFlying, ::Triple),
         combine(recordingUi, session.photoProgress, ::Pair),
         combine(session.maneuvers, gamepad.status, phoneThermal.heat, padDriving, autopilot.state, ::Extras),
-        combine(pilot, groundTooLong, tripod, track, ::More),
+        combine(pilot, groundTooLong, tripod, track, safetyWarnings, ::More),
     ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), extras, more ->
-        val (pilot, groundHot, tripodOn, trackPoints) = more
+        val (pilot, groundHot, tripodOn, trackPoints, safetyOn) = more
         FlightUiState.from(
             wifi is com.drone.tellopilot.data.WifiState.Drone, link, telemetry, video, fast, flying, recording, photo, pilot,
             extras.maneuvers, extras.pad, extras.heat, extras.padDriving, extras.autopilot,
@@ -123,6 +133,7 @@ class FlightViewModel @Inject constructor(
             groundTooLong = groundHot,
             tripod = tripodOn,
             track = trackPoints,
+            safetyWarnings = safetyOn,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, FlightUiState())
 
@@ -131,6 +142,7 @@ class FlightViewModel @Inject constructor(
         val groundHot: Boolean,
         val tripod: Boolean,
         val track: List<androidx.compose.ui.geometry.Offset>,
+        val safety: Set<Warning>,
     )
 
     private data class Extras(
@@ -150,6 +162,7 @@ class FlightViewModel @Inject constructor(
             var announcedStart = false
             var wasFlying = false
             session.telemetry.collect { t ->
+                checkSafety(t)
                 val flight = t.flight ?: return@collect
                 onFlyingChanged(flight.flying)
                 // Track: restarts at each takeoff, a point every 10 cm, bounded.
@@ -248,6 +261,36 @@ class FlightViewModel @Inject constructor(
         viewModelScope.launch {
             gamepad.status.collect { if (it != com.drone.tellopilot.input.GamepadStatus.READY) padDriving.value = false }
         }
+    }
+
+    /**
+     * Shock: an automatic flight ends at once (hover, the pilot is in charge), and an alert is
+     * shown for a few seconds in any case. Manual flight beyond the bubble: an alert only, the
+     * sticks are never touched. Each check follows its setting (off = no effect at all).
+     */
+    private fun checkSafety(t: com.drone.tello.control.Telemetry) {
+        val controller = session.controller.value
+        val maneuvers = controller?.maneuvers?.value
+        val now = android.os.SystemClock.elapsedRealtime()
+        val maneuver = maneuvers?.smartVideoActive == true || maneuvers?.bounce == true || controller?.isLanding == true
+        val report = safety.onTelemetry(t, pilot.value, maneuver, now)
+        var alerts = safetyAlerts.value
+        if (report.impact != null) {
+            android.util.Log.w("FlightSafety", "impact detected: ${report.impact}")
+            if (autopilot.active) {
+                autopilot.stop(com.drone.tellopilot.tracking.AutopilotEnd.MissionAborted(com.drone.tello.control.MissionAbort.IMPACT))
+            }
+            alerts = alerts + Warning.IMPACT
+            impactAlertJob?.cancel()
+            impactAlertJob = viewModelScope.launch {
+                kotlinx.coroutines.delay(IMPACT_ALERT_MS)
+                safetyAlerts.value = safetyAlerts.value - Warning.IMPACT
+            }
+        }
+        // Automatic flights have their own bubble (abort): the manual alert is for the pilot's flight.
+        val outside = report.outsideFence && !autopilot.active
+        alerts = if (outside) alerts + Warning.GEOFENCE_OUT else alerts - Warning.GEOFENCE_OUT
+        safetyAlerts.value = alerts
     }
 
     /** Felt without looking: link lost, and every new alert (once per appearance). */
@@ -445,8 +488,16 @@ class FlightViewModel @Inject constructor(
             }
             FlightAction.Land -> confirmed { land() }
             FlightAction.ThrowTakeoff -> confirmed { throwTakeoff() }
-            FlightAction.PalmLand -> confirmed { palmLand() }
-            is FlightAction.Flip -> modeCommand { flip(action.direction) }
+            FlightAction.PalmLand -> {
+                // Touching the hand is not a shock.
+                safety.suppressImpacts(android.os.SystemClock.elapsedRealtime(), PALM_LAND_QUIET_MS)
+                confirmed { palmLand() }
+            }
+            is FlightAction.Flip -> {
+                // A flip turns the drone upside down: no shock detection until well after it.
+                safety.suppressImpacts(android.os.SystemClock.elapsedRealtime(), FLIP_QUIET_MS)
+                modeCommand { flip(action.direction) }
+            }
             is FlightAction.SetBounce -> modeCommand { setBounce(action.enabled) }
             is FlightAction.StartSmartVideo -> {
                 smartVideoArmed = pilotDeflection() < AUTOPILOT_OVERRIDE
@@ -599,6 +650,12 @@ class FlightViewModel @Inject constructor(
 }
 
 private const val PAD_COMBO_COOLDOWN_MS = 2_000L
+/** Shock alert shown this long. */
+private const val IMPACT_ALERT_MS = 5_000L
+/** A flip lasts about a second, then the drone stabilises: shock detection off meanwhile, + 1 s. */
+private const val FLIP_QUIET_MS = 3_000L
+/** Palm landing: from the command to the motors stopping on the hand. */
+private const val PALM_LAND_QUIET_MS = 15_000L
 private const val ALERT_REPEAT_MS = 30_000L
 /** Stick deflection (touch or pad) that ends an automatic flight. */
 private const val AUTOPILOT_OVERRIDE = 0.25f

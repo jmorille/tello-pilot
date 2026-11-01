@@ -55,6 +55,8 @@ data class Telemetry(
     val imuTemperatureC: Float? = null,
     /** Last position from the downward camera (visual odometry), from the log stream. */
     val odometry: com.drone.tello.protocol.LogRecord.VisualOdometry? = null,
+    /** Last IMU record of the log stream (velocities, attitude quaternion); a new instance per record. */
+    val imu: com.drone.tello.protocol.LogRecord.Imu? = null,
 )
 
 /** One-shot results the UI reports to the pilot. */
@@ -613,6 +615,7 @@ class TelloController(
                 attitude = imu?.attitude ?: t.attitude,
                 imuTemperatureC = imu?.temperatureC ?: t.imuTemperatureC,
                 odometry = mvo ?: t.odometry,
+                imu = imu ?: t.imu,
             )
         }
     }

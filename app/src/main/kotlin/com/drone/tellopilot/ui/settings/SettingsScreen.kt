@@ -346,7 +346,7 @@ private fun Label(text: Int) = Text(stringResource(text), style = MaterialTheme.
 
 /** Slider that only persists on release (no DataStore write per drag event). */
 @Composable
-private fun SliderSetting(
+internal fun SliderSetting(
     label: @Composable (Float) -> String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,
