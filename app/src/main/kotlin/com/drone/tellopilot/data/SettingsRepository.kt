@@ -71,6 +71,8 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
             autoTranscode = p[AUTO_TRANSCODE] ?: d.autoTranscode,
             transcodeCodec = p[TRANSCODE_CODEC].toEnum(d.transcodeCodec),
             keepOriginal = p[KEEP_ORIGINAL] ?: d.keepOriginal,
+            customMissions = p[CUSTOM_MISSIONS].orEmpty().lines().mapNotNull { com.drone.tello.control.Mission.decode(it) },
+            trackingTarget = p[TRACKING_TARGET].toEnum(d.trackingTarget),
         )
     }
 
@@ -88,6 +90,8 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         p[AUTO_TRANSCODE] = s.autoTranscode
         p[TRANSCODE_CODEC] = s.transcodeCodec.name
         p[KEEP_ORIGINAL] = s.keepOriginal
+        p[CUSTOM_MISSIONS] = s.customMissions.joinToString("\n") { it.encode() }
+        p[TRACKING_TARGET] = s.trackingTarget.name
     }
 
     private fun readDrone(p: Preferences): DroneSettings {
@@ -124,6 +128,8 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         val AUTO_TRANSCODE = booleanPreferencesKey("auto_transcode")
         val TRANSCODE_CODEC = stringPreferencesKey("transcode_codec")
         val KEEP_ORIGINAL = booleanPreferencesKey("keep_original")
+        val CUSTOM_MISSIONS = stringPreferencesKey("custom_missions")
+        val TRACKING_TARGET = stringPreferencesKey("tracking_target")
         val MAX_ALTITUDE = intPreferencesKey("max_altitude_m")
         val LOW_BATTERY = intPreferencesKey("low_battery_percent")
         val EXPOSURE = intPreferencesKey("exposure_steps")

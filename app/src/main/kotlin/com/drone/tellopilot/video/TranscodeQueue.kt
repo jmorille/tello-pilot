@@ -132,6 +132,9 @@ class TranscodeQueue @Inject constructor(
         }
     }
 
+    /** Re-encodes one video now (gallery), whatever the automatic setting. */
+    fun enqueueVideo(uri: Uri) = enqueue(listOf(uri))
+
     private fun enqueue(uris: List<Uri>) {
         synchronized(pending) {
             pending.addAll(uris)

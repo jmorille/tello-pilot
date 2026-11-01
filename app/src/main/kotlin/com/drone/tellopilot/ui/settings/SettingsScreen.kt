@@ -110,6 +110,7 @@ enum class SettingsCategory(val title: Int, val summary: Int) {
     GAMEPAD(R.string.settings_section_gamepad, R.string.settings_summary_gamepad),
     DISPLAY(R.string.settings_section_display, R.string.settings_summary_display),
     VIDEOS(R.string.settings_section_videos, R.string.settings_summary_videos),
+    AUTOPILOT(R.string.settings_section_autopilot, R.string.settings_summary_autopilot),
     DRONE(R.string.settings_section_drone, R.string.settings_summary_drone),
     MAINTENANCE(R.string.settings_section_maintenance, R.string.settings_summary_maintenance),
 }
@@ -161,6 +162,7 @@ fun SettingsScreen(
                         }
                         videos(settings.pilot)
                     }
+                    SettingsCategory.AUTOPILOT -> AutopilotSettings(settings.pilot, updatePilot)
                     SettingsCategory.DRONE -> DroneSettingsPane(settings.drone, updateDrone)
                     SettingsCategory.MAINTENANCE -> maintenance()
                 }

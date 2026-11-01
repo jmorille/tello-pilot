@@ -50,7 +50,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ## Références
-Le protocole a été analysé à partir de l'app officielle (`../decompiled_src`) et de TelloMe (`../tellome`). Voir `../analysis/COMPARAISON_FONCTIONNALITES.md` pour la comparaison des fonctionnalités et la feuille de route.
+Le protocole a été analysé à partir de l'app officielle (`../official-app/decompiled-java`) et de TelloMe (`../competitor-tellome`). Voir `../research/COMPARAISON_FONCTIONNALITES.md` pour la comparaison des fonctionnalités et la feuille de route.
 
 ## Vérifier une release
 Chaque release (tag `vX.Y.Z`, workflow `Release`) publie :

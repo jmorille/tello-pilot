@@ -66,6 +66,7 @@ class TranscodeService : Service() {
         }
         if (!watching) {
             watching = true
+            scope.launch { showProgress() }
             scope.launch {
                 while (true) {
                     queue.busy.first { !it }
@@ -90,10 +91,38 @@ class TranscodeService : Service() {
         super.onDestroy()
     }
 
-    private fun notification() = NotificationCompat.Builder(this, CHANNEL_ID)
+    /** Updates the notification with the queue's progress (at most once a second). */
+    private suspend fun showProgress() {
+        val manager = androidx.core.app.NotificationManagerCompat.from(this)
+        var last = 0L
+        queue.state.collect { state ->
+            val running = state as? TranscodeState.Running ?: return@collect
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - last < PROGRESS_UPDATE_MS && !running.paused) return@collect
+            last = now
+            if (!manager.areNotificationsEnabled()) return@collect
+            val text = if (running.paused) {
+                getString(R.string.transcode_paused, running.index, running.total, running.name)
+            } else {
+                getString(R.string.transcode_running, running.index, running.total, running.name, (running.progress * 100).toInt())
+            }
+            try {
+                manager.notify(NOTIFICATION_ID, notification(text, if (running.paused) null else running.progress))
+            } catch (_: SecurityException) {
+                // Permission revoked meanwhile: the service keeps working without updates.
+            }
+        }
+    }
+
+    private fun notification(
+        text: String = getString(R.string.transcode_notification_text),
+        progress: Float? = null,
+    ) = NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_videocam)
         .setContentTitle(getString(R.string.transcode_notification_title))
-        .setContentText(getString(R.string.transcode_notification_text))
+        .setContentText(text)
+        .apply { progress?.let { setProgress(100, (it * 100).toInt(), false) } }
+        .setOnlyAlertOnce(true)
         .setOngoing(true)
         .setSilent(true)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
@@ -109,6 +138,7 @@ class TranscodeService : Service() {
         private const val CHANNEL_ID = "transcode"
         private const val NOTIFICATION_ID = 42
         private const val RECHECK_MS = 500L
+        private const val PROGRESS_UPDATE_MS = 1_000L
         private const val WAKE_LOCK_TIMEOUT_MS = 3 * 60 * 60 * 1000L
 
         fun start(context: Context) {

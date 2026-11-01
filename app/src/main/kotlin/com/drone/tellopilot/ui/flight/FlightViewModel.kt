@@ -46,6 +46,11 @@ sealed interface UserMessage {
     data class ModeRefused(val reason: ModeCheck) : UserMessage
     /** Refused by the drone itself. */
     data object DroneRefused : UserMessage
+    data class AutopilotEnded(val end: com.drone.tellopilot.tracking.AutopilotEnd) : UserMessage
+    /** Automatic flight refused: the drone must be flying with a live link (and video for tracking). */
+    data object AutopilotUnavailable : UserMessage
+    /** A smart video was cancelled because the pilot moved a stick. */
+    data object SmartVideoInterrupted : UserMessage
 }
 
 @HiltViewModel
@@ -55,6 +60,7 @@ class FlightViewModel @Inject constructor(
     private val gamepad: GamepadInput,
     private val haptics: Haptics,
     private val transcodeQueue: com.drone.tellopilot.video.TranscodeQueue,
+    private val autopilot: com.drone.tellopilot.tracking.Autopilot,
     phoneThermal: PhoneThermal,
     settings: SettingsRepository,
 ) : ViewModel(), GamepadInput.Listener {
@@ -86,15 +92,16 @@ class FlightViewModel @Inject constructor(
     private var autoRecording = false
 
     val uiState: StateFlow<FlightUiState> = combine(
-        combine(session.wifiAvailable, session.link, session.telemetry, ::Triple),
+        combine(session.wifiState, session.link, session.telemetry, ::Triple),
         combine(session.videoActive, fastMode, knownFlying, ::Triple),
         combine(recordingUi, session.photoProgress, ::Pair),
-        combine(session.maneuvers, gamepad.status, phoneThermal.heat, padDriving, ::Extras),
+        combine(session.maneuvers, gamepad.status, phoneThermal.heat, padDriving, autopilot.state, ::Extras),
         pilot,
     ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), extras, pilot ->
         FlightUiState.from(
-            wifi, link, telemetry, video, fast, flying, recording, photo, pilot,
-            extras.maneuvers, extras.pad, extras.heat, extras.padDriving,
+            wifi is com.drone.tellopilot.data.WifiState.Drone, link, telemetry, video, fast, flying, recording, photo, pilot,
+            extras.maneuvers, extras.pad, extras.heat, extras.padDriving, extras.autopilot,
+            otherWifi = wifi == com.drone.tellopilot.data.WifiState.OtherNetwork,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, FlightUiState())
 
@@ -103,6 +110,7 @@ class FlightViewModel @Inject constructor(
         val pad: com.drone.tellopilot.input.GamepadStatus,
         val heat: com.drone.tellopilot.data.PhoneHeat,
         val padDriving: Boolean,
+        val autopilot: com.drone.tellopilot.tracking.AutopilotState,
     )
 
     init {
@@ -136,6 +144,16 @@ class FlightViewModel @Inject constructor(
             session.events.collect { if (it is DroneEvent.ManeuverRefused) _messages.trySend(UserMessage.DroneRefused) }
         }
         viewModelScope.launch { vibrateOnAlerts() }
+        viewModelScope.launch {
+            autopilot.ends.collect { end ->
+                _messages.trySend(UserMessage.AutopilotEnded(end))
+                when (end) {
+                    com.drone.tellopilot.tracking.AutopilotEnd.MissionDone -> haptics.confirm()
+                    com.drone.tellopilot.tracking.AutopilotEnd.Stopped -> Unit
+                    else -> haptics.warning()
+                }
+            }
+        }
         // Post-flight re-encoding never competes with the live view in flight.
         viewModelScope.launch { knownFlying.collect { transcodeQueue.setFlying(this@FlightViewModel, it) } }
         // Pad gone or not centred: the screen sticks come back, and stay until the pad drives again.
@@ -214,6 +232,22 @@ class FlightViewModel @Inject constructor(
     }
 
     private fun pushSticks() {
+        // Automatic flight: the pilot's sticks are ignored until one is clearly moved, which
+        // takes control back at once (the autopilot never locks the pilot out).
+        if (autopilot.active) {
+            if (pilotDeflection() < AUTOPILOT_OVERRIDE) return
+            autopilot.stop(com.drone.tellopilot.tracking.AutopilotEnd.PilotTookOver)
+        }
+        // Smart videos (360, circle, up & away) are flown by the drone, which ignores the sticks
+        // meanwhile: a clear stick movement cancels the manoeuvre so that the pilot's
+        // correction is applied at once (same rule as the automatic flights).
+        if (session.controller.value?.maneuvers?.value?.smartVideoActive == true) {
+            val deflected = pilotDeflection() >= AUTOPILOT_OVERRIDE
+            // Armed only once the sticks were centred after the start: a stick already held
+            // when the manoeuvre was launched does not cancel it.
+            if (!deflected) smartVideoArmed = true
+            if (deflected && smartVideoArmed) cancelSmartVideo()
+        }
         val fast = fastMode.value
         mixer.setLeft(merge(touch[0], pad.leftX), merge(touch[1], pad.leftY), fast)
         session.controller.value?.setSticks(mixer.setRight(merge(touch[2], pad.rightX), merge(touch[3], pad.rightY), fast))
@@ -221,8 +255,38 @@ class FlightViewModel @Inject constructor(
 
     private fun touchIdle() = touch.all { it == 0f }
 
+    /** Last smart video cancelled by a stick movement (one stop request per second at most). */
+    private var lastSmartVideoOverride = Long.MIN_VALUE / 2
+    private var smartVideoArmed = false
+    private var smartVideoRetry: kotlinx.coroutines.Job? = null
+
+    private fun cancelSmartVideo() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastSmartVideoOverride < SMART_VIDEO_OVERRIDE_COOLDOWN_MS) return
+        lastSmartVideoOverride = now
+        command { stopSmartVideo() }
+        _messages.trySend(UserMessage.SmartVideoInterrupted)
+        haptics.warning()
+        // A stick held still sends no new event: keep asking while the drone still runs it.
+        smartVideoRetry?.cancel()
+        smartVideoRetry = viewModelScope.launch {
+            repeat(SMART_VIDEO_STOP_RETRIES) {
+                kotlinx.coroutines.delay(SMART_VIDEO_OVERRIDE_COOLDOWN_MS)
+                if (session.controller.value?.maneuvers?.value?.smartVideoActive != true) return@launch
+                command { stopSmartVideo() }
+            }
+        }
+    }
+
+    private fun pilotDeflection() = maxOf(touch.maxOf { kotlin.math.abs(it) }, pad.maxDeflection())
+
     private fun PadSticks.maxDeflection() =
         maxOf(kotlin.math.abs(leftX), kotlin.math.abs(leftY), kotlin.math.abs(rightX), kotlin.math.abs(rightY))
+
+    /** "Connect to the drone" button: Android's dialog to pick the TELLO-… network. */
+    fun connectToDrone() = session.connectToDrone()
+
+    fun onForeground() = session.onForeground()
 
     /** A touch on a hidden screen stick: show them again (that touch sends nothing). */
     fun revealSticks() {
@@ -264,6 +328,8 @@ class FlightViewModel @Inject constructor(
     }
 
     fun onAction(action: FlightAction) {
+        // Any manual flight command ends an automatic flight first.
+        if (action.endsAutopilot()) autopilot.stop()
         when (action) {
             FlightAction.Takeoff -> confirmed { takeoff() }
             FlightAction.Land -> confirmed { land() }
@@ -271,7 +337,10 @@ class FlightViewModel @Inject constructor(
             FlightAction.PalmLand -> confirmed { palmLand() }
             is FlightAction.Flip -> modeCommand { flip(action.direction) }
             is FlightAction.SetBounce -> modeCommand { setBounce(action.enabled) }
-            is FlightAction.StartSmartVideo -> modeCommand { startSmartVideo(action.mode) }
+            is FlightAction.StartSmartVideo -> {
+                smartVideoArmed = pilotDeflection() < AUTOPILOT_OVERRIDE
+                modeCommand { startSmartVideo(action.mode) }
+            }
             FlightAction.StopSmartVideo -> command { stopSmartVideo() }
             FlightAction.TakePhoto -> command { takePicture() }
             FlightAction.ToggleRecording -> {
@@ -282,6 +351,11 @@ class FlightViewModel @Inject constructor(
                 fastMode.value = !fastMode.value
                 session.controller.value?.setFastMode(fastMode.value)
             }
+            is FlightAction.StartMission -> startAutopilot(tracking = false) { autopilot.startMission(action.mission) }
+            is FlightAction.StartTracking -> startAutopilot(tracking = true) {
+                autopilot.startTracking(action.mode, pilot.value.trackingTarget, action.orbitDirection)
+            }
+            FlightAction.StopAutopilot -> Unit // done above
             FlightAction.ReleaseSticks -> {
                 padDriving.value = false
                 touch.fill(0f)
@@ -291,6 +365,32 @@ class FlightViewModel @Inject constructor(
                 session.controller.value?.releaseSticks()
             }
         }
+    }
+
+    private fun FlightAction.endsAutopilot() = when (this) {
+        FlightAction.Takeoff, FlightAction.Land, FlightAction.ThrowTakeoff, FlightAction.PalmLand,
+        is FlightAction.Flip, is FlightAction.SetBounce, is FlightAction.StartSmartVideo,
+        FlightAction.StopAutopilot, FlightAction.ReleaseSticks,
+        is FlightAction.StartMission, is FlightAction.StartTracking,
+        // Speed changes are the pilot's call: they end the (always slow) automatic flight.
+        FlightAction.ToggleFastMode,
+        -> true
+        else -> false
+    }
+
+    /** Automatic flights start in flight only, with a live link (and the video for tracking). */
+    private fun startAutopilot(tracking: Boolean, start: () -> Unit) {
+        val state = uiState.value
+        val ok = state.status == ConnectionStatus.CONNECTED && session.lastFlight?.flying == true &&
+            (!tracking || state.videoActive)
+        if (!ok) {
+            _messages.trySend(UserMessage.AutopilotUnavailable)
+            return
+        }
+        // The pilot's sticks must be centred: their last value is not applied meanwhile.
+        touch.fill(0f)
+        start()
+        haptics.confirm()
     }
 
     private fun startRecording() {
@@ -338,11 +438,16 @@ class FlightViewModel @Inject constructor(
         session.controller.value?.releaseSticks()
         recorder.stop()
         transcodeQueue.setFlying(this, false)
+        autopilot.stop()
     }
 }
 
 private const val PAD_COMBO_COOLDOWN_MS = 2_000L
 private const val ALERT_REPEAT_MS = 30_000L
+/** Stick deflection (touch or pad) that ends an automatic flight. */
+private const val AUTOPILOT_OVERRIDE = 0.25f
+private const val SMART_VIDEO_OVERRIDE_COOLDOWN_MS = 1_000L
+private const val SMART_VIDEO_STOP_RETRIES = 4
 /** Pad deflection that counts as "the pilot flies with the pad" (hides the screen sticks). */
 private const val PAD_TAKEOVER = 0.35f
 

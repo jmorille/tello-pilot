@@ -105,7 +105,11 @@ class MaintenanceViewModel @Inject constructor(private val session: DroneSession
     }
 
     fun refreshWifiName() = run { queryWifiName() }
-    fun changeWifi(ssid: String, password: String) = run { changeWifi(ssid, password) }
+    fun changeWifi(ssid: String, password: String) {
+        // The drone restarts under its new name: the reconnection must look for that one.
+        session.rememberDroneWifi(ssid, password)
+        run { changeWifi(ssid, password) }
+    }
     fun resetWifiChange() = run { resetWifiChange() }
     fun calibrateCenterOfGravity() {
         _centerOfGravityResult.value = null

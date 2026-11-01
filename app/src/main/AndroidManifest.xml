@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Post-flight video re-encoding keeps running if the pilot leaves the app. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Progress of the video re-encoding outside the app (Android 13+ asks the user). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Android 17 (target 37): without it every datagram to 192.168.10.1 fails with EPERM. -->

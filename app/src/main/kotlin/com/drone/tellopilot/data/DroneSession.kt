@@ -59,8 +59,32 @@ class DroneSession @Inject constructor(
     private val _controller = MutableStateFlow<TelloController?>(null)
     val controller: StateFlow<TelloController?> = _controller.asStateFlow()
 
-    private val _wifiAvailable = MutableStateFlow(false)
-    val wifiAvailable: StateFlow<Boolean> = _wifiAvailable.asStateFlow()
+    private val _wifiState = MutableStateFlow<WifiState>(WifiState.Off)
+    /** Drone network, another Wi-Fi (Android switched back home) or no Wi-Fi. */
+    val wifiState: StateFlow<WifiState> = _wifiState.asStateFlow()
+
+    /** A drone network request (system dialog) is pending or held. */
+    val droneWifiRequested: StateFlow<Boolean> get() = wifi.requesting
+
+    /** Asks Android for the drone's Wi-Fi (`TELLO-…`), see [WifiNetworkMonitor.requestDroneNetwork]. */
+    fun connectToDrone() = wifi.requestDroneNetwork()
+
+    /** The drone's Wi-Fi was lost during this session (and not found again yet). */
+    @Volatile private var droneWifiLost = false
+
+    /**
+     * The app comes back to the foreground: Android only grants a drone network request to a
+     * foreground app, so the one made while in the background was refused — ask again once.
+     */
+    fun onForeground() {
+        if (droneWifiLost && _wifiState.value !is WifiState.Drone) {
+            Log.i(TAG, "back in the foreground without the drone Wi-Fi: requesting it")
+            wifi.requestDroneNetwork()
+        }
+    }
+
+    /** The drone's Wi-Fi name / password were changed from the app. */
+    fun rememberDroneWifi(ssid: String, password: String) = wifi.rememberDroneNetwork(ssid, password)
 
     val link: Flow<LinkState> = _controller.flatMapLatest { it?.link ?: flowOf(LinkState.IDLE) }
     val telemetry: Flow<Telemetry> = _controller.flatMapLatest { it?.telemetry ?: flowOf(Telemetry()) }
@@ -91,6 +115,15 @@ class DroneSession @Inject constructor(
         restart.value++
     }
     private val sink = AtomicReference<FrameSink?>(null)
+
+    /** Second consumer of the stream, for target tracking (never slows the live view). */
+    private val analysis = AtomicReference<com.drone.tellopilot.tracking.AnalysisDecoder?>(null)
+
+    fun attachAnalysis(decoder: com.drone.tellopilot.tracking.AnalysisDecoder) = analysis.set(decoder)
+
+    fun detachAnalysis(decoder: com.drone.tellopilot.tracking.AnalysisDecoder) {
+        analysis.compareAndSet(decoder, null)
+    }
     private val resync = AtomicBoolean(true)
 
     /** Attaches the decoder (when the video surface exists). The stream restarts on a key frame. */
@@ -126,10 +159,25 @@ class DroneSession @Inject constructor(
         val wifiLock = wifi.createLowLatencyLock()
         try {
             wifiLock.acquire()
-            combine(wifi.wifiNetwork, restart) { network, _ -> network }.collectLatest { network ->
-                _wifiAvailable.value = network != null
-                Log.i(TAG, "Wi-Fi network: $network")
-                if (network == null) return@collectLatest
+            var onDrone = false
+            combine(wifi.wifiState, restart) { state, _ -> state }.collectLatest { state ->
+                _wifiState.value = state
+                Log.i(TAG, "Wi-Fi: $state")
+                val network = (state as? WifiState.Drone)?.network
+                if (network == null) {
+                    // Android left the drone's Wi-Fi during the session (app in background,
+                    // "better" network): ask for it back once per loss instead of waiting
+                    // forever (no dialog loop if the pilot cancels: the button stays there).
+                    if (onDrone) {
+                        onDrone = false
+                        droneWifiLost = true
+                        Log.i(TAG, "drone Wi-Fi lost, requesting it back")
+                        wifi.requestDroneNetwork()
+                    }
+                    return@collectLatest
+                }
+                onDrone = true
+                droneWifiLost = false
                 val sockets = try {
                     withContext(RealtimeThreads.control) { DroneSockets.open(network) }
                 } catch (e: CancellationException) {
@@ -206,7 +254,8 @@ class DroneSession @Inject constructor(
             }
         } finally {
             if (wifiLock.isHeld) wifiLock.release()
-            _wifiAvailable.value = false
+            wifi.releaseDroneNetwork()
+            _wifiState.value = WifiState.Off
         }
     }
 
@@ -245,11 +294,12 @@ class DroneSession @Inject constructor(
             val frame = decision.frame
             if (frame != null) {
                 recorder.onFrame(frame) // never blocks (bounded queue, dedicated writer thread)
+                analysis.get()?.offer(frame) // never blocks either
                 val target = sink.get()
                 when {
                     // No surface: the decoder will need a key frame — unless recording, which
                     // must keep the full stream (settings open / app in background).
-                    target == null -> if (!recorder.isActive) gate.reset()
+                    target == null -> if (!recorder.isActive && analysis.get() == null) gate.reset()
                     target.decode(frame) -> _videoActive.value = true
                     else -> decision = gate.onDecoderBacklog()
                 }
@@ -258,7 +308,7 @@ class DroneSession @Inject constructor(
             } else {
                 frameWork += System.nanoTime() - workStart
             }
-            if (decision.requestKeyFrame && (sink.get() != null || recorder.isActive)) {
+            if (decision.requestKeyFrame && (sink.get() != null || recorder.isActive || analysis.get() != null)) {
                 launch(RealtimeThreads.control) { controller.requestKeyFrame() }
             }
         }

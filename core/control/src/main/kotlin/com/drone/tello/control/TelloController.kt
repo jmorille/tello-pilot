@@ -126,6 +126,13 @@ class TelloController(
     private val _telemetry = MutableStateFlow(Telemetry())
     val telemetry: StateFlow<Telemetry> = _telemetry.asStateFlow()
 
+    /**
+     * Number of flight data packets received: tells a fresh sample from a frozen one (the
+     * StateFlow above does not re-emit an equal value). Readable from any thread.
+     */
+    @Volatile var flightSamples: Long = 0
+        private set
+
     private val sticks = AtomicReference(StickInput.Neutral)
     private val wakeUp = Channel<Unit>(Channel.CONFLATED)
     private val sequence = AtomicInteger(0)
@@ -630,6 +637,7 @@ class TelloController(
         }
         when (val message = DroneMessage.from(packet)) {
             is DroneMessage.Flight -> {
+                flightSamples++
                 val fault = cameraFault(message.data)
                 _telemetry.update { it.copy(flight = message.data, cameraFault = fault) }
                 if (landRequested.get()) confirmLanding(message.data.flying)

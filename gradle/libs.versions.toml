@@ -1,4 +1,6 @@
 [versions]
+mlkit-face = "16.1.7"
+mlkit-pose = "18.0.0-beta5"
 agp = "9.5.0"
 kotlin = "2.4.21"
 ksp = "2.3.13"
@@ -18,6 +20,8 @@ serialization = "1.12.0"
 media3 = "1.8.0"
 
 [libraries]
+mlkit-face-detection = { module = "com.google.mlkit:face-detection", version.ref = "mlkit-face" }
+mlkit-pose-detection = { module = "com.google.mlkit:pose-detection", version.ref = "mlkit-pose" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity" }
 androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }

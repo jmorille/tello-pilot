@@ -23,6 +23,8 @@ android {
         versionCode = ciVersionCode ?: 1
         versionName = ciVersionName ?: "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // ML Kit ships native libraries for every ABI (~40 MB each): phones are 64-bit ARM.
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     signingConfigs {
@@ -65,6 +67,9 @@ dependencies {
     }
 
     implementation(libs.androidx.core.ktx)
+    // Target tracking: on-device detectors, models bundled in the APK (no Play services download).
+    implementation(libs.mlkit.face.detection)
+    implementation(libs.mlkit.pose.detection)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)

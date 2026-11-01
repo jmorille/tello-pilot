@@ -84,7 +84,16 @@ data class FlightUiState(
     val gamepad: com.drone.tellopilot.input.GamepadStatus = com.drone.tellopilot.input.GamepadStatus.NONE,
     /** The gamepad is flying: screen sticks invisible (but still touchable). */
     val sticksHidden: Boolean = false,
+    val autopilot: com.drone.tellopilot.tracking.AutopilotState = com.drone.tellopilot.tracking.AutopilotState.Idle,
+    /** Wi-Fi is up but not on the drone (Android went back to another network). */
+    val otherWifi: Boolean = false,
 ) {
+    val autopilotActive: Boolean get() = autopilot != com.drone.tellopilot.tracking.AutopilotState.Idle
+
+    /** Missions offered in flight: the presets, then the pilot's own. */
+    val missions: List<com.drone.tello.control.Mission>
+        get() = com.drone.tello.control.Mission.Presets + pilot.customMissions
+
     val controlsEnabled: Boolean get() = status == ConnectionStatus.CONNECTED
     val warning: Warning? get() = warnings.firstOrNull()
     val units: Units get() = pilot.units
@@ -107,6 +116,8 @@ data class FlightUiState(
             gamepad: com.drone.tellopilot.input.GamepadStatus = com.drone.tellopilot.input.GamepadStatus.NONE,
             phoneHeat: com.drone.tellopilot.data.PhoneHeat = com.drone.tellopilot.data.PhoneHeat.NORMAL,
             padDriving: Boolean = false,
+            autopilot: com.drone.tellopilot.tracking.AutopilotState = com.drone.tellopilot.tracking.AutopilotState.Idle,
+            otherWifi: Boolean = false,
         ): FlightUiState {
             val status = when {
                 !wifiAvailable -> ConnectionStatus.WAITING_WIFI
@@ -149,6 +160,8 @@ data class FlightUiState(
                 // are), and come back as soon as the pilot touches one or the pad goes away.
                 sticksHidden = pilot.hideSticksWithPad && padDriving &&
                     gamepad == com.drone.tellopilot.input.GamepadStatus.READY,
+                autopilot = autopilot,
+                otherWifi = otherWifi && status == ConnectionStatus.WAITING_WIFI,
             )
         }
     }
@@ -168,4 +181,8 @@ sealed interface FlightAction {
     data object ToggleRecording : FlightAction
     /** Fingers lifted / app paused: sticks back to neutral. */
     data object ReleaseSticks : FlightAction
+    data class StartMission(val mission: com.drone.tello.control.Mission) : FlightAction
+    /** [orbitDirection]: +1 = to the right, -1 = to the left (orbit only). */
+    data class StartTracking(val mode: com.drone.tello.control.TrackingMode, val orbitDirection: Int = 1) : FlightAction
+    data object StopAutopilot : FlightAction
 }

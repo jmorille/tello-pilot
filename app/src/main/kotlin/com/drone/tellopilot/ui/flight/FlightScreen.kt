@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -62,13 +64,16 @@ import com.drone.tellopilot.R
 import com.drone.tellopilot.video.FrameSink
 
 @Composable
-fun FlightRoute(onOpenSettings: () -> Unit, viewModel: FlightViewModel = hiltViewModel()) {
+fun FlightRoute(onOpenSettings: () -> Unit, onOpenGallery: () -> Unit = {}, viewModel: FlightViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val resources = LocalResources.current
     LaunchedEffect(viewModel) {
         viewModel.messages.collect { message ->
             val text = when (message) {
+                is UserMessage.AutopilotEnded -> autopilotEndText(message.end)
+                UserMessage.AutopilotUnavailable -> R.string.autopilot_unavailable
+                UserMessage.SmartVideoInterrupted -> R.string.message_smart_video_interrupted
                 UserMessage.PhotoSaved -> R.string.message_photo_saved
                 UserMessage.PhotoFailed -> R.string.message_photo_failed
                 UserMessage.VideoSaved -> R.string.message_video_saved
@@ -85,7 +90,10 @@ fun FlightRoute(onOpenSettings: () -> Unit, viewModel: FlightViewModel = hiltVie
         viewModel.setGamepadActive(false)
         viewModel.onAction(FlightAction.ReleaseSticks)
     }
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.setGamepadActive(true) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        viewModel.setGamepadActive(true)
+        viewModel.onForeground()
+    }
 
     // A back gesture would close the flight screen and cut the link: ignored while flying.
     BackHandler(enabled = state.flying) { }
@@ -103,6 +111,8 @@ fun FlightRoute(onOpenSettings: () -> Unit, viewModel: FlightViewModel = hiltVie
         attachVideo = viewModel::attachVideo,
         detachVideo = viewModel::detachVideo,
         onOpenSettings = onOpenSettings,
+        onOpenGallery = onOpenGallery,
+        onConnectDrone = viewModel::connectToDrone,
         snackbar = snackbar,
     )
 }
@@ -117,6 +127,8 @@ fun FlightScreen(
     attachVideo: (FrameSink) -> Unit,
     detachVideo: (FrameSink) -> Unit,
     onOpenSettings: () -> Unit = {},
+    onOpenGallery: () -> Unit = {},
+    onConnectDrone: () -> Unit = {},
     snackbar: SnackbarHostState = remember { SnackbarHostState() },
 ) {
     val stickSize = state.pilot.joystickSizeDp.dp
@@ -129,15 +141,37 @@ fun FlightScreen(
     )
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         VideoView(attachVideo, detachVideo, Modifier.align(Alignment.Center), sharpen = state.pilot.videoSharpen)
+        (state.autopilot as? com.drone.tellopilot.tracking.AutopilotState.Tracking)?.let {
+            TrackingOverlay(it, Modifier.align(Alignment.Center))
+        }
+        if (state.autopilotActive) {
+            AutopilotBanner(
+                state.autopilot,
+                onStop = { onAction(FlightAction.StopAutopilot) },
+                modifier = Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(top = 56.dp).widthIn(max = 460.dp),
+            )
+        }
 
         if (!state.videoActive) {
-            Text(
-                text = stringResource(statusText(state.status, video = state.status == ConnectionStatus.CONNECTED)),
-                color = Color(0xFFFFD54F),
-                style = MaterialTheme.typography.headlineSmall,
+            Column(
                 // Upper third: the action panel occupies the bottom centre.
-                modifier = Modifier.align(Alignment.Center).offset(y = (-96).dp),
-            )
+                Modifier.align(Alignment.Center).offset(y = (-80).dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = stringResource(
+                        if (state.otherWifi) R.string.status_other_wifi
+                        else statusText(state.status, video = state.status == ConnectionStatus.CONNECTED),
+                    ),
+                    color = Color(0xFFFFD54F),
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+                if (state.status == ConnectionStatus.WAITING_WIFI) {
+                    androidx.compose.material3.Button(onClick = onConnectDrone, modifier = Modifier.padding(top = 12.dp)) {
+                        Text(stringResource(R.string.action_connect_drone))
+                    }
+                }
+            }
         }
 
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
@@ -146,7 +180,7 @@ fun FlightScreen(
             Row(verticalAlignment = Alignment.Top) {
                 // The HUD takes what the icons leave: the actions (stop recording…) never get squeezed out.
                 Box(Modifier.weight(1f)) { TopBar(state) }
-                TopActions(state, onAction, onOpenSettings)
+                TopActions(state, onAction, onOpenSettings, onOpenGallery)
             }
             // The two most severe alerts.
             state.warnings.take(2).forEach {
@@ -245,7 +279,12 @@ private fun HudText(text: String, color: Color = Color.White) {
 
 /** Icon actions, top right: small translucent circles that leave the video visible. */
 @Composable
-private fun TopActions(state: FlightUiState, onAction: (FlightAction) -> Unit, onOpenSettings: () -> Unit) {
+private fun TopActions(
+    state: FlightUiState,
+    onAction: (FlightAction) -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenGallery: () -> Unit,
+) {
     val enabled = state.controlsEnabled
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
         if (state.flying) {
@@ -256,6 +295,14 @@ private fun TopActions(state: FlightUiState, onAction: (FlightAction) -> Unit, o
                 }
             } else {
                 ModesMenu(state, enabled, onAction)
+            }
+            if (state.autopilotActive) {
+                // Always reachable, even while reconnecting.
+                HudIcon(R.drawable.ic_stop, R.string.autopilot_stop, true, tint = Color(0xFF4FC3F7), selected = true) {
+                    onAction(FlightAction.StopAutopilot)
+                }
+            } else {
+                AutopilotMenu(state, enabled && !state.smartVideoRunning, onAction)
             }
         } else {
             HudIcon(R.drawable.ic_throw, R.string.action_throw, enabled) { onAction(FlightAction.ThrowTakeoff) }
@@ -276,6 +323,8 @@ private fun TopActions(state: FlightUiState, onAction: (FlightAction) -> Unit, o
             tint = if (recording) Color(0xFFEF5350) else Color.White,
             selected = recording,
         ) { onAction(FlightAction.ToggleRecording) }
+        // On the ground only, like the settings: nothing must hide the flight screen in the air.
+        if (!state.flying) HudIcon(R.drawable.ic_gallery, R.string.action_gallery, true, onClick = onOpenGallery)
         HudIcon(R.drawable.ic_settings, R.string.action_settings, state.settingsAvailable, onClick = onOpenSettings)
     }
 }
@@ -404,6 +453,111 @@ private fun ModesMenu(state: FlightUiState, enabled: Boolean, onAction: (FlightA
         if (flipPad) {
             FlipPad(onFlip = { flipPad = false; onAction(FlightAction.Flip(it)) }, onDismiss = { flipPad = false })
         }
+    }
+}
+
+@Composable
+private fun AutopilotMenu(state: FlightUiState, enabled: Boolean, onAction: (FlightAction) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        HudIcon(R.drawable.ic_autopilot, R.string.action_autopilot, enabled) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }, offset = MenuTowardCentre, properties = NonFocusablePopup) {
+            MenuHeader(R.string.autopilot_tracking)
+            listOf(
+                R.string.tracking_follow to FlightAction.StartTracking(com.drone.tello.control.TrackingMode.FOLLOW),
+                R.string.tracking_spotlight to FlightAction.StartTracking(com.drone.tello.control.TrackingMode.SPOTLIGHT),
+                R.string.tracking_orbit_left to FlightAction.StartTracking(com.drone.tello.control.TrackingMode.ORBIT, -1),
+                R.string.tracking_orbit_right to FlightAction.StartTracking(com.drone.tello.control.TrackingMode.ORBIT, 1),
+            ).forEach { (label, action) ->
+                DropdownMenuItem(text = { Text(stringResource(label)) }, onClick = { open = false; onAction(action) })
+            }
+            MenuHeader(R.string.autopilot_missions)
+            state.missions.forEach { mission ->
+                DropdownMenuItem(
+                    text = { Text(mission.name) },
+                    onClick = { open = false; onAction(FlightAction.StartMission(mission)) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MenuHeader(text: Int) {
+    Text(
+        stringResource(text),
+        Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.primary,
+    )
+}
+
+/** What the automatic flight is doing, and how to take control back. */
+@Composable
+private fun AutopilotBanner(
+    autopilot: com.drone.tellopilot.tracking.AutopilotState,
+    onStop: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val text = when (autopilot) {
+        is com.drone.tellopilot.tracking.AutopilotState.RunningMission ->
+            stringResource(R.string.autopilot_mission_running, autopilot.name, autopilot.step, autopilot.total)
+        is com.drone.tellopilot.tracking.AutopilotState.Tracking -> stringResource(
+            if (autopilot.target == null) R.string.autopilot_tracking_search else R.string.autopilot_tracking_running,
+            stringResource(trackingModeLabel(autopilot.mode)),
+        )
+        com.drone.tellopilot.tracking.AutopilotState.Idle -> return
+    }
+    Row(
+        modifier.background(Color.Black.copy(alpha = 0.55f), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f, fill = false)) {
+            Text(text, color = Color.White, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+            Text(
+                stringResource(R.string.autopilot_takeover_hint),
+                color = Color.White.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+            )
+        }
+        androidx.compose.material3.TextButton(onClick = onStop) { Text(stringResource(R.string.autopilot_stop)) }
+    }
+}
+
+private fun trackingModeLabel(mode: com.drone.tello.control.TrackingMode) = when (mode) {
+    com.drone.tello.control.TrackingMode.FOLLOW -> R.string.tracking_follow
+    com.drone.tello.control.TrackingMode.SPOTLIGHT -> R.string.tracking_spotlight
+    com.drone.tello.control.TrackingMode.ORBIT -> R.string.tracking_orbit
+}
+
+/** Frame around the followed target, drawn over the 4:3 video. */
+@Composable
+private fun TrackingOverlay(tracking: com.drone.tellopilot.tracking.AutopilotState.Tracking, modifier: Modifier) {
+    val box = tracking.target ?: return
+    androidx.compose.foundation.Canvas(modifier.then(Modifier.fillMaxHeight().aspectRatio(4f / 3f))) {
+        drawRect(
+            color = Color(0xFF4FC3F7),
+            topLeft = androidx.compose.ui.geometry.Offset(box.left * size.width, box.top * size.height),
+            size = androidx.compose.ui.geometry.Size(box.width() * size.width, box.height() * size.height),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx()),
+        )
+    }
+}
+
+private fun autopilotEndText(end: com.drone.tellopilot.tracking.AutopilotEnd) = when (end) {
+    com.drone.tellopilot.tracking.AutopilotEnd.MissionDone -> R.string.autopilot_end_done
+    com.drone.tellopilot.tracking.AutopilotEnd.PilotTookOver -> R.string.autopilot_end_pilot
+    com.drone.tellopilot.tracking.AutopilotEnd.TargetLost -> R.string.autopilot_end_lost
+    com.drone.tellopilot.tracking.AutopilotEnd.Stopped -> R.string.autopilot_end_stopped
+    com.drone.tellopilot.tracking.AutopilotEnd.Failed -> R.string.autopilot_end_failed
+    is com.drone.tellopilot.tracking.AutopilotEnd.MissionAborted -> when (end.reason) {
+        com.drone.tello.control.MissionAbort.NOT_FLYING -> R.string.autopilot_abort_not_flying
+        com.drone.tello.control.MissionAbort.LINK_LOST -> R.string.autopilot_abort_link
+        com.drone.tello.control.MissionAbort.LOW_BATTERY -> R.string.autopilot_abort_battery
+        com.drone.tello.control.MissionAbort.NO_POSITIONING -> R.string.autopilot_abort_positioning
+        com.drone.tello.control.MissionAbort.STEP_TIMEOUT -> R.string.autopilot_abort_timeout
     }
 }
 

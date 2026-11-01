@@ -10,6 +10,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -64,6 +65,44 @@ fun VideoSection(
         Text(stringResource(R.string.settings_transcode_existing))
     }
     TranscodeStatus(state)
+    NotificationsHint()
+}
+
+/** Shown when notifications are off: the re-encoding progress is then invisible outside the app. */
+@Composable
+private fun NotificationsHint() {
+    val context = LocalContext.current
+    var enabled by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf(androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled())
+    }
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        enabled = androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
+        onPauseOrDispose { }
+    }
+    if (enabled) return
+    val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        enabled = granted
+        if (!granted) {
+            // Refused for good: only the system settings can turn them back on.
+            context.startActivity(
+                android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName),
+            )
+        }
+    }
+    Text(stringResource(R.string.settings_notifications_off), style = MaterialTheme.typography.bodySmall)
+    OutlinedButton(onClick = {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            launcher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            context.startActivity(
+                android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName),
+            )
+        }
+    }) { Text(stringResource(R.string.settings_notifications_allow)) }
 }
 
 @Composable

@@ -12,6 +12,9 @@ enum class VideoBitrate(val code: Int, val label: String) {
 
 enum class Units { METRIC, IMPERIAL }
 
+/** What target tracking looks for in the video. */
+enum class TrackingTarget { PERSON, FACE }
+
 /** Target format of the post-flight re-encoding of recorded videos. */
 enum class TranscodeCodec(val suffix: String) { HEVC("hevc"), AV1("av1") }
 
@@ -35,6 +38,9 @@ data class PilotSettings(
     val transcodeCodec: TranscodeCodec = TranscodeCodec.HEVC,
     /** Keep the original H.264 file next to the re-encoded one. */
     val keepOriginal: Boolean = false,
+    /** Missions created by the pilot (the presets come in addition). */
+    val customMissions: List<Mission> = emptyList(),
+    val trackingTarget: TrackingTarget = TrackingTarget.PERSON,
     /** Gamepad button assignment. */
     val padBindings: GamepadBindings = GamepadBindings.Default,
 ) {

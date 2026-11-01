@@ -84,6 +84,26 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         checkLocalNetwork()
+        if (!localNetworkRequestPending) askNotificationsOnce()
+    }
+
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    /**
+     * Notifications (progress of the post-flight re-encoding) are asked for once, never in
+     * flight: refused, they can still be allowed from Settings › Recording and videos.
+     */
+    private fun askNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_NOTIFICATIONS_ASKED, false) || session.lastFlight?.flying == true) return
+        prefs.edit().putBoolean(KEY_NOTIFICATIONS_ASKED, true).apply()
+        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -154,7 +174,13 @@ class MainActivity : ComponentActivity() {
                 // The flight destination stays on the back stack while settings are open:
                 // its ViewModel (and the drone session) keeps running.
                 NavHost(nav, startDestination = Flight) {
-                    composable<Flight> { FlightRoute(onOpenSettings = { nav.navigate(Settings) { launchSingleTop = true } }) }
+                    composable<Flight> {
+                        FlightRoute(
+                            onOpenSettings = { nav.navigate(Settings) { launchSingleTop = true } },
+                            onOpenGallery = { nav.navigate(Gallery) { launchSingleTop = true } },
+                        )
+                    }
+                    composable<Gallery> { com.drone.tellopilot.ui.gallery.GalleryRoute(onBack = { nav.popBackStack() }) }
                     composable<Settings> {
                         SettingsRoute(
                             onBack = { nav.popBackStack() },
@@ -174,6 +200,9 @@ class MainActivity : ComponentActivity() {
 private data object Flight
 
 @Serializable
+private data object Gallery
+
+@Serializable
 private data object Settings
 
 @Serializable
@@ -185,6 +214,8 @@ private data object GamepadConfig
 /** First release enforcing the local network permission (Android 17). */
 private const val LOCAL_NETWORK_API = 37
 private const val KEY_LOCAL_NETWORK_PENDING = "local_network_pending"
+        const val PREFS = "app"
+        const val KEY_NOTIFICATIONS_ASKED = "notifications_asked"
 
 /** Seen missing in this process: once granted, the session must reopen its sockets. */
 private var localNetworkMissing = false
