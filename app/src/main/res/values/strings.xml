@@ -179,5 +179,7 @@
     <string name="pad_cmd_fast">Mode rapide</string>
     <string name="pad_cmd_stop_smart">Arrêter la vidéo auto</string>
     <string name="pad_action_flip">Flip %1$s</string>
+    <string name="warning_phone_overheating">Téléphone en surchauffe : vidéo et commandes ralenties, atterrissez</string>
+    <string name="warning_phone_hot">Téléphone chaud : mettez-le à l\'ombre</string>
 </resources>
 

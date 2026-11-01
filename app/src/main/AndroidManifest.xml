@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Android 17 (target 37): without it every datagram to 192.168.10.1 fails with EPERM. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 

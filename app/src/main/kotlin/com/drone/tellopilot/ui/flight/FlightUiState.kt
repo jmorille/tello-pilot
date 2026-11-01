@@ -18,7 +18,11 @@ enum class Warning(val critical: Boolean) {
     MOTOR_ERROR(true),
     IMU_ERROR(true),
     BATTERY_ERROR(true),
+    /** The phone throttles: video and controls may lag. */
+    PHONE_OVERHEATING(true),
     BATTERY_LOW(false),
+    /** The phone is close to throttling. */
+    PHONE_HOT(false),
     WIND(false),
     NO_POSITIONING(false),
     VISION_SENSOR(false),
@@ -99,6 +103,7 @@ data class FlightUiState(
             pilot: PilotSettings = PilotSettings(),
             maneuvers: ManeuverState = ManeuverState(),
             gamepad: com.drone.tellopilot.input.GamepadStatus = com.drone.tellopilot.input.GamepadStatus.NONE,
+            phoneHeat: com.drone.tellopilot.data.PhoneHeat = com.drone.tellopilot.data.PhoneHeat.NORMAL,
         ): FlightUiState {
             val status = when {
                 !wifiAvailable -> ConnectionStatus.WAITING_WIFI
@@ -119,7 +124,14 @@ data class FlightUiState(
                 flying = flight?.flying ?: knownFlying,
                 fastMode = fastMode,
                 videoActive = videoActive && live,
-                warnings = flight?.let { Warning.from(it, telemetry) }.orEmpty(),
+                // Phone warnings do not depend on the link; critical ones first (two are shown).
+                warnings = (
+                    flight?.let { Warning.from(it, telemetry) }.orEmpty() + when (phoneHeat) {
+                        com.drone.tellopilot.data.PhoneHeat.HOT -> listOf(Warning.PHONE_OVERHEATING)
+                        com.drone.tellopilot.data.PhoneHeat.WARM -> listOf(Warning.PHONE_HOT)
+                        com.drone.tellopilot.data.PhoneHeat.NORMAL -> emptyList()
+                    }
+                    ).sortedBy { !it.critical },
                 motorErrorCode = flight?.motorErrorCode ?: 0,
                 recording = recording,
                 photoProgress = photoProgress.takeIf { live },

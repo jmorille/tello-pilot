@@ -286,6 +286,8 @@ private fun WarningBanner(warning: Warning, motorErrorCode: Int, modifier: Modif
         Warning.MOTOR_ERROR -> stringResource(R.string.warning_motor_error, motorErrorCode)
         Warning.IMU_ERROR -> stringResource(R.string.warning_imu_error)
         Warning.BATTERY_ERROR -> stringResource(R.string.warning_battery_error)
+        Warning.PHONE_OVERHEATING -> stringResource(R.string.warning_phone_overheating)
+        Warning.PHONE_HOT -> stringResource(R.string.warning_phone_hot)
         Warning.BATTERY_LOW -> stringResource(R.string.warning_battery_low)
         Warning.WIND -> stringResource(R.string.warning_wind)
         Warning.NO_POSITIONING -> stringResource(R.string.warning_no_positioning)

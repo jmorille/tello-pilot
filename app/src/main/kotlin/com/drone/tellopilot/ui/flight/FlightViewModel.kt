@@ -12,6 +12,8 @@ import com.drone.tello.control.TelloController
 import com.drone.tello.protocol.FlipDirection
 import com.drone.tello.protocol.SmartVideoMode
 import com.drone.tellopilot.data.DroneSession
+import com.drone.tellopilot.data.Haptics
+import com.drone.tellopilot.data.PhoneThermal
 import com.drone.tellopilot.data.RealtimeThreads
 import com.drone.tellopilot.data.SettingsRepository
 import com.drone.tellopilot.input.GamepadInput
@@ -51,6 +53,8 @@ class FlightViewModel @Inject constructor(
     private val session: DroneSession,
     private val recorder: VideoRecorder,
     private val gamepad: GamepadInput,
+    private val haptics: Haptics,
+    phoneThermal: PhoneThermal,
     settings: SettingsRepository,
 ) : ViewModel(), GamepadInput.Listener {
 
@@ -81,10 +85,10 @@ class FlightViewModel @Inject constructor(
         combine(session.wifiAvailable, session.link, session.telemetry, ::Triple),
         combine(session.videoActive, fastMode, knownFlying, ::Triple),
         combine(recordingUi, session.photoProgress, ::Pair),
-        combine(session.maneuvers, gamepad.status, ::Pair),
+        combine(session.maneuvers, gamepad.status, phoneThermal.heat, ::Triple),
         pilot,
-    ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), (maneuvers, pad), pilot ->
-        FlightUiState.from(wifi, link, telemetry, video, fast, flying, recording, photo, pilot, maneuvers, pad)
+    ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), (maneuvers, pad, heat), pilot ->
+        FlightUiState.from(wifi, link, telemetry, video, fast, flying, recording, photo, pilot, maneuvers, pad, heat)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, FlightUiState())
 
     init {
@@ -116,6 +120,26 @@ class FlightViewModel @Inject constructor(
         }
         viewModelScope.launch {
             session.events.collect { if (it is DroneEvent.ManeuverRefused) _messages.trySend(UserMessage.DroneRefused) }
+        }
+        viewModelScope.launch { vibrateOnAlerts() }
+    }
+
+    /** Felt without looking: link lost, and every new alert (once per appearance). */
+    private suspend fun vibrateOnAlerts() {
+        var previous = FlightUiState()
+        val lastVibration = HashMap<Warning, Long>()
+        uiState.collect { state ->
+            val linkLost = state.status == ConnectionStatus.RECONNECTING && previous.status == ConnectionStatus.CONNECTED
+            val now = android.os.SystemClock.elapsedRealtime()
+            // A flapping alert (wind, battery around the threshold) vibrates at most every 30 s.
+            val fresh = (state.warnings - previous.warnings.toSet())
+                .filter { now - (lastVibration[it] ?: (Long.MIN_VALUE / 2)) > ALERT_REPEAT_MS }
+            fresh.forEach { lastVibration[it] = now }
+            when {
+                (linkLost && state.flying) || fresh.any { it.critical } -> haptics.critical()
+                linkLost || fresh.isNotEmpty() -> haptics.warning()
+            }
+            previous = state
         }
     }
 
@@ -203,10 +227,10 @@ class FlightViewModel @Inject constructor(
 
     fun onAction(action: FlightAction) {
         when (action) {
-            FlightAction.Takeoff -> command { takeoff() }
-            FlightAction.Land -> command { land() }
-            FlightAction.ThrowTakeoff -> command { throwTakeoff() }
-            FlightAction.PalmLand -> command { palmLand() }
+            FlightAction.Takeoff -> confirmed { takeoff() }
+            FlightAction.Land -> confirmed { land() }
+            FlightAction.ThrowTakeoff -> confirmed { throwTakeoff() }
+            FlightAction.PalmLand -> confirmed { palmLand() }
             is FlightAction.Flip -> modeCommand { flip(action.direction) }
             is FlightAction.SetBounce -> modeCommand { setBounce(action.enabled) }
             is FlightAction.StartSmartVideo -> modeCommand { startSmartVideo(action.mode) }
@@ -244,6 +268,12 @@ class FlightViewModel @Inject constructor(
     fun attachVideo(sink: FrameSink) = session.attachVideo(sink)
     fun detachVideo(sink: FrameSink) = session.detachVideo(sink)
 
+    /** Takeoff / landing: a vibration confirms the command left (touch or gamepad). */
+    private fun confirmed(block: suspend TelloController.() -> Boolean) {
+        if (session.controller.value != null) haptics.confirm()
+        command(block)
+    }
+
     /** Network I/O never runs on the main thread. */
     private fun command(block: suspend TelloController.() -> Boolean) {
         val controller = session.controller.value ?: return
@@ -270,6 +300,7 @@ class FlightViewModel @Inject constructor(
 }
 
 private const val PAD_COMBO_COOLDOWN_MS = 2_000L
+private const val ALERT_REPEAT_MS = 30_000L
 
 /** Convenience used by the UI. */
 val SmartVideoMode.label: Int

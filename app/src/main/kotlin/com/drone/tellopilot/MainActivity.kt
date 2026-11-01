@@ -72,6 +72,27 @@ class MainActivity : ComponentActivity() {
         if (!hasFocus) gamepad.release()
     }
 
+    override fun onResume() {
+        super.onResume()
+        preferHighestRefreshRate()
+    }
+
+    /**
+     * The Pixel drops to 60 Hz when the content changes little (30 fps drone video): pinning the
+     * highest refresh rate of the current resolution halves the touch sampling and display delay.
+     * Only while the app is in the foreground.
+     */
+    private fun preferHighestRefreshRate() {
+        val display = window.decorView.display ?: return
+        val current = display.mode
+        val best = display.supportedModes
+            .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
+            .maxByOrNull { it.refreshRate } ?: return
+        if (window.attributes.preferredDisplayModeId != best.modeId) {
+            window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
+        }
+    }
+
     override fun onPause() {
         gamepad.release() // never keep a stick deflected in the background
         super.onPause()
