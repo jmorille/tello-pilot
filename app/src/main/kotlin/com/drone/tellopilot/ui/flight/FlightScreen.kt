@@ -45,7 +45,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.TextButton
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import com.drone.tello.control.Units
 import com.drone.tello.protocol.FlipDirection
 import com.drone.tellopilot.R
@@ -55,7 +55,7 @@ import com.drone.tellopilot.video.FrameSink
 fun FlightRoute(onOpenSettings: () -> Unit, viewModel: FlightViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
-    val context = LocalContext.current
+    val resources = LocalResources.current
     LaunchedEffect(viewModel) {
         viewModel.messages.collect { message ->
             val text = when (message) {
@@ -64,7 +64,7 @@ fun FlightRoute(onOpenSettings: () -> Unit, viewModel: FlightViewModel = hiltVie
                 UserMessage.VIDEO_SAVED -> R.string.message_video_saved
                 UserMessage.VIDEO_FAILED -> R.string.message_video_failed
             }
-            snackbar.showSnackbar(context.getString(text))
+            snackbar.showSnackbar(resources.getString(text))
         }
     }
 
@@ -76,7 +76,7 @@ fun FlightRoute(onOpenSettings: () -> Unit, viewModel: FlightViewModel = hiltVie
 
     // Deliver touch events as soon as they arrive instead of batching them per vsync.
     val view = LocalView.current
-    LaunchedEffect(view) { view.requestUnbufferedDispatch(InputDevice.SOURCE_TOUCHSCREEN) }
+    LaunchedEffect(view) { view.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_POINTER) }
 
     FlightScreen(
         state = state,
