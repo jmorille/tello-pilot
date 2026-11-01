@@ -26,7 +26,7 @@ def main() -> int:
                 except ValueError:
                     score = 0.0
                 rows.append((score, "%s:%s" % (info.get("name"), info.get("version")),
-                             ", ".join(group.get("ids", [])), os.path.relpath(source)))
+                             ", ".join(group.get("ids", [])), source.replace("/github/workspace/", "")))
     rows.sort(reverse=True)
     lines = ["## OSV-Scanner: %d vulnerability group(s)" % len(rows), ""]
     if rows:
