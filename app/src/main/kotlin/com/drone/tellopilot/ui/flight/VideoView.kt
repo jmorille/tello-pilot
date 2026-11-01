@@ -28,10 +28,12 @@ fun VideoView(
     detach: (FrameSink) -> Unit,
     modifier: Modifier = Modifier,
     sharpen: Boolean = true,
+    /** false: the picture is stretched to the modifier's size (wide stretch modes). */
+    keepAspect: Boolean = true,
 ) {
     // Switching the GPU path rebuilds the surface, the decoder and (if any) the GL renderer.
     key(sharpen) {
-    AndroidExternalSurface(modifier.aspectRatio(4f / 3f)) {
+    AndroidExternalSurface(if (keepAspect) modifier.aspectRatio(4f / 3f) else modifier) {
         onSurface { surface, width, height ->
             var decoder: H264Decoder? = null
             var sharpener: GpuSharpener? = null

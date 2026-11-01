@@ -153,7 +153,11 @@ fun FlightScreen(
             // requiredSize: in the cropped modes the 4:3 surface is taller than the screen and
             // overflows it evenly at the top and bottom (cut by the display itself).
             val videoModifier = Modifier.align(Alignment.Center).requiredSize(videoSize.first, videoSize.second)
-            VideoView(attachVideo, detachVideo, videoModifier, sharpen = state.pilot.videoSharpen)
+            VideoView(
+                attachVideo, detachVideo, videoModifier,
+                sharpen = state.pilot.videoSharpen,
+                keepAspect = !state.pilot.videoFit.stretched,
+            )
             (state.autopilot as? com.drone.tellopilot.tracking.AutopilotState.Tracking)?.let {
                 TrackingOverlay(it, videoModifier)
             }
@@ -624,14 +628,19 @@ private fun videoSize(
     val screenAspect = if (maxHeight.value > 0f) maxWidth.value / maxHeight.value else VIDEO_ASPECT
     val visibleAspect = when (fit) {
         com.drone.tello.control.VideoFit.FIT -> VIDEO_ASPECT
-        com.drone.tello.control.VideoFit.WIDE -> 16f / 9f
-        com.drone.tello.control.VideoFit.FILL -> screenAspect
+        com.drone.tello.control.VideoFit.WIDE, com.drone.tello.control.VideoFit.STRETCH_WIDE -> 16f / 9f
+        com.drone.tello.control.VideoFit.FILL, com.drone.tello.control.VideoFit.STRETCH_FULL -> screenAspect
     }.coerceAtLeast(VIDEO_ASPECT) // never narrower than the full picture
     val width = minOf(maxWidth.value, maxHeight.value * visibleAspect)
+    // Stretched: the whole picture height, widened to the window (proportions not kept).
+    if (fit.stretched) return width.dp to minOf(maxHeight.value, width / VIDEO_ASPECT).dp
     return width.dp to (width / VIDEO_ASPECT).dp
 }
 
 private const val VIDEO_ASPECT = 4f / 3f
+
+private val com.drone.tello.control.VideoFit.stretched: Boolean
+    get() = this == com.drone.tello.control.VideoFit.STRETCH_WIDE || this == com.drone.tello.control.VideoFit.STRETCH_FULL
 private const val VARIO_DEADBAND = 0.1f
 /** Unverified threshold: shown in amber above it. */
 private const val HOT_DRONE_C = 60f

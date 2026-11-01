@@ -257,7 +257,8 @@ private fun DisplaySettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
     }
     Text(stringResource(R.string.settings_hud_items_help), style = MaterialTheme.typography.bodySmall)
     Label(R.string.settings_video_fit)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         com.drone.tello.control.VideoFit.entries.forEach { f ->
             FilterChip(
                 selected = pilot.videoFit == f,
@@ -267,6 +268,8 @@ private fun DisplaySettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
                         com.drone.tello.control.VideoFit.FILL -> R.string.settings_video_fit_fill
                         com.drone.tello.control.VideoFit.WIDE -> R.string.settings_video_fit_wide
                         com.drone.tello.control.VideoFit.FIT -> R.string.settings_video_fit_fit
+                        com.drone.tello.control.VideoFit.STRETCH_WIDE -> R.string.settings_video_fit_stretch_wide
+                        com.drone.tello.control.VideoFit.STRETCH_FULL -> R.string.settings_video_fit_stretch_full
                     }))
                 },
             )

@@ -19,7 +19,12 @@ enum class TrackingTarget { PERSON, FACE }
  * How the 4:3 drone video fills a wide phone screen: the whole picture (black side bars),
  * cropped to 16:9, or cropped to the full screen width (top and bottom cut).
  */
-enum class VideoFit { FIT, WIDE, FILL }
+/**
+ * How the 4:3 video fills the screen: FIT/WIDE/FILL keep the proportions (FIT shows the whole
+ * picture, WIDE/FILL crop the top and bottom), STRETCH_* show the whole height and stretch the
+ * picture horizontally (16:9 or the full screen).
+ */
+enum class VideoFit { FIT, WIDE, FILL, STRETCH_WIDE, STRETCH_FULL }
 
 /**
  * Information the pilot may show or hide on the flight screen. Critical alerts, the alerts
@@ -52,7 +57,7 @@ data class PilotSettings(
     val hideSticksWithPad: Boolean = true,
     /** GPU upscaling + sharpening of the 960x720 video (about 1 ms more). */
     val videoSharpen: Boolean = true,
-    val videoFit: VideoFit = VideoFit.FILL,
+    val videoFit: VideoFit = VideoFit.FIT,
     /** Flight screen items the pilot chose to hide (new items are therefore shown by default). */
     val hiddenHud: Set<HudItem> = emptySet(),
     /** Re-encode each recorded video once landed (H.264 from the drone is large). */
