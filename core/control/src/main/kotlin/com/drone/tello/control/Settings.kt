@@ -72,7 +72,33 @@ data class PilotSettings(
     val trackingTarget: TrackingTarget = TrackingTarget.PERSON,
     /** Gamepad button assignment. */
     val padBindings: GamepadBindings = GamepadBindings.Default,
+    /**
+     * Safety bubble of the automatic flights: a cylinder around their start point (radius
+     * [geofenceRadius], ceiling = the drone's max altitude). Leaving it aborts the flight.
+     */
+    val geofence: Boolean = true,
+    val geofenceRadius: Float = GEOFENCE_RADIUS_DEFAULT,
+    /** Manual flight: alert (never blocks the sticks) beyond [geofenceRadius] from the takeoff point. */
+    val geofenceManualAlert: Boolean = false,
+    /** Shock / crash detection: aborts an automatic flight, alerts in manual flight. */
+    val impactDetection: Boolean = true,
+    /** Missions turn toward each horizontal move first, so that the camera sees where it goes. */
+    val missionNoseFirst: Boolean = true,
+    /** Missions never fly faster than [missionMaxSpeed] horizontally. */
+    val missionSpeedLimit: Boolean = true,
+    /** m/s. */
+    val missionMaxSpeed: Float = MISSION_SPEED_DEFAULT,
 ) {
+    /** Mission runner tuning that follows these settings. */
+    fun missionConfig(): MissionConfig = MissionConfig(
+        noseFirst = missionNoseFirst,
+        maxHorizontalSpeed = missionMaxSpeed.coerceIn(MISSION_SPEED_RANGE).takeIf { missionSpeedLimit },
+    )
+
+    /** Bubble of the automatic flights, null when disabled; its ceiling is the drone's max altitude. */
+    fun geofenceConfig(maxAltitudeMeters: Int): GeofenceConfig? =
+        if (!geofence) null else GeofenceConfig(geofenceRadius.coerceIn(GEOFENCE_RADIUS_RANGE), maxAltitudeMeters.toFloat())
+
     fun shows(item: HudItem): Boolean = item !in hiddenHud
 
     val shaping: StickShaping get() = StickShaping(
@@ -87,6 +113,10 @@ data class PilotSettings(
         val TAKEOFF_HEIGHT_RANGE = 0.5f..3f
         const val TAKEOFF_HEIGHT_DEFAULT = 1.5f
         val JOYSTICK_SIZE_RANGE = 140..280
+        val GEOFENCE_RADIUS_RANGE = 2f..30f
+        const val GEOFENCE_RADIUS_DEFAULT = 5f
+        val MISSION_SPEED_RANGE = 0.2f..0.6f
+        const val MISSION_SPEED_DEFAULT = 0.5f
     }
 }
 

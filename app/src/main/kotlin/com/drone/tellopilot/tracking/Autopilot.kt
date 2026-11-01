@@ -3,6 +3,8 @@ package com.drone.tellopilot.tracking
 import android.graphics.RectF
 import android.os.SystemClock
 import android.util.Log
+import com.drone.tello.control.FenceStatus
+import com.drone.tello.control.Geofence
 import com.drone.tello.control.LinkState
 import com.drone.tello.control.Mission
 import com.drone.tello.control.MissionAbort
@@ -15,8 +17,10 @@ import com.drone.tello.control.TrackerTick
 import com.drone.tello.control.TrackingMode
 import com.drone.tello.control.TrackingTarget
 import com.drone.tello.protocol.StickInput
+import com.drone.tellopilot.data.AppSettings
 import com.drone.tellopilot.data.DroneSession
 import com.drone.tellopilot.data.RealtimeThreads
+import com.drone.tellopilot.data.SettingsRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -28,9 +32,11 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
@@ -64,7 +70,10 @@ sealed interface AutopilotEnd {
  * module); this class only feeds them telemetry / detections and applies their output.
  */
 @Singleton
-class Autopilot @Inject constructor(private val session: DroneSession) {
+class Autopilot @Inject constructor(
+    private val session: DroneSession,
+    settingsRepository: SettingsRepository,
+) {
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val loop = Dispatchers.Default.limitedParallelism(1)
@@ -72,6 +81,15 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
         SupervisorJob() + loop + CoroutineExceptionHandler { _, e -> Log.e(TAG, "automatic flight", e) },
     )
     private var job: Job? = null
+
+    /** Safety settings (bubble, nose first, speed limit), read when a flight starts. */
+    private val settings: StateFlow<AppSettings> =
+        settingsRepository.settings.stateIn(scope, SharingStarted.Eagerly, AppSettings())
+
+    private val _nearFence = MutableStateFlow(false)
+
+    /** The automatic flight is close to the edge of its safety bubble. */
+    val nearFence: StateFlow<Boolean> = _nearFence.asStateFlow()
 
     /** Identity of the current automatic flight; null when none. */
     private val current = AtomicReference<Any?>(null)
@@ -101,6 +119,7 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
         // must never be overwritten by a late automatic write.
         controller()?.setSticks(StickInput.Neutral)
         _state.value = AutopilotState.Idle
+        _nearFence.value = false
         _ends.trySend(end)
     }
 
@@ -130,6 +149,7 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
         active = false
         controller()?.setSticks(StickInput.Neutral)
         _state.value = AutopilotState.Idle
+        _nearFence.value = false
         _ends.trySend(end)
     }
 
@@ -142,6 +162,23 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
     @Synchronized
     private fun publish(token: Any, state: AutopilotState) {
         if (current.get() === token) _state.value = state
+    }
+
+    @Synchronized
+    private fun publishNearFence(token: Any, near: Boolean) {
+        if (current.get() === token) _nearFence.value = near
+    }
+
+    /** Odometry samples newer than the last one seen (each record is a new instance). */
+    private class OdometryFeed(controller: TelloController?) {
+        private var last: Any? = controller?.telemetry?.value?.odometry
+
+        fun next(controller: TelloController?): com.drone.tello.protocol.LogRecord.VisualOdometry? {
+            val odometry = controller?.telemetry?.value?.odometry ?: return null
+            if (odometry === last) return null
+            last = odometry
+            return odometry
+        }
     }
 
     private fun controller(): TelloController? = session.controller.value
@@ -182,9 +219,15 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
     }
 
     private suspend fun CoroutineScope.runMission(token: Any, mission: Mission): AutopilotEnd {
-        val runner = MissionRunner(mission)
+        val s = settings.value
+        val runner = MissionRunner(
+            mission,
+            s.pilot.missionConfig(),
+            s.pilot.geofenceConfig(s.drone.maxAltitudeMeters)?.let(::Geofence),
+        )
         val total = mission.steps.size
         val freshness = Freshness()
+        val odometry = OdometryFeed(controller())
         while (isActive) {
             val now = SystemClock.elapsedRealtime()
             val controller = controller()
@@ -193,9 +236,11 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
             if (controller != null && freshness.isNew(controller)) {
                 controller.telemetry.value.flight?.let { runner.onTelemetry(it, now) }
             }
+            odometry.next(controller)?.let { runner.onOdometry(it.x, it.y, it.positionValid, now) }
             when (val tick = runner.tick(now)) {
                 is MissionTick.Running -> {
                     publish(token, AutopilotState.RunningMission(mission.name, tick.stepIndex + 1, total))
+                    publishNearFence(token, runner.nearFence)
                     apply(token, tick.sticks)
                 }
                 MissionTick.Finished -> return AutopilotEnd.MissionDone
@@ -241,6 +286,11 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
         session.attachAnalysis(decoder)
         controller()?.let { c -> launch(RealtimeThreads.control) { c.requestKeyFrame() } }
         val freshness = Freshness()
+        // Tracking moves all the time: it needs a known position inside the bubble.
+        val s = settings.value
+        val geofence = s.pilot.geofenceConfig(s.drone.maxAltitudeMeters)?.let(::Geofence)
+        val odometry = OdometryFeed(controller())
+        geofence?.start(SystemClock.elapsedRealtime())
         var lockedId: Int? = null
         var lastConsumed = -1L
         var box: RectF? = null
@@ -250,6 +300,16 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
                 val now = SystemClock.elapsedRealtime()
                 val controller = controller()
                 freshness.check(controller, now)?.let { return AutopilotEnd.MissionAborted(it) }
+                if (geofence != null) {
+                    odometry.next(controller)?.let { geofence.onOdometry(it.x, it.y, it.positionValid, now) }
+                    val status = geofence.status(controller?.telemetry?.value?.flight?.heightMeters, now)
+                    publishNearFence(token, status == FenceStatus.NEAR)
+                    when (status) {
+                        FenceStatus.OUTSIDE, FenceStatus.TOO_HIGH -> return AutopilotEnd.MissionAborted(MissionAbort.GEOFENCE)
+                        FenceStatus.NO_POSITION -> return AutopilotEnd.MissionAborted(MissionAbort.NO_POSITIONING)
+                        else -> Unit
+                    }
+                }
                 val sample = latest.get()
                 if (sample != null && sample.second != lastConsumed) {
                     lastConsumed = sample.second
@@ -268,7 +328,9 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
                     is TrackerTick.Tracking -> {
                         if (tick.target == null) box = null
                         publish(token, AutopilotState.Tracking(mode, box))
-                        apply(token, limitTrackingHeight(tick.sticks, controller?.telemetry?.value?.flight?.heightMeters))
+                        // Bubble on but no position yet: hover until one comes (or the timeout aborts).
+                        val sticks = if (geofence != null && !geofence.positionKnown) StickInput.Neutral else tick.sticks
+                        apply(token, limitTrackingHeight(sticks, controller?.telemetry?.value?.flight?.heightMeters))
                     }
                 }
                 delay(TICK_MS)

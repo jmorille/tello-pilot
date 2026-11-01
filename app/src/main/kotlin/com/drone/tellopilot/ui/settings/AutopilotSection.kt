@@ -36,6 +36,7 @@ import com.drone.tello.control.PilotSettings
 import com.drone.tello.control.TrackingTarget
 import com.drone.tellopilot.R
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /** Settings pane of the automatic flights: tracking target and the pilot's own missions. */
 @Composable
@@ -54,6 +55,8 @@ fun AutopilotSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) -> Pil
         }
     }
     Text(stringResource(R.string.settings_autopilot_help), style = MaterialTheme.typography.bodySmall)
+
+    SafetySettings(pilot, updatePilot)
 
     Text(stringResource(R.string.settings_missions_presets), style = MaterialTheme.typography.bodyLarge)
     Mission.Presets.forEach { m ->
@@ -90,6 +93,38 @@ fun AutopilotSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) -> Pil
                 }
             },
         )
+    }
+}
+
+/** Protections of the automatic flights; each one can be switched off on its own. */
+@Composable
+private fun SafetySettings(pilot: PilotSettings, updatePilot: ((PilotSettings) -> PilotSettings) -> Unit) {
+    Text(stringResource(R.string.settings_safety_title), style = MaterialTheme.typography.titleSmall)
+    SwitchSetting(R.string.settings_geofence, pilot.geofence) { v -> updatePilot { it.copy(geofence = v) } }
+    SwitchSetting(R.string.settings_geofence_manual, pilot.geofenceManualAlert) { v ->
+        updatePilot { it.copy(geofenceManualAlert = v) }
+    }
+    if (pilot.geofence || pilot.geofenceManualAlert) {
+        SliderSetting(
+            label = { stringResource(R.string.settings_geofence_radius, it) },
+            value = pilot.geofenceRadius,
+            range = PilotSettings.GEOFENCE_RADIUS_RANGE,
+            steps = (PilotSettings.GEOFENCE_RADIUS_RANGE.endInclusive - PilotSettings.GEOFENCE_RADIUS_RANGE.start).roundToInt() - 1,
+        ) { v -> updatePilot { it.copy(geofenceRadius = v.roundToInt().toFloat()) } }
+    }
+    Text(stringResource(R.string.settings_geofence_help), style = MaterialTheme.typography.bodySmall)
+    SwitchSetting(R.string.settings_impact_detection, pilot.impactDetection) { v -> updatePilot { it.copy(impactDetection = v) } }
+    Text(stringResource(R.string.settings_impact_help), style = MaterialTheme.typography.bodySmall)
+    SwitchSetting(R.string.settings_nose_first, pilot.missionNoseFirst) { v -> updatePilot { it.copy(missionNoseFirst = v) } }
+    Text(stringResource(R.string.settings_nose_first_help), style = MaterialTheme.typography.bodySmall)
+    SwitchSetting(R.string.settings_mission_speed_limit, pilot.missionSpeedLimit) { v -> updatePilot { it.copy(missionSpeedLimit = v) } }
+    if (pilot.missionSpeedLimit) {
+        SliderSetting(
+            label = { stringResource(R.string.settings_mission_speed, it) },
+            value = pilot.missionMaxSpeed,
+            range = PilotSettings.MISSION_SPEED_RANGE,
+            steps = ((PilotSettings.MISSION_SPEED_RANGE.endInclusive - PilotSettings.MISSION_SPEED_RANGE.start) * 10).roundToInt() - 1,
+        ) { v -> updatePilot { it.copy(missionMaxSpeed = (v * 10).roundToInt() / 10f) } }
     }
 }
 

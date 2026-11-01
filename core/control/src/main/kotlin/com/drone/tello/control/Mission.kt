@@ -6,7 +6,10 @@ import kotlin.math.abs
 import kotlin.math.sign
 
 /** Horizontal direction of a [MissionStep.Move], relative to where the drone's nose points. */
-enum class MoveDirection { FORWARD, BACK, LEFT, RIGHT }
+enum class MoveDirection(
+    /** Direction of the move relative to the nose, degrees clockwise. */
+    val angle: Float,
+) { FORWARD(0f), BACK(180f), LEFT(-90f), RIGHT(90f) }
 
 /**
  * One step of a programmed mission. The Tello has no GPS: heights are measured (height sensor),
@@ -64,6 +67,41 @@ data class Mission(val name: String, val steps: List<MissionStep>) {
     /** `name|step;step;…` — the name never contains `|`, `;` or a line break. */
     fun encode(): String = cleanName(name) + "|" + steps.joinToString(";") { it.encode() }
 
+    /**
+     * Farthest horizontal distance from the start of the planned path (metres), assuming
+     * exact moves and rotations. Real flights drift (timed rotations, braking glide).
+     */
+    fun plannedMaxDistance(): Float {
+        var heading = 0.0 // degrees, clockwise
+        var x = 0.0 // right
+        var y = 0.0 // forward
+        var max = 0.0
+        steps.forEach { step ->
+            when (step) {
+                is MissionStep.Rotate -> heading += step.degrees
+                is MissionStep.Move -> {
+                    val a = Math.toRadians(heading + step.direction.angle)
+                    x += step.meters * kotlin.math.sin(a)
+                    y += step.meters * kotlin.math.cos(a)
+                    max = maxOf(max, kotlin.math.hypot(x, y))
+                }
+                else -> Unit
+            }
+        }
+        return max.toFloat()
+    }
+
+    /**
+     * Highest planned climb above the start height (metres, >= 0). A descent cut short by
+     * [MissionConfig.minHeight] can make the real path higher: each climb is checked again.
+     */
+    fun plannedMaxClimb(): Float {
+        var h = 0f
+        var max = 0f
+        steps.forEach { if (it is MissionStep.Climb) { h += it.meters; max = maxOf(max, h) } }
+        return max
+    }
+
     companion object {
         fun cleanName(name: String) = name.replace(Regex("[|;\\n\\r]"), " ").trim().take(40)
 
@@ -118,6 +156,21 @@ data class MissionConfig(
     val telemetryTimeoutMs: Long = 700,
     /** Every step, whatever it is, is abandoned after this long (longer than the longest hover). */
     val stepTimeoutMs: Long = 45_000,
+    /**
+     * Nose first: each horizontal move is flown forward, after turning toward it, so that the
+     * camera sees where the drone goes (the Tello has no obstacle sensor; the pilot does).
+     * See [MissionRunner] for how the heading is restored.
+     */
+    val noseFirst: Boolean = false,
+    /**
+     * Horizontal speed limit of the moves, m/s (null = [moveStick], no limit). The stick is
+     * derived from it ([stickPerMps]) and released while the measured speed is above it.
+     */
+    val maxHorizontalSpeed: Float? = null,
+    /** Stick per m/s of horizontal speed (about 0.6 m/s at 0.35, slow mode). */
+    val stickPerMps: Float = 0.58f,
+    /** Measured speed above the limit at which the stick is fully released (linear in between). */
+    val speedMargin: Float = 0.3f,
 )
 
 /** What the mission runner wants this tick. */
@@ -127,21 +180,51 @@ sealed interface MissionTick {
     data class Aborted(val reason: MissionAbort) : MissionTick
 }
 
-enum class MissionAbort { NOT_FLYING, LINK_LOST, LOW_BATTERY, NO_POSITIONING, STEP_TIMEOUT }
+enum class MissionAbort {
+    NOT_FLYING, LINK_LOST, LOW_BATTERY, NO_POSITIONING, STEP_TIMEOUT,
+    /** Out of (or planned out of) the safety bubble. */
+    GEOFENCE,
+    /** Shock or abnormal attitude detected (collision, propeller strike). */
+    IMPACT,
+}
 
 /**
  * Executes a [Mission] one step at a time, by computing stick positions from telemetry.
  * Pure and clock-driven ([tick] receives the time): fully testable, called by the app at the
  * stick rate. It never lands nor takes off: at the end (or on any problem) it hands back
  * neutral sticks, i.e. a hover, and the pilot is in charge again.
+ *
+ * Nose first ([MissionConfig.noseFirst]): the steps keep their meaning (directions relative to
+ * the nose at the start of the mission, turned by the mission's own rotations), but each
+ * horizontal move is flown forward after turning toward it. The heading is not restored after
+ * each move (that would turn the camera away again and double the timed, hence approximate,
+ * rotations): the next move turns by the difference only, and the original heading is
+ * restored once, at the end of the mission, so that the drone ends facing where it would
+ * have without the option. A mission aborted midway leaves the drone facing its last move.
+ *
+ * Safety bubble ([geofence]): the planned path must fit in it (checked before the first step),
+ * every climb target must stay under its ceiling, and the measured position (visual
+ * odometry, fed by [onOdometry]) must stay inside: otherwise [MissionAbort.GEOFENCE]. Without
+ * a trustworthy position, moves wait and then abort with [MissionAbort.NO_POSITIONING] (as
+ * when the drone itself cannot position); hovers, climbs and rotations go on.
  */
-class MissionRunner(val mission: Mission, private val config: MissionConfig = MissionConfig()) {
+class MissionRunner(
+    val mission: Mission,
+    private val config: MissionConfig = MissionConfig(),
+    private val geofence: Geofence? = null,
+) {
+
+    /** A step as flown, with the index of the mission step it comes from. */
+    private class Planned(val step: MissionStep, val source: Int)
+
+    private val plan: List<Planned> = plan(mission, config.noseFirst)
 
     private var index = 0
     private var stepStart = -1L
     private var lastTick = -1L
     private var lastTelemetryAt = -1L
     private var lastFlight: FlightData? = null
+    private var checkedPlan = false
 
     // Per-step state.
     private var targetHeight = 0f
@@ -150,7 +233,12 @@ class MissionRunner(val mission: Mission, private val config: MissionConfig = Mi
     private var brakingSince = -1L
     private var aborted: MissionAbort? = null
 
-    val stepIndex: Int get() = index
+    /** Index of the mission step being flown (inserted rotations count for their move). */
+    val stepIndex: Int get() = plan.getOrNull(index)?.source ?: mission.steps.size
+
+    /** The drone is close to the edge of the safety bubble (warn the pilot). */
+    var nearFence: Boolean = false
+        private set
 
     /** Feeds a telemetry sample (call on each flight data packet). */
     fun onTelemetry(flight: FlightData, nowMs: Long) {
@@ -158,9 +246,14 @@ class MissionRunner(val mission: Mission, private val config: MissionConfig = Mi
         lastTelemetryAt = nowMs
     }
 
+    /** Feeds a visual-odometry sample (call on each new one); ignored without a geofence. */
+    fun onOdometry(x: Float, y: Float, valid: Boolean, nowMs: Long) {
+        geofence?.onOdometry(x, y, valid, nowMs)
+    }
+
     fun tick(nowMs: Long): MissionTick {
         aborted?.let { return MissionTick.Aborted(it) }
-        if (index >= mission.steps.size) return MissionTick.Finished
+        if (index >= plan.size) return MissionTick.Finished
         val flight = lastFlight
         val problem = when {
             flight == null || nowMs - lastTelemetryAt > config.telemetryTimeoutMs -> MissionAbort.LINK_LOST
@@ -172,9 +265,40 @@ class MissionRunner(val mission: Mission, private val config: MissionConfig = Mi
         flight!!
         val dt = if (lastTick < 0) 0L else (nowMs - lastTick).coerceIn(0, 200)
         lastTick = nowMs
-        val step = mission.steps[index]
-        if (stepStart < 0) startStep(step, flight, nowMs)
-        if (nowMs - stepStart > config.stepTimeoutMs) return abort(MissionAbort.STEP_TIMEOUT)
+        val step = plan[index].step
+        if (geofence != null) {
+            if (!checkedPlan) {
+                checkedPlan = true
+                geofence.start(nowMs)
+                val c = geofence.config
+                if (mission.plannedMaxDistance() > c.radiusMeters ||
+                    flight.heightMeters + mission.plannedMaxClimb() > c.maxHeightMeters - CEILING_MARGIN
+                ) {
+                    return abort(MissionAbort.GEOFENCE)
+                }
+            }
+            val fenceStatus = geofence.status(flight.heightMeters, nowMs)
+            nearFence = fenceStatus == FenceStatus.NEAR
+            when (fenceStatus) {
+                FenceStatus.OUTSIDE, FenceStatus.TOO_HIGH -> return abort(MissionAbort.GEOFENCE)
+                FenceStatus.NO_POSITION -> if (step is MissionStep.Move) return abort(MissionAbort.NO_POSITIONING)
+                else -> Unit
+            }
+        }
+        if (stepStart < 0) {
+            startStep(step, flight, nowMs)
+            if (geofence != null && step is MissionStep.Climb && step.meters > 0f &&
+                targetHeight > geofence.config.maxHeightMeters - CEILING_MARGIN
+            ) {
+                return abort(MissionAbort.GEOFENCE)
+            }
+        }
+        val stepTimeout = if (step is MissionStep.Move && config.maxHorizontalSpeed != null) {
+            maxOf(config.stepTimeoutMs, moveTimeoutMs(step)) // slow moves may legitimately take longer
+        } else {
+            config.stepTimeoutMs
+        }
+        if (nowMs - stepStart > stepTimeout) return abort(MissionAbort.STEP_TIMEOUT)
 
         val sticks = when (step) {
             is MissionStep.Hover -> if (nowMs - stepStart >= (step.seconds * 1000).toLong()) null else StickInput.Neutral
@@ -185,19 +309,27 @@ class MissionRunner(val mission: Mission, private val config: MissionConfig = Mi
             is MissionStep.Climb -> climb(flight, nowMs)
             is MissionStep.Move -> {
                 if (flight.positioningUnavailable) return abort(MissionAbort.NO_POSITIONING)
-                move(step, flight, nowMs, dt)
-                    ?: return if (stepTimedOut(step, nowMs)) abort(MissionAbort.STEP_TIMEOUT) else nextStep(nowMs)
+                if (geofence != null && !geofence.positionKnown && travelled == 0f) {
+                    // No position yet: do not start a move that the bubble could not follow.
+                    StickInput.Neutral
+                } else {
+                    move(step, flight, nowMs, dt)
+                        ?: return if (stepTimedOut(step, nowMs)) abort(MissionAbort.STEP_TIMEOUT) else nextStep(nowMs)
+                }
             }
         }
         if (sticks == null) return nextStep(nowMs)
         if (step is MissionStep.Move && stepTimedOut(step, nowMs)) return abort(MissionAbort.STEP_TIMEOUT)
-        return MissionTick.Running(sticks, index)
+        return MissionTick.Running(sticks, stepIndex)
     }
 
-    private fun stepTimedOut(step: MissionStep.Move, nowMs: Long): Boolean {
-        val expectedMs = (step.meters / config.expectedSpeed * 1000).toLong()
-        return nowMs - stepStart > expectedMs * 3 + config.maxBrakeMs
-    }
+    private val expectedSpeed: Float
+        get() = config.maxHorizontalSpeed?.let { minOf(config.expectedSpeed, it * 0.8f) } ?: config.expectedSpeed
+
+    private fun moveTimeoutMs(step: MissionStep.Move): Long =
+        (step.meters / expectedSpeed * 1000).toLong() * 3 + config.maxBrakeMs
+
+    private fun stepTimedOut(step: MissionStep.Move, nowMs: Long): Boolean = nowMs - stepStart > moveTimeoutMs(step)
 
     private fun startStep(step: MissionStep, flight: FlightData, nowMs: Long) {
         stepStart = nowMs
@@ -212,7 +344,7 @@ class MissionRunner(val mission: Mission, private val config: MissionConfig = Mi
     private fun nextStep(nowMs: Long): MissionTick {
         index++
         stepStart = -1L
-        return if (index >= mission.steps.size) MissionTick.Finished else tick(nowMs)
+        return if (index >= plan.size) MissionTick.Finished else tick(nowMs)
     }
 
     private fun abort(reason: MissionAbort): MissionTick {
@@ -241,12 +373,60 @@ class MissionRunner(val mission: Mission, private val config: MissionConfig = Mi
             val stopped = flight.horizontalSpeed <= config.stoppedSpeed
             return if (stopped || nowMs - brakingSince >= config.maxBrakeMs) null else StickInput.Neutral
         }
-        val s = config.moveStick
+        val s = moveStick(flight.horizontalSpeed)
         return when (step.direction) {
             MoveDirection.FORWARD -> StickInput(pitch = s)
             MoveDirection.BACK -> StickInput(pitch = -s)
             MoveDirection.RIGHT -> StickInput(roll = s)
             MoveDirection.LEFT -> StickInput(roll = -s)
+        }
+    }
+
+    /**
+     * Stick of a move. With a speed limit: the stick expected to give that speed, released
+     * progressively while the measured speed exceeds it (fast mode left on, tailwind…).
+     */
+    private fun moveStick(speed: Float): Float {
+        val limit = config.maxHorizontalSpeed ?: return config.moveStick
+        // Never above the historical stick: braking distance and timeouts were tuned for it.
+        val base = (limit * config.stickPerMps).coerceIn(MIN_MOVE_STICK, maxOf(MIN_MOVE_STICK, config.moveStick))
+        val over = speed - limit
+        if (over <= 0f) return base
+        return base * (1f - over / config.speedMargin).coerceIn(0f, 1f)
+    }
+
+    private companion object {
+        /** Below this, the Tello barely moves. */
+        const val MIN_MOVE_STICK = 0.08f
+        /** Margin under the ceiling for a climb target (overshoot of the height loop). */
+        const val CEILING_MARGIN = 0.3f
+
+        /** Turn of a nose-first plan, in (-180, 180] degrees. */
+        fun normalize(degrees: Float): Float {
+            var d = degrees % 360f
+            if (d > 180f) d -= 360f
+            if (d <= -180f) d += 360f
+            return d
+        }
+
+        fun plan(mission: Mission, noseFirst: Boolean): List<Planned> {
+            if (!noseFirst) return mission.steps.mapIndexed { i, s -> Planned(s, i) }
+            val out = mutableListOf<Planned>()
+            // Angle of the real nose relative to the mission's nose (both turn with Rotate steps).
+            var offset = 0f
+            mission.steps.forEachIndexed { i, step ->
+                if (step is MissionStep.Move) {
+                    val turn = normalize(step.direction.angle - offset)
+                    if (turn != 0f) out += Planned(MissionStep.Rotate(turn), i)
+                    offset = normalize(offset + turn)
+                    out += Planned(MissionStep.Move(MoveDirection.FORWARD, step.meters), i)
+                } else {
+                    out += Planned(step, i)
+                }
+            }
+            val back = normalize(-offset)
+            if (back != 0f) out += Planned(MissionStep.Rotate(back), mission.steps.lastIndex)
+            return out
         }
     }
 }

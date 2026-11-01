@@ -14,6 +14,8 @@ enum class ConnectionStatus { WAITING_WIFI, CONNECTING, CONNECTED, RECONNECTING 
 /** Alerts, declared from the most to the least severe (the HUD shows the first ones). */
 enum class Warning(val critical: Boolean) {
     BATTERY_CRITICAL(true),
+    /** Shock or abnormal attitude detected by the app (shown a few seconds). */
+    IMPACT(true),
     /** Flight controller sensor error: land as soon as possible (official "Fcerror"). */
     SENSOR_ERROR(true),
     OVERHEATING(true),
@@ -25,6 +27,10 @@ enum class Warning(val critical: Boolean) {
     BATTERY_LOW(false),
     /** Strong Wi-Fi interference in flight: the link may drop. */
     WIFI_INTERFERENCE(false),
+    /** Manual flight beyond the safety bubble radius (alert only, the sticks stay free). */
+    GEOFENCE_OUT(false),
+    /** Automatic flight close to the edge of its safety bubble. */
+    GEOFENCE_NEAR(false),
     /** On the ground, motors off, for a long time: the drone heats up without propeller airflow. */
     GROUND_HEAT(false),
     BAROMETER(false),
@@ -41,7 +47,8 @@ enum class Warning(val critical: Boolean) {
 
     /** Shown even when the pilot hides information alerts. */
     val alwaysShown: Boolean
-        get() = critical || this == BATTERY_LOW || this == NO_POSITIONING || this == WIFI_INTERFERENCE
+        get() = critical || this == BATTERY_LOW || this == NO_POSITIONING || this == WIFI_INTERFERENCE ||
+            this == GEOFENCE_OUT || this == GEOFENCE_NEAR
 
     companion object {
         /** Motor/ESC code 206 only means "not activated yet": handled by the activation, not an alarm. */
@@ -159,6 +166,8 @@ data class FlightUiState(
             groundTooLong: Boolean = false,
             tripod: Boolean = false,
             track: List<androidx.compose.ui.geometry.Offset> = emptyList(),
+            /** Alerts of the app's own safety checks (shock, bubble). */
+            safetyWarnings: Set<Warning> = emptySet(),
         ): FlightUiState {
             val status = when {
                 !wifiAvailable -> ConnectionStatus.WAITING_WIFI
@@ -188,7 +197,8 @@ data class FlightUiState(
                 videoActive = videoActive && live,
                 // Phone warnings do not depend on the link; critical ones first (two are shown).
                 warnings = (
-                    flight?.let { Warning.from(it, telemetry, groundTooLong) }.orEmpty() + when (phoneHeat) {
+                    (flight?.let { Warning.from(it, telemetry, groundTooLong) }.orEmpty() + safetyWarnings)
+                        .sortedBy { it.ordinal } + when (phoneHeat) {
                         com.drone.tellopilot.data.PhoneHeat.HOT -> listOf(Warning.PHONE_OVERHEATING)
                         com.drone.tellopilot.data.PhoneHeat.WARM -> listOf(Warning.PHONE_HOT)
                         com.drone.tellopilot.data.PhoneHeat.NORMAL -> emptyList()
