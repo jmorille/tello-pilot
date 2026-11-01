@@ -21,6 +21,9 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
+import com.drone.tellopilot.ui.flights.FlightDetailRoute
+import com.drone.tellopilot.ui.flights.FlightsRoute
 import com.drone.tellopilot.ui.flight.FlightRoute
 import com.drone.tellopilot.ui.settings.SettingsRoute
 import com.drone.tellopilot.ui.settings.ImuCalibrationRoute
@@ -180,7 +183,27 @@ class MainActivity : ComponentActivity() {
                             onOpenGallery = { nav.navigate(Gallery) { launchSingleTop = true } },
                         )
                     }
-                    composable<Gallery> { com.drone.tellopilot.ui.gallery.GalleryRoute(onBack = { nav.popBackStack() }) }
+                    composable<Gallery> {
+                        com.drone.tellopilot.ui.gallery.GalleryRoute(
+                            onBack = { nav.popBackStack() },
+                            onOpenFlights = { nav.navigate(Flights) { launchSingleTop = true } },
+                        )
+                    }
+                    // Takeoff from a flight log screen: straight back to the flight screen.
+                    composable<Flights> {
+                        FlightsRoute(
+                            onBack = { nav.popBackStack() },
+                            onOpen = { nav.navigate(FlightDetail(it)) { launchSingleTop = true } },
+                            onFlying = { nav.popBackStack(Flight, inclusive = false) },
+                        )
+                    }
+                    composable<FlightDetail> { entry ->
+                        FlightDetailRoute(
+                            id = entry.toRoute<FlightDetail>().id,
+                            onBack = { nav.popBackStack() },
+                            onFlying = { nav.popBackStack(Flight, inclusive = false) },
+                        )
+                    }
                     composable<Settings> {
                         SettingsRoute(
                             onBack = { nav.popBackStack() },
@@ -201,6 +224,12 @@ private data object Flight
 
 @Serializable
 private data object Gallery
+
+@Serializable
+private data object Flights
+
+@Serializable
+private data class FlightDetail(val id: String)
 
 @Serializable
 private data object Settings
