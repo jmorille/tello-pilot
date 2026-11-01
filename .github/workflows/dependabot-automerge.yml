@@ -49,11 +49,23 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Label eligibility (patch/minor only)
+        id: eligibility
         env:
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPS_JSON: ${{ steps.meta.outputs.updated-dependencies-json }}
         run: |
           echo "update-type: ${UPDATE_TYPE:-unknown}"
-          if [[ "$UPDATE_TYPE" == "version-update:semver-patch" || "$UPDATE_TYPE" == "version-update:semver-minor" ]]; then
+          # Eligible when every dependency is a patch/minor update, or uses calendar versioning
+          # (e.g. compose-bom 2025.09.00 -> 2026.09.00: a year change is not a major update).
+          eligible=$(jq -r '
+            def year: (tostring | ltrimstr("v") | split(".")[0] | tonumber? // 0) >= 2000;
+            length > 0 and all(.[];
+              .updateType == "version-update:semver-patch" or
+              .updateType == "version-update:semver-minor" or
+              ((.prevVersion | year) and (.newVersion | year)))
+          ' <<<"${DEPS_JSON:-[]}")
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+          if [[ "$eligible" == "true" ]]; then
             gh pr edit "$PR" --repo "$REPO" --add-label automerge
           else
             gh pr edit "$PR" --repo "$REPO" --remove-label automerge || true
@@ -61,15 +73,14 @@ jobs:
           fi
 
       - name: Enable native auto-merge (best-effort)
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        if: steps.eligibility.outputs.eligible == 'true'
         continue-on-error: true
         run: gh pr merge "$PR" --repo "$REPO" --auto --squash --match-head-commit "$SHA"
 
       - name: Merge now if CI already green
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        if: steps.eligibility.outputs.eligible == 'true'
         run: |
-          ci=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&event=pull_request" \
-                 --jq '[.workflow_runs[]] | sort_by(.created_at) | last | .conclusion // ""')
+          ci=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&event=pull_request"                  --jq '[.workflow_runs[]] | sort_by(.created_at) | last | .conclusion // ""')
           if [[ "$ci" == "success" ]]; then
             gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$SHA"
           else
