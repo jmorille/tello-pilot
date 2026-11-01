@@ -60,7 +60,7 @@ fun AttitudeIndicator(attitude: Attitude, modifier: Modifier = Modifier) {
             drawCircle(Color.White.copy(alpha = 0.6f), radius = r - 1.dp.toPx(), style = Stroke(1.dp.toPx()))
         }
         val heading = ((attitude.yawDeg % 360f) + 360f) % 360f
-        HudLabel(stringResource(R.string.hud_heading, heading.roundToInt(), cardinal(heading)))
+        HudLabel(stringResource(R.string.hud_heading, heading.roundToInt() % 360, cardinal(heading)))
     }
 }
 
