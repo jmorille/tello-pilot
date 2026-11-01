@@ -4,6 +4,14 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    alias(libs.plugins.kover)
+}
+
+// Debug unit tests only, merged into the root coverage report (README badge).
+kover {
+    currentProject {
+        createVariant("coverage") { add("debug") }
+    }
 }
 
 // Release signing / versioning come from the environment (CI), see .github/workflows/release.yml.
@@ -67,6 +75,11 @@ dependencies {
         // Pulled by ML Kit pose detection (3.0.0, only for remote model downloads, unused with
         // the bundled model): certificate validation flaws fixed in 4.9.2 (API-compatible).
         implementation("com.squareup.okhttp3:okhttp:4.12.0") { because("GHSA-3cqm-mf7h-prrj, GHSA-4hc2-jh7r-wrc3") }
+        // ML Kit (pose / acceleration) pulls WorkManager 2.7.0 with Room 2.2.5, whose WorkDatabase
+        // can no longer be created once minified (release crash at startup): current versions.
+        listOf("work-runtime", "work-runtime-ktx", "work-multiprocess").forEach {
+            implementation("androidx.work:$it:2.11.2") { because("release crash: WorkDatabase with Room 2.2.5") }
+        }
     }
 
     implementation(libs.androidx.core.ktx)

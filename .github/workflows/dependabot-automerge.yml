@@ -1,16 +1,18 @@
 name: Dependabot auto-merge
 
-# Merges Dependabot patch/minor updates only once the CI workflow is green for the PR head commit.
+# Merges Dependabot patch/minor updates only when the PR is green: every check on the PR head commit
+# succeeded (CI and Dependency scan are mandatory), nothing failed, was cancelled or is still pending,
+# and the PR head has not moved since (merge pinned with `--match-head-commit`).
 #
-# Two mechanisms, whichever the repository plan allows:
-#  1. Native auto-merge (`gh pr merge --auto`) - needs "Allow auto-merge" + a required status check
-#     (branch protection / ruleset). Not available on a private repository on GitHub Free, so this
-#     attempt is best-effort and ignored when refused.
-#  2. Fallback (active today): the `merge-after-ci` job runs on completion of the CI workflow and merges
-#     the PR only if CI concluded `success` on the exact head commit (`--match-head-commit`).
-#     `classify` also tries the same gated merge, in case CI finished before the label was set.
+# Native auto-merge (`gh pr merge --auto`) is NOT used: on a private repository on GitHub Free there is
+# no branch protection / ruleset, hence no required status check, and `--auto` would then merge as soon
+# as the PR is mergeable, regardless of the checks. The gate below enforces the checks itself.
 #
-# Eligibility is decided by dependabot/fetch-metadata and stored as the `automerge` label.
+# Flow:
+#  - `classify` (pull_request): eligibility from dependabot/fetch-metadata, stored as the `automerge` label.
+#  - `merge` runs after `classify` and again each time CI / Dependency scan / CodeQL completes for the
+#    PR (workflow_run); whichever event comes last finds every check green and merges.
+#
 # Optional secret AUTOMERGE_TOKEN (fine-grained PAT: contents, pull-requests, workflows = write) lets
 # the merge also handle github-actions updates (GITHUB_TOKEN may not merge workflow-file changes)
 # and makes the merge commit trigger CI on main.
@@ -20,27 +22,33 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened]
   workflow_run:
-    workflows: [CI]
+    workflows: [CI, Dependency scan, CodeQL]
     types: [completed]
 
 permissions: {}
 
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
 jobs:
   classify:
+    # Job names start with "automerge-": the gate ignores this workflow's own check runs.
+    name: automerge-classify
     if: >-
       github.event_name == 'pull_request' &&
       github.actor == 'dependabot[bot]' &&
       github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
-      actions: read
+    outputs:
+      eligible: ${{ steps.eligibility.outputs.eligible }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number }}
-      SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Fetch Dependabot metadata
         id: meta
@@ -72,45 +80,43 @@ jobs:
             echo "Not eligible for auto-merge (major or unknown update)."
           fi
 
-      - name: Enable native auto-merge (best-effort)
-        if: steps.eligibility.outputs.eligible == 'true'
-        continue-on-error: true
-        run: gh pr merge "$PR" --repo "$REPO" --auto --squash --match-head-commit "$SHA"
-
-      - name: Merge now if CI already green
-        if: steps.eligibility.outputs.eligible == 'true'
-        run: |
-          ci=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&event=pull_request"                  --jq '[.workflow_runs[]] | sort_by(.created_at) | last | .conclusion // ""')
-          if [[ "$ci" == "success" ]]; then
-            gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$SHA"
-          else
-            echo "CI not green yet (conclusion='${ci}'); merge-after-ci will handle it."
-          fi
-
-  merge-after-ci:
+  merge:
+    name: automerge-merge
+    needs: classify
+    # always(): on workflow_run, `classify` is skipped and must not skip this job.
     if: >-
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.actor == 'dependabot[bot]' &&
-      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+      always() && (
+        (github.event_name == 'pull_request' &&
+         needs.classify.result == 'success' &&
+         needs.classify.outputs.eligible == 'true') ||
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.event == 'pull_request' &&
+         github.event.workflow_run.conclusion == 'success' &&
+         github.actor == 'dependabot[bot]' &&
+         startsWith(github.event.workflow_run.head_branch, 'dependabot/'))
+      )
     runs-on: ubuntu-24.04
     permissions:
       contents: write
       pull-requests: write
       actions: read
+      checks: read
+      statuses: read
     env:
       GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || github.token }}
       REPO: ${{ github.repository }}
-      SHA: ${{ github.event.workflow_run.head_sha }}
-      BRANCH: ${{ github.event.workflow_run.head_branch }}
+      SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+      BRANCH: ${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch }}
+      # Workflows that must have a successful pull_request run on the head commit.
+      REQUIRED_WORKFLOWS: .github/workflows/ci.yml .github/workflows/dependencies.yml
+      SELF_WORKFLOW: .github/workflows/dependabot-automerge.yml
     steps:
-      - name: Merge the PR if eligible and CI green on its head commit
+      - name: Merge the PR only if every check is green on its head commit
         run: |
           set -euo pipefail
-          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
           if [[ -z "$pr" ]]; then echo "No open PR for $BRANCH"; exit 0; fi
-          info=$(gh pr view "$pr" --repo "$REPO" --json author,headRefOid,labels,isDraft)
+          info=$(gh pr view "$pr" --repo "$REPO" --json author,headRefOid,labels,isDraft,baseRefName)
           author=$(jq -r '.author.login' <<<"$info")
           head=$(jq -r '.headRefOid' <<<"$info")
           eligible=$(jq -r '[.labels[].name] | index("automerge") != null' <<<"$info")
@@ -118,5 +124,37 @@ jobs:
           echo "PR #$pr author=$author head=$head eligible=$eligible draft=$draft"
           if [[ "$author" != "app/dependabot" && "$author" != "dependabot[bot]" ]]; then echo "Not a Dependabot PR"; exit 0; fi
           if [[ "$eligible" != "true" || "$draft" == "true" ]]; then echo "Not eligible (major update or draft)"; exit 0; fi
-          if [[ "$head" != "$SHA" ]]; then echo "PR head moved since this CI run; waiting for the new run"; exit 0; fi
+          if [[ "$head" != "$SHA" ]]; then echo "PR head moved ($SHA -> $head); a newer run will decide"; exit 0; fi
+
+          # 1. Latest pull_request run of every workflow on this commit (this workflow excluded).
+          runs=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&event=pull_request&per_page=100" |
+            jq --arg self "$SELF_WORKFLOW" \
+            '[.workflow_runs[] | select(.path != $self)]
+             | group_by(.path) | map(max_by(.created_at))
+             | map({path, status, conclusion})')
+          echo "Workflow runs: $(jq -c . <<<"$runs")"
+          for wf in $REQUIRED_WORKFLOWS; do
+            c=$(jq -r --arg p "$wf" '(.[] | select(.path == $p) | "\(.status)/\(.conclusion)") // "missing"' <<<"$runs")
+            if [[ "$c" != "completed/success" ]]; then
+              echo "Required workflow $wf not green on $SHA ($c); not merging."; exit 0
+            fi
+          done
+          bad_runs=$(jq -r '[.[] | select(.status != "completed" or .conclusion != "success") | "\(.path)=\(.status)/\(.conclusion)"] | join(", ")' <<<"$runs")
+          if [[ -n "$bad_runs" ]]; then echo "Workflow runs not green: $bad_runs; not merging."; exit 0; fi
+
+          # 2. Every check run on the commit (all apps), except this workflow's own jobs.
+          checks=$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.name | startswith("automerge-") | not) | "\(.name)\t\(.status)\t\(.conclusion)"')
+          echo "Check runs:"; printf '%s\n' "$checks"
+          if [[ -z "$checks" ]]; then echo "No check runs found; not merging."; exit 0; fi
+          bad_checks=$(awk -F'\t' '$2 != "completed" || ($3 != "success" && $3 != "skipped")' <<<"$checks")
+          if [[ -n "$bad_checks" ]]; then echo "Checks failed, cancelled or pending:"; printf '%s\n' "$bad_checks"; exit 0; fi
+
+          # 3. Legacy commit statuses, if any.
+          read -r st_count st_state < <(gh api "repos/$REPO/commits/$SHA/status" --jq '"\(.total_count) \(.state)"')
+          if [[ "$st_count" != "0" && "$st_state" != "success" ]]; then
+            echo "Commit statuses not green ($st_state); not merging."; exit 0
+          fi
+
+          echo "All checks green on $SHA; merging PR #$pr."
           gh pr merge "$pr" --repo "$REPO" --squash --match-head-commit "$SHA"

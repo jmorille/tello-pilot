@@ -223,6 +223,24 @@ private fun DisplaySettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
             )
         }
     }
+    Label(R.string.settings_hud_items)
+    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+    androidx.compose.foundation.layout.FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        com.drone.tello.control.HudItem.entries.forEach { item ->
+            FilterChip(
+                selected = pilot.shows(item),
+                onClick = {
+                    updatePilot {
+                        it.copy(hiddenHud = if (item in it.hiddenHud) it.hiddenHud - item else it.hiddenHud + item)
+                    }
+                },
+                label = { Text(stringResource(hudItemLabel(item))) },
+            )
+        }
+    }
+    Text(stringResource(R.string.settings_hud_items_help), style = MaterialTheme.typography.bodySmall)
     Label(R.string.settings_video_fit)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         com.drone.tello.control.VideoFit.entries.forEach { f ->
@@ -339,4 +357,16 @@ internal fun SwitchSetting(label: Int, checked: Boolean, onChange: (Boolean) -> 
         Text(stringResource(label), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
         Switch(checked = checked, onCheckedChange = onChange)
     }
+}
+
+private fun hudItemLabel(item: com.drone.tello.control.HudItem): Int = when (item) {
+    com.drone.tello.control.HudItem.BATTERY -> R.string.hud_item_battery
+    com.drone.tello.control.HudItem.HEIGHT -> R.string.hud_item_height
+    com.drone.tello.control.HudItem.SPEED -> R.string.hud_item_speed
+    com.drone.tello.control.HudItem.VARIO -> R.string.hud_item_vario
+    com.drone.tello.control.HudItem.FLIGHT_TIME -> R.string.hud_item_flight_time
+    com.drone.tello.control.HudItem.WIFI -> R.string.hud_item_wifi
+    com.drone.tello.control.HudItem.GAMEPAD -> R.string.hud_item_gamepad
+    com.drone.tello.control.HudItem.RECORDING -> R.string.hud_item_recording
+    com.drone.tello.control.HudItem.INFO_ALERTS -> R.string.hud_item_info_alerts
 }

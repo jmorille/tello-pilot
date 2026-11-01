@@ -45,10 +45,31 @@ class TelemetryTest {
     }
 
     @Test
+    fun `climb rate, throw countdown, barometer, calibration and controller error`() {
+        val p = flightPayload()
+        PacketCodec.putShortLe(p, 6, -7)               // down speed -0.7 m/s = climbing
+        p[10] = 0b0000_0010                            // barometer
+        p[19] = 21                                     // 2.1 s → 3 s shown
+        p[22] = (0b0010_0000 or (2 shl 3)).toByte()    // controller error + calibration done
+        val data = FlightData.parse(p)!!
+        assertEquals(0.7f, data.climbRate, 0.001f)
+        assertEquals(3, data.throwCountdown)
+        assertTrue(data.barometerError)
+        assertFalse(data.imuError)
+        assertEquals(2, data.gravityCalibrationStatus)
+        assertTrue(data.flightControllerError)
+        assertFalse(data.overheating)
+        p[19] = 0
+        assertEquals(0, FlightData.parse(p)!!.throwCountdown)
+    }
+
+    @Test
     fun `short flight data from older firmware is accepted`() {
         val data = FlightData.parse(flightPayload().copyOf(21))!!
         assertEquals(0, data.motorErrorCode)
         assertFalse(data.overheating)
+        assertEquals(0, data.gravityCalibrationStatus)
+        assertFalse(data.flightControllerError)
         assertEquals(null, FlightData.parse(ByteArray(20)))
     }
 

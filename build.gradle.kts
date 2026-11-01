@@ -25,4 +25,34 @@ plugins {
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.ksp) apply false
     alias(libs.plugins.hilt) apply false
+    // Unit-test coverage, aggregated here from every module (README badge, see ci.yml).
+    alias(libs.plugins.kover)
+}
+
+// `./gradlew koverXmlReportCoverage` / `koverHtmlReportCoverage` / `koverLogCoverage`: line coverage
+// of the JVM unit tests of :core:protocol, :core:control and of the :app debug unit tests. Each module
+// declares a "coverage" variant (jvm or debug) that is merged here.
+dependencies {
+    kover(project(":core:protocol"))
+    kover(project(":core:control"))
+    kover(project(":app"))
+}
+
+kover {
+    currentProject {
+        createVariant("coverage") {}
+    }
+    reports {
+        filters {
+            excludes {
+                // Generated code (Hilt/Dagger, Compose singletons, BuildConfig): not hand-written logic.
+                classes(
+                    "*.BuildConfig",
+                    "*_Factory*", "*_MembersInjector", "*_HiltModules*", "*_GeneratedInjector",
+                    "Hilt_*", "*.Hilt_*", "hilt_aggregated_deps.*", "dagger.hilt.internal.*",
+                    "*ComposableSingletons*",
+                )
+            }
+        }
+    }
 }

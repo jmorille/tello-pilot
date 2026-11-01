@@ -14,6 +14,8 @@ enum class ConnectionStatus { WAITING_WIFI, CONNECTING, CONNECTED, RECONNECTING 
 /** Alerts, declared from the most to the least severe (the HUD shows the first ones). */
 enum class Warning(val critical: Boolean) {
     BATTERY_CRITICAL(true),
+    /** Flight controller sensor error: land as soon as possible (official "Fcerror"). */
+    SENSOR_ERROR(true),
     OVERHEATING(true),
     MOTOR_ERROR(true),
     IMU_ERROR(true),
@@ -21,6 +23,11 @@ enum class Warning(val critical: Boolean) {
     /** The phone throttles: video and controls may lag. */
     PHONE_OVERHEATING(true),
     BATTERY_LOW(false),
+    /** Strong Wi-Fi interference in flight: the link may drop. */
+    WIFI_INTERFERENCE(false),
+    /** On the ground, motors off, for a long time: the drone heats up without propeller airflow. */
+    GROUND_HEAT(false),
+    BAROMETER(false),
     /** The phone is close to throttling. */
     PHONE_HOT(false),
     WIND(false),
@@ -32,17 +39,31 @@ enum class Warning(val critical: Boolean) {
     CALIBRATION_NEEDED(false),
     ;
 
+    /** Shown even when the pilot hides information alerts. */
+    val alwaysShown: Boolean
+        get() = critical || this == BATTERY_LOW || this == NO_POSITIONING || this == WIFI_INTERFERENCE
+
     companion object {
         /** Motor/ESC code 206 only means "not activated yet": handled by the activation, not an alarm. */
         private const val MOTOR_NOT_ACTIVATED = 206
 
-        fun from(flight: FlightData, telemetry: Telemetry): List<Warning> = buildList {
+        /** Interference level the official app warns about (in flight). */
+        private const val STRONG_INTERFERENCE = 100
+
+        fun from(flight: FlightData, telemetry: Telemetry, groundTooLong: Boolean = false): List<Warning> = buildList {
             if (flight.batteryCritical) add(BATTERY_CRITICAL)
+            // In flight only (the official app shows it once): a bit left set on the ground
+            // must not raise a permanent critical alarm.
+            if (flight.flying && flight.flightControllerError) add(SENSOR_ERROR)
             if (flight.overheating) add(OVERHEATING)
             if (flight.motorErrorCode != 0 && flight.motorErrorCode != MOTOR_NOT_ACTIVATED) add(MOTOR_ERROR)
             if (flight.imuError || flight.imuCalibrationState == 2) add(IMU_ERROR)
             if (flight.batteryError) add(BATTERY_ERROR)
             if (flight.batteryLow && !flight.batteryCritical) add(BATTERY_LOW)
+            if (flight.flying && (telemetry.wifi?.interference ?: 0) >= STRONG_INTERFERENCE) add(WIFI_INTERFERENCE)
+            if (groundTooLong && !flight.flying) add(GROUND_HEAT)
+            // In flight only: the meaning of this bit on the ground is not documented.
+            if (flight.flying && flight.barometerError) add(BAROMETER)
             if (flight.windWarning) add(WIND)
             if (flight.flying && flight.positioningUnavailable) add(NO_POSITIONING)
             if (flight.visionSensorError) add(VISION_SENSOR)
@@ -65,6 +86,10 @@ data class FlightUiState(
     val batteryPercent: Int? = null,
     val heightMeters: Float? = null,
     val horizontalSpeed: Float? = null,
+    /** m/s, positive upwards. */
+    val climbRate: Float? = null,
+    /** Throw takeoff countdown (s), shown big while > 0. */
+    val throwCountdown: Int = 0,
     val flyTimeSeconds: Int? = null,
     val wifiStrength: Int? = null,
     val flying: Boolean = false,
@@ -95,7 +120,15 @@ data class FlightUiState(
         get() = com.drone.tello.control.Mission.Presets + pilot.customMissions
 
     val controlsEnabled: Boolean get() = status == ConnectionStatus.CONNECTED
-    val warning: Warning? get() = warnings.firstOrNull()
+    val warning: Warning? get() = shownWarnings.firstOrNull()
+
+    /**
+     * Warnings on screen: information alerts can be hidden by the pilot, but never the
+     * critical ones nor those that matter in flight. Vibrations always use [warnings].
+     */
+    val shownWarnings: List<Warning>
+        get() = if (pilot.shows(com.drone.tello.control.HudItem.INFO_ALERTS)) warnings
+        else warnings.filter { it.alwaysShown }
     val units: Units get() = pilot.units
 
     /** Settings can be changed on the ground only (stick mode changes mid-flight are dangerous). */
@@ -118,6 +151,7 @@ data class FlightUiState(
             padDriving: Boolean = false,
             autopilot: com.drone.tellopilot.tracking.AutopilotState = com.drone.tellopilot.tracking.AutopilotState.Idle,
             otherWifi: Boolean = false,
+            groundTooLong: Boolean = false,
         ): FlightUiState {
             val status = when {
                 !wifiAvailable -> ConnectionStatus.WAITING_WIFI
@@ -132,6 +166,8 @@ data class FlightUiState(
                 batteryPercent = flight?.batteryPercent,
                 heightMeters = flight?.heightMeters,
                 horizontalSpeed = flight?.horizontalSpeed,
+                climbRate = flight?.climbRate,
+                throwCountdown = flight?.takeIf { !it.flying }?.throwCountdown ?: 0,
                 flyTimeSeconds = flight?.flyTimeSeconds?.toInt(),
                 wifiStrength = telemetry.wifi?.strength?.takeIf { live },
                 // Last known state, kept while the link is lost: Land must stay reachable.
@@ -140,7 +176,7 @@ data class FlightUiState(
                 videoActive = videoActive && live,
                 // Phone warnings do not depend on the link; critical ones first (two are shown).
                 warnings = (
-                    flight?.let { Warning.from(it, telemetry) }.orEmpty() + when (phoneHeat) {
+                    flight?.let { Warning.from(it, telemetry, groundTooLong) }.orEmpty() + when (phoneHeat) {
                         com.drone.tellopilot.data.PhoneHeat.HOT -> listOf(Warning.PHONE_OVERHEATING)
                         com.drone.tellopilot.data.PhoneHeat.WARM -> listOf(Warning.PHONE_HOT)
                         com.drone.tellopilot.data.PhoneHeat.NORMAL -> emptyList()

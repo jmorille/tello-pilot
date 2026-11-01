@@ -21,6 +21,12 @@ enum class TrackingTarget { PERSON, FACE }
  */
 enum class VideoFit { FIT, WIDE, FILL }
 
+/**
+ * Information the pilot may show or hide on the flight screen. Critical alerts, the alerts
+ * that matter in flight and the throw countdown are not listed: they are always shown.
+ */
+enum class HudItem { BATTERY, HEIGHT, SPEED, VARIO, FLIGHT_TIME, WIFI, GAMEPAD, RECORDING, INFO_ALERTS }
+
 /** Target format of the post-flight re-encoding of recorded videos. */
 enum class TranscodeCodec(val suffix: String) { HEVC("hevc"), AV1("av1") }
 
@@ -40,6 +46,8 @@ data class PilotSettings(
     /** GPU upscaling + sharpening of the 960x720 video (about 1 ms more). */
     val videoSharpen: Boolean = true,
     val videoFit: VideoFit = VideoFit.FILL,
+    /** Flight screen items the pilot chose to hide (new items are therefore shown by default). */
+    val hiddenHud: Set<HudItem> = emptySet(),
     /** Re-encode each recorded video once landed (H.264 from the drone is large). */
     val autoTranscode: Boolean = true,
     val transcodeCodec: TranscodeCodec = TranscodeCodec.HEVC,
@@ -51,6 +59,8 @@ data class PilotSettings(
     /** Gamepad button assignment. */
     val padBindings: GamepadBindings = GamepadBindings.Default,
 ) {
+    fun shows(item: HudItem): Boolean = item !in hiddenHud
+
     val shaping: StickShaping get() = StickShaping(deadZone.coerceIn(0f, 0.5f), expo.coerceIn(0f, 1f))
 
     companion object {

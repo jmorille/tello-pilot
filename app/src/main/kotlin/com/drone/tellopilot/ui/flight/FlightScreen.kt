@@ -57,6 +57,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.platform.LocalResources
 import com.drone.tello.control.Units
+import com.drone.tello.control.HudItem
 import com.drone.tello.protocol.FlipDirection
 import com.drone.tello.protocol.SmartVideoMode
 import com.drone.tellopilot.R
@@ -73,6 +74,8 @@ fun FlightRoute(onOpenSettings: () -> Unit, onOpenGallery: () -> Unit = {}, view
                 is UserMessage.AutopilotEnded -> autopilotEndText(message.end)
                 UserMessage.AutopilotUnavailable -> R.string.autopilot_unavailable
                 UserMessage.SmartVideoInterrupted -> R.string.message_smart_video_interrupted
+                UserMessage.GravityCalibrating -> R.string.message_gravity_calibrating
+                UserMessage.GravityCalibrated -> R.string.message_gravity_calibrated
                 UserMessage.PhotoFailed -> R.string.message_photo_failed
                 UserMessage.VideoSaved -> R.string.message_video_saved
                 UserMessage.VideoFailed -> R.string.message_video_failed
@@ -149,6 +152,16 @@ fun FlightScreen(
                 TrackingOverlay(it, videoModifier)
             }
         }
+        if (state.throwCountdown > 0) {
+            // Throw takeoff armed: seconds left to throw the drone (official countdown).
+            Text(
+                stringResource(R.string.hud_throw_countdown, state.throwCountdown),
+                Modifier.align(Alignment.Center).background(Color(0x99000000), RoundedCornerShape(16.dp))
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                color = Color(0xFFFFCA28),
+                style = MaterialTheme.typography.displayMedium,
+            )
+        }
         if (state.autopilotActive) {
             AutopilotBanner(
                 state.autopilot,
@@ -188,7 +201,7 @@ fun FlightScreen(
                 TopActions(state, onAction, onOpenSettings, onOpenGallery)
             }
             // The two most severe alerts.
-            state.warnings.take(2).forEach {
+            state.shownWarnings.take(2).forEach {
                 // Left side, under the HUD: the centre of the video stays clear for the pilot.
                 WarningBanner(it, state.motorErrorCode, Modifier.align(Alignment.Start).padding(top = 6.dp).widthIn(max = 320.dp))
             }
@@ -248,24 +261,50 @@ private fun TopBar(state: FlightUiState) {
                 else -> Color(0xFFFFCA28)
             }
             Box(Modifier.size(10.dp).background(statusColor, RoundedCornerShape(5.dp)))
-            HudText(state.batteryPercent?.let { stringResource(R.string.hud_battery, it) } ?: "--",
-                color = if ((state.batteryPercent ?: 100) <= 20) Color(0xFFEF5350) else Color.White)
+            val show = state.pilot::shows
+            if (show(HudItem.BATTERY)) {
+                HudText(state.batteryPercent?.let { stringResource(R.string.hud_battery, it) } ?: "--",
+                    color = if ((state.batteryPercent ?: 100) <= 20) Color(0xFFEF5350) else Color.White)
+            }
             val imperial = state.units == Units.IMPERIAL
-            HudText(state.heightMeters?.let {
-                if (imperial) stringResource(R.string.hud_height_ft, it * FEET_PER_METER) else stringResource(R.string.hud_height, it)
-            } ?: "H --")
-            HudText(state.horizontalSpeed?.let {
-                if (imperial) stringResource(R.string.hud_speed_mph, it * MPH_PER_MS) else stringResource(R.string.hud_speed, it)
-            } ?: "V --")
-            HudText(state.flyTimeSeconds?.let { stringResource(R.string.hud_time, it / 60, it % 60) } ?: "--:--")
-            HudText(state.wifiStrength?.let { stringResource(R.string.hud_wifi, it) } ?: "Wi-Fi --")
+            if (show(HudItem.HEIGHT)) {
+                HudText(state.heightMeters?.let {
+                    if (imperial) stringResource(R.string.hud_height_ft, it * FEET_PER_METER) else stringResource(R.string.hud_height, it)
+                } ?: "H --")
+            }
+            if (show(HudItem.SPEED)) {
+                HudText(state.horizontalSpeed?.let {
+                    if (imperial) stringResource(R.string.hud_speed_mph, it * MPH_PER_MS) else stringResource(R.string.hud_speed, it)
+                } ?: "V --")
+            }
+            if (show(HudItem.VARIO)) state.climbRate?.let { rate ->
+                // Vario: arrow by direction, hidden noise under 0.1 m/s.
+                val arrow = when {
+                    rate >= VARIO_DEADBAND -> "↑"
+                    rate <= -VARIO_DEADBAND -> "↓"
+                    else -> "↕"
+                }
+                val value = kotlin.math.abs(rate)
+                HudText(
+                    if (imperial) stringResource(R.string.hud_vario_mph, arrow, value * MPH_PER_MS)
+                    else stringResource(R.string.hud_vario, arrow, value),
+                )
+            }
+            if (show(HudItem.FLIGHT_TIME)) {
+                HudText(state.flyTimeSeconds?.let { stringResource(R.string.hud_time, it / 60, it % 60) } ?: "--:--")
+            }
+            if (show(HudItem.WIFI)) {
+                HudText(state.wifiStrength?.let { stringResource(R.string.hud_wifi, it) } ?: "Wi-Fi --")
+            }
+            // "Centre the sticks" stays visible: the pad does not fly until it is done.
             when (state.gamepad) {
-                com.drone.tellopilot.input.GamepadStatus.READY -> HudText(stringResource(R.string.hud_gamepad))
+                com.drone.tellopilot.input.GamepadStatus.READY ->
+                    if (show(HudItem.GAMEPAD)) HudText(stringResource(R.string.hud_gamepad))
                 com.drone.tellopilot.input.GamepadStatus.CENTER_STICKS ->
                     HudText(stringResource(R.string.hud_gamepad_center), color = Color(0xFFFFCA28))
                 com.drone.tellopilot.input.GamepadStatus.NONE -> Unit
             }
-            when (state.recording) {
+            if (show(HudItem.RECORDING)) when (state.recording) {
                 is RecordingUi.Recording -> HudText(stringResource(R.string.hud_rec), color = Color(0xFFEF5350))
                 RecordingUi.Starting -> HudText(stringResource(R.string.hud_rec_starting), color = Color(0xFFFFCA28))
                 RecordingUi.Idle -> Unit
@@ -363,6 +402,10 @@ private fun WarningBanner(warning: Warning, motorErrorCode: Int, modifier: Modif
     val text = when (warning) {
         Warning.BATTERY_CRITICAL -> stringResource(R.string.warning_battery_critical)
         Warning.OVERHEATING -> stringResource(R.string.warning_overheating)
+        Warning.SENSOR_ERROR -> stringResource(R.string.warning_sensor_error)
+        Warning.WIFI_INTERFERENCE -> stringResource(R.string.warning_wifi_interference)
+        Warning.GROUND_HEAT -> stringResource(R.string.warning_ground_heat)
+        Warning.BAROMETER -> stringResource(R.string.warning_barometer)
         Warning.MOTOR_ERROR -> stringResource(R.string.warning_motor_error, motorErrorCode)
         Warning.IMU_ERROR -> stringResource(R.string.warning_imu_error)
         Warning.BATTERY_ERROR -> stringResource(R.string.warning_battery_error)
@@ -557,6 +600,7 @@ private fun videoSize(
 }
 
 private const val VIDEO_ASPECT = 4f / 3f
+private const val VARIO_DEADBAND = 0.1f
 
 /** Frame around the followed target, drawn over the 4:3 video (same size and place). */
 @Composable

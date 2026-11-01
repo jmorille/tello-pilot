@@ -21,6 +21,15 @@
 
     <string name="hud_battery">Batterie %1$d %%</string>
     <string name="hud_height">H %1$.1f m</string>
+    <string name="hud_vario">%1$s %2$.1f m/s</string>
+    <string name="hud_vario_mph">%1$s %2$.1f mph</string>
+    <string name="hud_throw_countdown">Lancez dans %1$d</string>
+    <string name="warning_sensor_error">Erreur capteur : poussez la manette des gaz vers le bas pour atterrir au plus vite</string>
+    <string name="warning_wifi_interference">Fortes interférences Wi-Fi : la liaison peut couper</string>
+    <string name="warning_ground_heat">Drone au sol depuis 3 min : il chauffe sans le souffle des hélices, décollez ou éteignez-le</string>
+    <string name="warning_barometer">Baromètre en défaut : la hauteur peut être fausse</string>
+    <string name="message_gravity_calibrating">Calibration en cours… gardez le drone en vol stationnaire</string>
+    <string name="message_gravity_calibrated">Calibration du centre de gravité terminée</string>
     <string name="hud_speed">V %1$.1f m/s</string>
     <string name="hud_time">%1$d:%2$02d</string>
     <string name="hud_wifi">Wi-Fi %1$d %%</string>
@@ -180,6 +189,17 @@
     <string name="pad_action_flip">Flip %1$s</string>
     <string name="warning_phone_overheating">Téléphone en surchauffe : vidéo et commandes ralenties, atterrissez</string>
     <string name="warning_phone_hot">Téléphone chaud : mettez-le à l\'ombre</string>
+    <string name="settings_hud_items">Informations affichées en vol</string>
+    <string name="settings_hud_items_help">Choisissez ce qui s\'affiche sur l\'écran de pilotage. Restent toujours affichés : les alertes critiques (batterie critique, erreur capteur, surchauffe…), la batterie faible, la perte de positionnement, les interférences Wi-Fi et le compte à rebours du lancer. Les vibrations d\'alerte ne sont jamais coupées.</string>
+    <string name="hud_item_battery">Batterie</string>
+    <string name="hud_item_height">Hauteur</string>
+    <string name="hud_item_speed">Vitesse</string>
+    <string name="hud_item_vario">Vario (montée / descente)</string>
+    <string name="hud_item_flight_time">Temps de vol</string>
+    <string name="hud_item_wifi">Signal Wi-Fi</string>
+    <string name="hud_item_gamepad">Manette</string>
+    <string name="hud_item_recording">Enregistrement</string>
+    <string name="hud_item_info_alerts">Alertes d\'information</string>
     <string name="settings_video_fit">Cadrage de la vidéo</string>
     <string name="settings_video_fit_fill">Plein écran</string>
     <string name="settings_video_fit_wide">16:9</string>

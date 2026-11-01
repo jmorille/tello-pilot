@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -50,6 +51,9 @@ sealed interface UserMessage {
     data object AutopilotUnavailable : UserMessage
     /** A smart video was cancelled because the pilot moved a stick. */
     data object SmartVideoInterrupted : UserMessage
+    /** Centre of gravity calibration reported by the drone: running / done. */
+    data object GravityCalibrating : UserMessage
+    data object GravityCalibrated : UserMessage
 }
 
 @HiltViewModel
@@ -88,6 +92,9 @@ class FlightViewModel @Inject constructor(
     private val _messages = Channel<UserMessage>(Channel.BUFFERED)
     val messages: Flow<UserMessage> = _messages.receiveAsFlow()
 
+    /** Connected, on the ground, motors off for [GROUND_HEAT_MS]: the drone overheats there. */
+    private val groundTooLong = MutableStateFlow(false)
+
     /** Recording started automatically at takeoff: stopped automatically at landing. */
     private var autoRecording = false
 
@@ -96,12 +103,13 @@ class FlightViewModel @Inject constructor(
         combine(session.videoActive, fastMode, knownFlying, ::Triple),
         combine(recordingUi, session.photoProgress, ::Pair),
         combine(session.maneuvers, gamepad.status, phoneThermal.heat, padDriving, autopilot.state, ::Extras),
-        pilot,
-    ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), extras, pilot ->
+        combine(pilot, groundTooLong, ::Pair),
+    ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), extras, (pilot, groundHot) ->
         FlightUiState.from(
             wifi is com.drone.tellopilot.data.WifiState.Drone, link, telemetry, video, fast, flying, recording, photo, pilot,
             extras.maneuvers, extras.pad, extras.heat, extras.padDriving, extras.autopilot,
             otherWifi = wifi == com.drone.tellopilot.data.WifiState.OtherNetwork,
+            groundTooLong = groundHot,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, FlightUiState())
 
@@ -117,7 +125,38 @@ class FlightViewModel @Inject constructor(
         // The drone session lives as long as the flight screen.
         viewModelScope.launch { session.run() }
         viewModelScope.launch {
-            session.telemetry.collect { t -> t.flight?.let { onFlyingChanged(it.flying) } }
+            // Official app: one tip when the calibration starts, one when it is done; the start
+            // tip is re-armed only by a completion (an unstable bit cannot loop the messages).
+            var announcedStart = false
+            session.telemetry.collect { t ->
+                val flight = t.flight ?: return@collect
+                onFlyingChanged(flight.flying)
+                when (flight.gravityCalibrationStatus) {
+                    1 -> if (!announcedStart) {
+                        announcedStart = true
+                        _messages.trySend(UserMessage.GravityCalibrating)
+                    }
+                    2 -> if (announcedStart) {
+                        announcedStart = false
+                        _messages.trySend(UserMessage.GravityCalibrated)
+                    }
+                }
+            }
+        }
+        viewModelScope.launch {
+            // Without the propellers' airflow the Tello overheats in a few minutes on the ground
+            // (video encoder running) and switches itself off: warn the pilot in time.
+            var groundSince = -1L
+            while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+                val controller = session.controller.value
+                val flight = controller?.telemetry?.value?.flight
+                val onGround = controller?.link?.value == com.drone.tello.control.LinkState.CONNECTED &&
+                    flight != null && !flight.flying && !flight.motorsOn
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (!onGround) groundSince = -1L else if (groundSince < 0) groundSince = now
+                groundTooLong.value = onGround && now - groundSince >= GROUND_HEAT_MS
+                kotlinx.coroutines.delay(GROUND_CHECK_MS)
+            }
         }
         // Stick mapping / shaping are read on the main thread by the touch / gamepad handlers.
         viewModelScope.launch {
@@ -458,6 +497,8 @@ private const val ALERT_REPEAT_MS = 30_000L
 private const val AUTOPILOT_OVERRIDE = 0.25f
 private const val SMART_VIDEO_OVERRIDE_COOLDOWN_MS = 1_000L
 private const val SMART_VIDEO_STOP_RETRIES = 4
+private const val GROUND_HEAT_MS = 3 * 60_000L
+private const val GROUND_CHECK_MS = 5_000L
 /** Pad deflection that counts as "the pilot flies with the pad" (hides the screen sticks). */
 private const val PAD_TAKEOVER = 0.35f
 

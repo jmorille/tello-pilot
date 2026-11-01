@@ -1,6 +1,7 @@
 # Tello Pilot
 
 [![CI](https://github.com/jmorille/tello-pilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmorille/tello-pilot/actions/workflows/ci.yml)
+[![Coverage](https://github.com/jmorille/tello-pilot/blob/badges/coverage.svg?raw=true)](https://github.com/jmorille/tello-pilot/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/jmorille/tello-pilot/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/jmorille/tello-pilot/actions/workflows/codeql.yml)
 [![Dependency scan](https://github.com/jmorille/tello-pilot/actions/workflows/dependencies.yml/badge.svg?branch=main)](https://github.com/jmorille/tello-pilot/actions/workflows/dependencies.yml)
 [![Release](https://github.com/jmorille/tello-pilot/actions/workflows/release.yml/badge.svg)](https://github.com/jmorille/tello-pilot/releases/latest)
@@ -11,7 +12,7 @@
 ![minSdk](https://img.shields.io/badge/minSdk-30-3DDC84?logo=android&logoColor=white)
 ![ML-DSA-65](https://img.shields.io/badge/signature-ML--DSA--65%20(FIPS%20204)-5A2D82)
 
-> Dépôt privé : les badges dynamiques (CI, CodeQL, version) ne s'affichent que pour les personnes ayant accès au dépôt ; le badge « version » (shields.io) ne s'affiche que si le dépôt devient public.
+> Dépôt privé : les badges dynamiques (CI, CodeQL, couverture, version) ne s'affichent que pour les personnes ayant accès au dépôt ; le badge « version » (shields.io) ne s'affiche que si le dépôt devient public.
 
 Application Android moderne (Kotlin, Jetpack Compose) pour piloter un drone **Ryze/DJI Tello**. Elle parle directement le protocole binaire du drone, comme l'app officielle.
 
@@ -45,6 +46,7 @@ AGP 9.5.0 · Gradle 9.8.2 · Kotlin 2.4.21 · KSP 2.3.13 · Compose BOM 2026.09.
 ## Construire et tester
 ```bash
 ./gradlew test                 # tests unitaires (protocole, contrôle, état UI)
+./gradlew koverHtmlReportCoverage  # couverture : build/reports/kover/htmlCoverage/index.html
 ./gradlew :app:assembleDebug   # APK : app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -77,7 +79,7 @@ Sous Windows, `sha256sum` est disponible dans Git Bash (ou `certutil -hashfile <
 ## CI/CD
 | Workflow | Déclencheur | Rôle |
 |---|---|---|
-| `ci.yml` | push/PR sur `main` | JDK 17, `./gradlew test :app:lint :app:assembleDebug`, rapports de tests + APK debug en artefacts |
+| `ci.yml` | push/PR sur `main` | JDK 17, `./gradlew test :app:lint :app:assembleDebug`, rapports de tests + couverture Kover + APK debug en artefacts ; sur `main`, badge de couverture publié sur la branche orpheline `badges` |
 | `codeql.yml` | push/PR, hebdo | Analyse CodeQL java-kotlin (build manuel). Sans GitHub Advanced Security, le SARIF est conservé en artefact et le job échoue sur les alertes de sévérité ≥ 7 (variable `CODE_SCANNING_ENABLED=true` pour téléverser vers Code scanning) |
 | `dependencies.yml` | push/PR, hebdo | Soumission du graphe de dépendances Gradle (alertes Dependabot) + OSV-Scanner sur le graphe résolu, échec sur CVSS ≥ 7 |
 | `dependabot-automerge.yml` | PR Dependabot, fin de CI | Fusion automatique des mises à jour patch/minor uniquement après une CI verte sur le commit de tête |

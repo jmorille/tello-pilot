@@ -1,5 +1,13 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kover)
+}
+
+// Merged into the root coverage report (README badge).
+kover {
+    currentProject {
+        createVariant("coverage") { add("jvm") }
+    }
 }
 
 java {

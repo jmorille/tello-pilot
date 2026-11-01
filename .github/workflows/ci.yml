@@ -38,6 +38,23 @@ jobs:
         # ANDROID_HOME is preinstalled on GitHub-hosted runners; AGP downloads missing SDK packages.
         run: ./gradlew test :app:assembleDebug --stacktrace
 
+      - name: Coverage report and badge
+        # Kover instruments the unit tests above (tasks are up to date): merged line coverage of
+        # :core:protocol, :core:control and :app (debug). The SVG badge is generated locally because
+        # shields.io cannot read a private repository.
+        run: |
+          ./gradlew koverXmlReportCoverage koverHtmlReportCoverage
+          python3 .github/scripts/coverage_badge.py build/reports/kover/reportCoverage.xml coverage.svg
+          cp coverage.svg build/reports/kover/
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-report
+          path: build/reports/kover/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Android lint
         # Blocking: lint errors fail the build. The report is uploaded with the test reports.
         run: ./gradlew :app:lint
@@ -62,3 +79,41 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
+
+  coverage-badge:
+    # Publishes the badge on the orphan `badges` branch (one force-pushed commit, no history), read by
+    # README.md. Only for pushes to main: PRs (forks, Dependabot) never get a write token here.
+    name: Publish coverage badge
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: coverage-badge
+      cancel-in-progress: true
+    steps:
+      - name: Download coverage report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-report
+          path: coverage
+
+      - name: Push badge to the badges branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          mkdir badges && cd badges
+          git init -q -b badges
+          cp ../coverage/coverage.svg .
+          git add coverage.svg
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m "Coverage badge for ${SHA}"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+              push -q --force "https://github.com/${REPO}.git" badges:badges
