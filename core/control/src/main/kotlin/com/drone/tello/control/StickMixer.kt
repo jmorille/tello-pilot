@@ -47,14 +47,36 @@ class StickMixer(
         leftX = 0f; leftY = 0f; rightX = 0f; rightY = 0f
     }
 
+    /**
+     * Axis lock (as in the official app): a stick pushed within [AXIS_LOCK_DEG] of a pure axis
+     * gives no cross-axis component, so a straight forward push flies straight.
+     */
+    var axisLock: Boolean = true
+
     fun mix(fastMode: Boolean): StickInput {
         val k = scale
         val s = { v: Float -> shaping.apply(v) * k }
+        val (leftX, leftY) = lock(leftX, leftY)
+        val (rightX, rightY) = lock(rightX, rightY)
         return when (mode) {
             StickMode.MODE_1 -> StickInput(roll = s(rightX), pitch = s(leftY), throttle = s(rightY), yaw = s(leftX), fastMode = fastMode)
             StickMode.MODE_2 -> StickInput(roll = s(rightX), pitch = s(rightY), throttle = s(leftY), yaw = s(leftX), fastMode = fastMode)
             StickMode.MODE_3 -> StickInput(roll = s(leftX), pitch = s(leftY), throttle = s(rightY), yaw = s(rightX), fastMode = fastMode)
             StickMode.MODE_4 -> StickInput(roll = s(leftX), pitch = s(rightY), throttle = s(leftY), yaw = s(rightX), fastMode = fastMode)
         }
+    }
+
+    private fun lock(x: Float, y: Float): Pair<Float, Float> {
+        if (!axisLock || (x == 0f && y == 0f) || x.isNaN() || y.isNaN()) return x to y
+        val angle = Math.toDegrees(kotlin.math.atan2(kotlin.math.abs(y), kotlin.math.abs(x)).toDouble())
+        return when {
+            angle >= 90 - AXIS_LOCK_DEG -> 0f to y
+            angle <= AXIS_LOCK_DEG -> x to 0f
+            else -> x to y
+        }
+    }
+
+    companion object {
+        const val AXIS_LOCK_DEG = 10.0
     }
 }

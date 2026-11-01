@@ -16,13 +16,12 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import kotlin.math.min
-import kotlin.math.sqrt
 
 /**
  * Virtual stick. Latency notes:
  * - the knob position is only read in the draw phase → moving it redraws, never recomposes;
  * - [onMove] is called synchronously from the pointer event, before the next frame.
- * Values: x right-positive, y up-positive, both in -1..1 (clamped to the unit circle).
+ * Values: x right-positive, y up-positive, both in -1..1 (each axis clamped: square gate).
  */
 @Composable
 fun Joystick(
@@ -41,9 +40,10 @@ fun Joystick(
             fun handle(position: Offset) {
                 val center = Offset(size.width / 2f, size.height / 2f)
                 val radius = min(size.width, size.height) / 2f * TRAVEL
-                var v = (position - center) / radius
-                val length = sqrt(v.x * v.x + v.y * v.y)
-                if (length > 1f) v /= length
+                // Square gate, like the official app: each axis reaches full deflection on its
+                // own (a diagonal gives full pitch AND full roll, not 71 % of each).
+                val raw = (position - center) / radius
+                val v = Offset(raw.x.coerceIn(-1f, 1f), raw.y.coerceIn(-1f, 1f))
                 knob = v
                 if (isEnabled) move(v.x, -v.y)
             }
