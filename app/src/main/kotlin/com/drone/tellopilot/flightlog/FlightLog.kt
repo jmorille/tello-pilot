@@ -392,14 +392,17 @@ object FlightRetention {
     const val MAX_FLIGHTS = 200
     const val MAX_BYTES = 50L * 1024 * 1024
 
-    data class Stored(val name: String, val sizeBytes: Long)
+    /** [modifiedMs]: file time, independent of the time zone written in the name. */
+    data class Stored(val name: String, val sizeBytes: Long, val modifiedMs: Long = 0)
 
     /**
      * Names to delete. [files] in any order; names sort chronologically (`flight-yyyyMMdd-…`).
      * [keep] (the flight being recorded) is never deleted and counts towards the cap.
      */
     fun toDelete(files: List<Stored>, keep: String? = null, maxFlights: Int = MAX_FLIGHTS, maxBytes: Long = MAX_BYTES): List<String> {
-        val ordered = files.sortedWith(compareByDescending<Stored> { it.name == keep }.thenByDescending { it.name })
+        val ordered = files.sortedWith(
+            compareByDescending<Stored> { it.name == keep }.thenByDescending { it.modifiedMs }.thenByDescending { it.name },
+        )
         var count = 0
         var bytes = 0L
         return ordered.mapNotNull { f ->

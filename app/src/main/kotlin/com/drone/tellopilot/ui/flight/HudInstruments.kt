@@ -38,6 +38,8 @@ private val Marker = Color(0xFFFFCA28)
  */
 @Composable
 fun AttitudeIndicator(attitude: Attitude, modifier: Modifier = Modifier) {
+    // Never draw (nor round) a non-finite value: roundToInt() throws on NaN.
+    if (!attitude.rollDeg.isFinite() || !attitude.pitchDeg.isFinite() || !attitude.yawDeg.isFinite()) return
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Canvas(Modifier.size(96.dp).clip(CircleShape)) {
             val r = size.minDimension / 2

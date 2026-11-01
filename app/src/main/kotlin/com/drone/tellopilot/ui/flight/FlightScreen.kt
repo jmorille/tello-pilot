@@ -256,17 +256,19 @@ private fun statusText(status: ConnectionStatus, video: Boolean) = when (status)
 @Composable
 private fun TopBar(state: FlightUiState) {
     Surface(color = Color.Black.copy(alpha = 0.3f), shape = RoundedCornerShape(10.dp)) {
-        Row(
+        // Wraps to a second line when the pilot shows many items: nothing is ever cut off.
+        @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+        androidx.compose.foundation.layout.FlowRow(
             Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             val statusColor = when (state.status) {
                 ConnectionStatus.CONNECTED -> Color(0xFF66BB6A)
                 ConnectionStatus.RECONNECTING -> Color(0xFFEF5350)
                 else -> Color(0xFFFFCA28)
             }
-            Box(Modifier.size(10.dp).background(statusColor, RoundedCornerShape(5.dp)))
+            Box(Modifier.align(Alignment.CenterVertically).size(10.dp).background(statusColor, RoundedCornerShape(5.dp)))
             val show = state.pilot::shows
             if (show(HudItem.BATTERY)) {
                 HudText(state.batteryPercent?.let { stringResource(R.string.hud_battery, it) } ?: "--",

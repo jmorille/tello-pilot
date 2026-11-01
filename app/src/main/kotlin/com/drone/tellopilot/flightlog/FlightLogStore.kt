@@ -55,8 +55,8 @@ class FlightLogStore @Inject constructor(@ApplicationContext private val context
     }
 
     suspend fun list(): List<FlightEntry> = withContext(Dispatchers.IO) {
-        val active = activeId
-        files().filter { it.nameWithoutExtension != active }.mapNotNull { file ->
+        // activeId re-read per file: a takeoff during the listing must not get its file repaired.
+        files().filter { it.nameWithoutExtension != activeId }.mapNotNull { file ->
             try {
                 entry(file)
             } catch (e: IOException) {
@@ -88,7 +88,7 @@ class FlightLogStore @Inject constructor(@ApplicationContext private val context
     /** Applies the storage cap ([FlightRetention]), I/O thread. */
     internal fun prune() {
         val files = files()
-        val stored = files.map { FlightRetention.Stored(it.nameWithoutExtension, it.length()) }
+        val stored = files.map { FlightRetention.Stored(it.nameWithoutExtension, it.length(), it.lastModified()) }
         val doomed = FlightRetention.toDelete(stored, keep = activeId).toSet()
         files.filter { it.nameWithoutExtension in doomed }.forEach {
             Log.i(TAG, "storage cap: deleting ${it.name}")
@@ -112,6 +112,8 @@ class FlightLogStore @Inject constructor(@ApplicationContext private val context
             return FlightEntry(file.nameWithoutExtension, start, footer.first, footer.second, file.length())
         }
         val log = file.bufferedReader().useLines { FlightLogCsv.parse(it) } ?: return null
+        // Still being written (recorder just started): neither listed nor repaired.
+        if (file.nameWithoutExtension == activeId || System.currentTimeMillis() - file.lastModified() < RECENT_MS) return null
         // Interrupted flight: append its summary so that it is parsed only once.
         runCatching {
             FileOutputStream(file, true).use { out ->
@@ -137,8 +139,13 @@ class FlightLogStore @Inject constructor(@ApplicationContext private val context
         private val summary = SummaryAccumulator()
 
         init {
-            writer.write(FlightLogCsv.header(startEpochMs))
-            writer.flush()
+            try {
+                writer.write(FlightLogCsv.header(startEpochMs))
+                writer.flush()
+            } catch (e: IOException) {
+                runCatching { writer.close() } // no leaked descriptor
+                throw e
+            }
         }
 
         fun append(sample: FlightSample) {
@@ -149,9 +156,9 @@ class FlightLogStore @Inject constructor(@ApplicationContext private val context
 
         fun summary(): FlightSummary = summary.build()
 
-        fun close() {
+        fun close(interrupted: Boolean = false) {
             try {
-                writer.write(FlightLogCsv.footer(summary.build()))
+                writer.write(FlightLogCsv.footer(summary.build(), interrupted))
                 writer.flush()
                 runCatching { out.fd.sync() }
             } finally {
@@ -172,5 +179,6 @@ class FlightLogStore @Inject constructor(@ApplicationContext private val context
         /** Must match the provider declared in the manifest. */
         const val AUTHORITY_SUFFIX = ".flights"
         private const val TAIL_BYTES = 512
+        private const val RECENT_MS = 10_000L
     }
 }

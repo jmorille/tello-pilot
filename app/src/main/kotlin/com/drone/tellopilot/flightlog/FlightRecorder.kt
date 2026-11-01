@@ -11,7 +11,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -51,8 +50,11 @@ class FlightRecorder @Inject constructor(private val store: FlightLogStore) {
                         writer?.let(::finish)
                         writer = null
                     }
-                } catch (e: IOException) {
-                    // Disk full…: give up this flight (what was written stays readable).
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Disk full, unexpected data…: give up this flight only (what was written
+                    // stays readable), the recorder keeps running for the next ones.
                     Log.w(TAG, "flight recording failed", e)
                     writer?.let { runCatching { it.close() } }
                     writer = null
@@ -66,18 +68,18 @@ class FlightRecorder @Inject constructor(private val store: FlightLogStore) {
             Log.w(TAG, "flight recorder stopped", e)
         } finally {
             // Session closed (app leaving) in flight: keep what was recorded.
-            writer?.let { w -> withContext(NonCancellable) { runCatching { finish(w) } } }
+            writer?.let { w -> withContext(NonCancellable) { runCatching { finish(w, interrupted = true) } } }
         }
     }
 
-    private fun finish(writer: FlightLogStore.FlightWriter) {
+    private fun finish(writer: FlightLogStore.FlightWriter, interrupted: Boolean = false) {
         val summary = writer.summary()
         if (summary.samples < MIN_SAMPLES) {
             // A spurious "flying" bit, not a flight.
             writer.abandon()
             Log.i(TAG, "flight discarded (${summary.samples} samples)")
         } else {
-            writer.close()
+            writer.close(interrupted)
             Log.i(TAG, "flight saved: ${writer.file.name}, $summary")
         }
         store.activeId = null

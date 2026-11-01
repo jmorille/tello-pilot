@@ -116,8 +116,11 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
             if (requested.value != null) return
             unregister()
         }
-        val ssid = prefs.getString(KEY_SSID, null)
         val password = storedPassword()
+        // A protected network whose password can no longer be read (keystore reset): looking
+        // for it as an open network would never match, the system dialog listing TELLO-… does.
+        val passwordLost = password == null && prefs.contains(KEY_PASSWORD_SEALED)
+        val ssid = prefs.getString(KEY_SSID, null)?.takeUnless { passwordLost }
         val specifier = WifiNetworkSpecifier.Builder().apply {
             if (ssid != null) setSsid(ssid) else setSsidPattern(PatternMatcher(DRONE_SSID_PREFIX, PatternMatcher.PATTERN_PREFIX))
             if (ssid != null && !password.isNullOrEmpty()) setWpa2Passphrase(password)
@@ -175,6 +178,12 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
     fun rememberDroneNetwork(ssid: String, password: String) {
         // The password is stored encrypted (Android Keystore), never in clear text.
         val sealed = if (password.isEmpty()) null else SecretBox.encrypt(password)
+        if (password.isNotEmpty() && sealed == null) {
+            // Cannot protect it: remember nothing, the search falls back to any TELLO-… network.
+            Log.w(TAG, "drone Wi-Fi password not stored (keystore unavailable)")
+            prefs.edit().remove(KEY_SSID).remove(KEY_PASSWORD).remove(KEY_PASSWORD_SEALED).apply()
+            return
+        }
         prefs.edit().putString(KEY_SSID, ssid).remove(KEY_PASSWORD).apply {
             if (sealed != null) putString(KEY_PASSWORD_SEALED, sealed) else remove(KEY_PASSWORD_SEALED)
         }.apply()
@@ -183,8 +192,10 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
     /** Decrypted drone Wi-Fi password; an old clear-text value is migrated once. */
     private fun storedPassword(): String? {
         prefs.getString(KEY_PASSWORD, null)?.let { legacy ->
-            val sealed = SecretBox.encrypt(legacy)
-            prefs.edit().remove(KEY_PASSWORD).apply { if (sealed != null) putString(KEY_PASSWORD_SEALED, sealed) }.apply()
+            // Migrated only once encrypted: the clear value is never dropped without a copy.
+            SecretBox.encrypt(legacy)?.let { sealed ->
+                prefs.edit().remove(KEY_PASSWORD).putString(KEY_PASSWORD_SEALED, sealed).apply()
+            }
             return legacy
         }
         return prefs.getString(KEY_PASSWORD_SEALED, null)?.let(SecretBox::decrypt)

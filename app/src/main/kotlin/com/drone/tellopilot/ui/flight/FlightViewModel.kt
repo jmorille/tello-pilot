@@ -149,7 +149,7 @@ class FlightViewModel @Inject constructor(
                 if (flight.flying && !wasFlying) track.value = emptyList()
                 wasFlying = flight.flying
                 val odo = t.odometry
-                if (flight.flying && odo != null && odo.positionValid) {
+                if (flight.flying && odo != null && odo.positionValid && odo.x.isFinite() && odo.y.isFinite()) {
                     val p = androidx.compose.ui.geometry.Offset(odo.x, odo.y)
                     val points = track.value
                     val last = points.lastOrNull()
@@ -333,6 +333,8 @@ class FlightViewModel @Inject constructor(
     private fun setTripod(on: Boolean) {
         tripod.value = on
         mixer.scale = if (on) pilot.value.tripodScale else 1f
+        // A stick held still sends no new event: apply the new scale at once.
+        pushSticks()
     }
 
     /** Last smart video cancelled by a stick movement (one stop request per second at most). */

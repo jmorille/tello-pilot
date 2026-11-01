@@ -112,13 +112,16 @@ class DroneLogParser(private val maxPending: Int = 4096) {
         // Data = record minus header (10) and trailing CRC16, un-XORed.
         val data = ByteArray(length - HEADER - CRC16) { (src[start + HEADER + it].toInt() xor key.toInt()).toByte() }
         val b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        // UDP: a lost packet in the middle of a split record glues unrelated bytes together.
+        // Such hybrids are rejected by plausibility checks (finite values, unit quaternion,
+        // bounded positions / speeds) rather than shown or recorded.
         return when (type) {
             TYPE_MVO -> if (data.size < MVO_SIZE) null else LogRecord.VisualOdometry(
                 x = b.getFloat(8),
                 y = b.getFloat(12),
                 z = b.getFloat(16),
                 positionValid = (data[76].toInt() and 0x30) == 0x30,
-            )
+            ).takeIf { listOf(it.x, it.y, it.z).all { v -> v.isFinite() && kotlin.math.abs(v) <= MAX_POSITION_M } }
             else -> if (data.size < IMU_SIZE) null else LogRecord.Imu(
                 qw = b.getFloat(48),
                 qx = b.getFloat(52),
@@ -127,9 +130,21 @@ class DroneLogParser(private val maxPending: Int = 4096) {
                 velocityNorth = b.getFloat(76),
                 velocityEast = b.getFloat(80),
                 velocityDown = b.getFloat(84),
-                temperatureC = if (data.size >= TEMPERATURE_OFFSET + 2) b.getShort(TEMPERATURE_OFFSET) / 100f else null,
-            )
+                temperatureC = if (data.size >= TEMPERATURE_OFFSET + 2) {
+                    (b.getShort(TEMPERATURE_OFFSET) / 100f).takeIf { it in -40f..150f }
+                } else {
+                    null
+                },
+            ).takeIf { it.plausible() }
         }
+    }
+
+    private fun LogRecord.Imu.plausible(): Boolean {
+        val q = listOf(qw, qx, qy, qz)
+        val v = listOf(velocityNorth, velocityEast, velocityDown)
+        if (!q.all { it.isFinite() } || !v.all { it.isFinite() && kotlin.math.abs(it) <= MAX_SPEED_MPS }) return false
+        val norm = q.sumOf { (it * it).toDouble() }
+        return norm in 0.81..1.21 // |q| = 1 ± 10 %
     }
 
     companion object {
@@ -143,5 +158,7 @@ class DroneLogParser(private val maxPending: Int = 4096) {
         private const val MVO_SIZE = 77
         private const val IMU_SIZE = 88
         private const val TEMPERATURE_OFFSET = 106
+        private const val MAX_POSITION_M = 500f
+        private const val MAX_SPEED_MPS = 30f
     }
 }
