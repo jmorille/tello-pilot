@@ -107,13 +107,7 @@ class TranscodeQueue @Inject constructor(
      * WARM would heat it up again straight away). Cold: only watched while the queue works.
      */
     private fun pauseFlow(): Flow<Boolean> {
-        val thermalHold = thermal.heat.runningFold(false) { hold, heat ->
-            when (heat) {
-                PhoneHeat.HOT -> true
-                PhoneHeat.NORMAL -> false
-                PhoneHeat.WARM -> hold
-            }
-        }
+        val thermalHold = thermal.heat.runningFold(false) { hold, heat -> thermalHold(hold, heat) }
         return combine(flyingOwners, thermalHold) { owners, hold -> owners.isNotEmpty() || hold }.distinctUntilChanged()
     }
 
@@ -128,11 +122,7 @@ class TranscodeQueue @Inject constructor(
     /** Queues every H.264 flight video that has no re-encoded copy yet. */
     fun enqueueExisting() {
         scope.launch {
-            val videos = library.list()
-            val converted = videos.filter { !it.isH264 }.map { it.baseName }.toSet()
-            val todo = videos.filter { v ->
-                v.isH264 && TranscodeCodec.entries.none { "${v.baseName}-${it.suffix}" in converted }
-            }
+            val todo = untranscoded(library.list(), DroneVideo::isH264, DroneVideo::baseName)
             if (todo.isEmpty()) _state.value = TranscodeState.Done(0, 0, 0, 0) else enqueue(todo.map { it.uri })
         }
     }
@@ -310,11 +300,29 @@ class TranscodeQueue @Inject constructor(
         null
     }
 
-    private companion object {
-        const val TAG = "Transcode"
-        const val TMP_DIR = "transcode"
-        const val MAX_THERMAL_ABORTS = 3
+    internal companion object {
+        /**
+         * Thermal pause with hysteresis: held from HOT until the phone is back to NORMAL
+         * (resuming at WARM would heat it up again straight away).
+         */
+        fun thermalHold(hold: Boolean, heat: PhoneHeat): Boolean = when (heat) {
+            PhoneHeat.HOT -> true
+            PhoneHeat.NORMAL -> false
+            PhoneHeat.WARM -> hold
+        }
+
+        /** The H.264 [videos] that have no re-encoded copy yet (`<base>-hevc`, `<base>-av1`). */
+        fun <V> untranscoded(videos: List<V>, isH264: (V) -> Boolean, baseName: (V) -> String): List<V> {
+            val converted = videos.filter { !isH264(it) }.map(baseName).toSet()
+            return videos.filter { v ->
+                isH264(v) && TranscodeCodec.entries.none { "${baseName(v)}-${it.suffix}" in converted }
+            }
+        }
+
+        private const val TAG = "Transcode"
+        private const val TMP_DIR = "transcode"
+        private const val MAX_THERMAL_ABORTS = 3
         /** The drone's "auto" bitrate is about this much. */
-        const val DEFAULT_SOURCE_BITRATE = 2_500_000
+        private const val DEFAULT_SOURCE_BITRATE = 2_500_000
     }
 }

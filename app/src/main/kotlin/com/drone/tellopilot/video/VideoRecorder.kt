@@ -117,16 +117,10 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
         }
         var muxer: MediaMuxer? = null
         var track = -1
-        var firstPtsNs = 0L
         /** Wall-clock time of the first frame (presentation time 0), for the telemetry overlay. */
         var firstFrameEpochMs = 0L
         var written = 0
-        var waitingKey = false
-        var sps: ByteArray? = null
-        var pps: ByteArray? = null
-        var afterConfig = false
-        var csd: Pair<ByteArray, ByteArray>? = null
-        var pendingConfig: ByteArray? = null
+        val assembler = RecordingAssembler()
         var waitLogged = 0
         var failure: String? = null
         val info = MediaCodec.BufferInfo()
@@ -134,61 +128,20 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
             muxer = MediaMuxer(pfd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             while (!session.stopped) {
                 val frame = session.queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
-                val types = H264.nalTypes(frame.bytes)
-                if (frame.gapBefore) {
-                    // Frames were lost (writer late): skip to the next key frame, and a picture
-                    // following parameter sets seen before the gap is not a key frame.
-                    waitingKey = true
-                    afterConfig = false
+                if (!assembler.started && waitLogged++ < WAIT_LOG_FRAMES) {
+                    Log.d(TAG, "waiting for key frame, NAL types ${H264.nalTypes(frame.bytes)}")
                 }
-                if (track < 0 && waitLogged++ < WAIT_LOG_FRAMES) Log.d(TAG, "waiting for key frame, NAL types $types")
-                // The Tello sends SPS, PPS and the picture in separate packets: remember the
-                // parameter sets as they come, the picture right after them is the key frame.
-                if (H264.NAL_SPS in types) {
-                    H264.extractNal(frame.bytes, H264.NAL_SPS)?.let { sps = it }
-                    afterConfig = true
-                }
-                if (H264.NAL_PPS in types) H264.extractNal(frame.bytes, H264.NAL_PPS)?.let { pps = it }
-                val hasPicture = types.any { it == H264.NAL_IDR || it == H264.NAL_SLICE }
-                // Parameter sets alone are not a sample: they go to the track format (csd).
-                if (!hasPicture) continue
-                val key = H264.NAL_IDR in types || afterConfig
-                afterConfig = false
-                // Parameter sets changed during the recording (bitrate change, drone encoder
-                // restart): the track keeps its first csd, the new ones go in-band before the
-                // next key frame.
-                val current = csd
-                val s0 = sps
-                val p0 = pps
-                if (current != null && s0 != null && p0 != null &&
-                    !(s0.contentEquals(current.first) && p0.contentEquals(current.second))
-                ) {
-                    pendingConfig = s0 + p0
-                    csd = s0 to p0
-                }
-                if (track < 0) {
-                    val s = sps
-                    val p = pps
-                    if (s == null || p == null || !key) continue // wait for SPS + PPS, then a key frame
+                val out = assembler.onFrame(frame.bytes, frame.arrivalNs, frame.gapBefore) ?: continue
+                out.start?.let { (s, p) ->
                     track = muxer.addTrack(formatOf(s, p))
-                    csd = s to p
                     muxer.start()
-                    firstPtsNs = frame.arrivalNs
                     firstFrameEpochMs = System.currentTimeMillis() - (System.nanoTime() - frame.arrivalNs) / 1_000_000
                     Log.i(TAG, "recording started (sps ${s.size} B, pps ${p.size} B)")
                     session.publish(RecordingState.Recording(System.currentTimeMillis()))
                 }
-                if (waitingKey && !key) continue
-                waitingKey = false
-                val ptsUs = (frame.arrivalNs - firstPtsNs) / 1_000
-                val config = if (key) pendingConfig else null
-                if (config != null) {
-                    pendingConfig = null
-                    Log.i(TAG, "parameter sets changed: written in-band")
-                }
-                val sample = if (config != null) config + frame.bytes else frame.bytes
-                info.set(0, sample.size, ptsUs, if (key) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
-                muxer.writeSampleData(track, ByteBuffer.wrap(sample), info)
+                if (out.configInBand) Log.i(TAG, "parameter sets changed: written in-band")
+                info.set(0, out.sample.size, out.ptsUs, if (out.key) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+                muxer.writeSampleData(track, ByteBuffer.wrap(out.sample), info)
                 written++
             }
         } catch (_: InterruptedException) {
