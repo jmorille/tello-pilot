@@ -118,9 +118,15 @@ class DroneSockets private constructor(
             } catch (e: Exception) {
                 control.close(); throw e
             }
-            android.util.Log.i(TAG, "bound control=${control.localPort} video=${video.localPort} on $network; interfaces: " +
-                java.net.NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp }
-                    .joinToString { i -> i.name + i.interfaceAddresses.joinToString(prefix = "[", postfix = "]") { it.address.hostAddress ?: "?" } })
+            // Diagnostics only: never allowed to fail the opening (and leak the bound sockets).
+            if (android.util.Log.isLoggable(TAG, android.util.Log.DEBUG)) {
+                val interfaces = runCatching {
+                    java.net.NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp }.joinToString { i ->
+                        i.name + i.interfaceAddresses.joinToString(prefix = "[", postfix = "]") { it.address.hostAddress ?: "?" }
+                    }
+                }.getOrDefault("?")
+                android.util.Log.d(TAG, "bound control=${control.localPort} video=${video.localPort} on $network; interfaces: $interfaces")
+            }
             try {
                 network.bindSocket(control)
                 network.bindSocket(video)

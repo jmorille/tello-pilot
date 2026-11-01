@@ -14,6 +14,12 @@ import java.util.concurrent.ConcurrentLinkedQueue
 fun interface FrameSink {
     /** Returns `false` when the frame could not be queued (decoder busy, broken or released). */
     fun decode(frame: ByteArray): Boolean
+
+    /** Linux thread ids doing the decoding / display work (performance hints). */
+    val threadIds: IntArray get() = IntArray(0)
+
+    /** Receives, per frame, the time from [decode] to the frame being rendered. */
+    fun setLatencyListener(listener: ((Long) -> Unit)?) = Unit
 }
 
 /**
@@ -26,7 +32,7 @@ fun interface FrameSink {
  * [released], so the codec can never be used after (or during) its release.
  * A fatal codec error triggers an automatic reset (the next key frame restarts the picture).
  */
-class H264Decoder(private val surface: Surface) : FrameSink {
+class H264Decoder(private val surface: Surface, private val extraThreadIds: IntArray = IntArray(0)) : FrameSink {
 
     private val lock = Any()
     private val thread = HandlerThread("tello-decoder", Process.THREAD_PRIORITY_DISPLAY).apply { start() }
@@ -37,6 +43,17 @@ class H264Decoder(private val surface: Surface) : FrameSink {
     private var broken = false
     private var pts = 0L
 
+    /** Queue time of the last frames, by presentation time (latency measurement). */
+    private val queuedAt = LongArray(LATENCY_SLOTS)
+    private val queuedPts = LongArray(LATENCY_SLOTS)
+    @Volatile private var latencyListener: ((Long) -> Unit)? = null
+
+    override val threadIds: IntArray get() = intArrayOf(thread.threadId) + extraThreadIds
+
+    override fun setLatencyListener(listener: ((Long) -> Unit)?) {
+        latencyListener = listener
+    }
+
     private val callback = object : MediaCodec.Callback() {
         override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
             freeInputs.offer(index)
@@ -45,6 +62,10 @@ class H264Decoder(private val surface: Surface) : FrameSink {
         override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
             synchronized(lock) {
                 if (!released && !broken) runCatching { codec.releaseOutputBuffer(index, true) }
+            }
+            latencyListener?.let { listener ->
+                val slot = ((info.presentationTimeUs / FRAME_US) % LATENCY_SLOTS).toInt()
+                if (queuedPts[slot] == info.presentationTimeUs) listener(System.nanoTime() - queuedAt[slot])
             }
         }
 
@@ -110,6 +131,9 @@ class H264Decoder(private val surface: Surface) : FrameSink {
             buffer.clear()
             buffer.put(frame)
             pts += FRAME_US
+            val slot = ((pts / FRAME_US) % LATENCY_SLOTS).toInt()
+            queuedAt[slot] = System.nanoTime()
+            queuedPts[slot] = pts
             codec.queueInputBuffer(index, 0, frame.size, pts, 0)
             true
         } catch (e: IllegalStateException) {
@@ -138,5 +162,6 @@ class H264Decoder(private val surface: Surface) : FrameSink {
         const val WIDTH = 960
         const val HEIGHT = 720
         const val FRAME_US = 33_333L
+        const val LATENCY_SLOTS = 16
     }
 }

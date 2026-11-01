@@ -66,6 +66,8 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
             confirmTakeoff = p[CONFIRM_TAKEOFF] ?: d.confirmTakeoff,
             autoRecord = p[AUTO_RECORD] ?: d.autoRecord,
             padBindings = GamepadBindings.decode(p[PAD_BINDINGS]),
+            videoSharpen = p[VIDEO_SHARPEN] ?: d.videoSharpen,
+            hideSticksWithPad = p[HIDE_STICKS_WITH_PAD] ?: d.hideSticksWithPad,
         )
     }
 
@@ -78,6 +80,8 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         p[CONFIRM_TAKEOFF] = s.confirmTakeoff
         p[AUTO_RECORD] = s.autoRecord
         p[PAD_BINDINGS] = s.padBindings.encode()
+        p[VIDEO_SHARPEN] = s.videoSharpen
+        p[HIDE_STICKS_WITH_PAD] = s.hideSticksWithPad
     }
 
     private fun readDrone(p: Preferences): DroneSettings {
@@ -109,6 +113,8 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         val CONFIRM_TAKEOFF = booleanPreferencesKey("confirm_takeoff")
         val AUTO_RECORD = booleanPreferencesKey("auto_record")
         val PAD_BINDINGS = stringPreferencesKey("pad_bindings")
+        val VIDEO_SHARPEN = booleanPreferencesKey("video_sharpen")
+        val HIDE_STICKS_WITH_PAD = booleanPreferencesKey("hide_sticks_with_pad")
         val MAX_ALTITUDE = intPreferencesKey("max_altitude_m")
         val LOW_BATTERY = intPreferencesKey("low_battery_percent")
         val EXPOSURE = intPreferencesKey("exposure_steps")

@@ -54,6 +54,7 @@ class DroneSession @Inject constructor(
     private val settings: SettingsRepository,
     private val recorder: VideoRecorder,
     private val photoStore: PhotoStore,
+    private val hints: PerformanceHints,
 ) {
     private val _controller = MutableStateFlow<TelloController?>(null)
     val controller: StateFlow<TelloController?> = _controller.asStateFlow()
@@ -94,11 +95,15 @@ class DroneSession @Inject constructor(
 
     /** Attaches the decoder (when the video surface exists). The stream restarts on a key frame. */
     fun attachVideo(frameSink: FrameSink) {
+        frameSink.setLatencyListener(hints::logDecodeLatency)
+        hints.addThreads(*frameSink.threadIds)
         sink.set(frameSink)
         resync.set(true)
     }
 
     fun detachVideo(frameSink: FrameSink) {
+        frameSink.setLatencyListener(null)
+        hints.removeThreads(*frameSink.threadIds)
         sink.compareAndSet(frameSink, null)
         _videoActive.value = false
     }
@@ -206,10 +211,22 @@ class DroneSession @Inject constructor(
     }
 
     private suspend fun receiveVideo(sockets: DroneSockets, controller: TelloController) = coroutineScope {
+        val tid = android.os.Process.myTid()
+        hints.addThreads(tid)
+        try {
+            receiveVideoLoop(sockets, controller)
+        } finally {
+            hints.removeThreads(tid)
+        }
+    }
+
+    private suspend fun receiveVideoLoop(sockets: DroneSockets, controller: TelloController) = coroutineScope {
         val assembler = VideoFrameAssembler()
         val gate = VideoFrameGate()
         val buffer = ByteArray(2048)
         val packet = DatagramPacket(buffer, buffer.size)
+        /** CPU time spent on the datagrams of the frame being assembled (performance hints). */
+        var frameWork = 0L
         while (isActive) {
             try {
                 packet.setLength(buffer.size)
@@ -221,6 +238,7 @@ class DroneSession @Inject constructor(
                 delay(DroneSockets.RECEIVE_ERROR_BACKOFF_MS)
                 continue
             }
+            val workStart = System.nanoTime()
             if (resync.getAndSet(false)) gate.reset()
 
             var decision = gate.onResult(assembler.push(buffer, packet.length))
@@ -235,6 +253,10 @@ class DroneSession @Inject constructor(
                     target.decode(frame) -> _videoActive.value = true
                     else -> decision = gate.onDecoderBacklog()
                 }
+                hints.reportFrameWork(frameWork + (System.nanoTime() - workStart))
+                frameWork = 0
+            } else {
+                frameWork += System.nanoTime() - workStart
             }
             if (decision.requestKeyFrame && (sink.get() != null || recorder.isActive)) {
                 launch(RealtimeThreads.control) { controller.requestKeyFrame() }

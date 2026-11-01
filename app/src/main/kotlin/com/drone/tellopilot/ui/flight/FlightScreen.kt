@@ -16,6 +16,11 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -94,6 +99,7 @@ fun FlightRoute(onOpenSettings: () -> Unit, viewModel: FlightViewModel = hiltVie
         onAction = viewModel::onAction,
         onLeftStick = viewModel::onLeftStick,
         onRightStick = viewModel::onRightStick,
+        onRevealSticks = viewModel::revealSticks,
         attachVideo = viewModel::attachVideo,
         detachVideo = viewModel::detachVideo,
         onOpenSettings = onOpenSettings,
@@ -107,14 +113,22 @@ fun FlightScreen(
     onAction: (FlightAction) -> Unit,
     onLeftStick: (Float, Float) -> Unit,
     onRightStick: (Float, Float) -> Unit,
+    onRevealSticks: () -> Unit = {},
     attachVideo: (FrameSink) -> Unit,
     detachVideo: (FrameSink) -> Unit,
     onOpenSettings: () -> Unit = {},
     snackbar: SnackbarHostState = remember { SnackbarHostState() },
 ) {
     val stickSize = state.pilot.joystickSizeDp.dp
+    // Read in the layer only: fading never recomposes the screen.
+    val sticksAlphaState = androidx.compose.animation.core.animateFloatAsState(
+        // A faint ghost stays visible: the pilot always knows where the sticks are.
+        targetValue = if (state.sticksHidden) HIDDEN_STICK_ALPHA else 1f,
+        animationSpec = androidx.compose.animation.core.tween(if (state.sticksHidden) 600 else 150),
+        label = "sticksAlpha",
+    )
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        VideoView(attachVideo, detachVideo, Modifier.align(Alignment.Center))
+        VideoView(attachVideo, detachVideo, Modifier.align(Alignment.Center), sharpen = state.pilot.videoSharpen)
 
         if (!state.videoActive) {
             Text(
@@ -130,13 +144,14 @@ fun FlightScreen(
             // Discreet top strip: compact HUD on the left, icon actions on the right. The video
             // stays clear; only takeoff / land (safety) remain large, at the bottom.
             Row(verticalAlignment = Alignment.Top) {
-                TopBar(state)
-                Box(Modifier.weight(1f))
+                // The HUD takes what the icons leave: the actions (stop recording…) never get squeezed out.
+                Box(Modifier.weight(1f)) { TopBar(state) }
                 TopActions(state, onAction, onOpenSettings)
             }
             // The two most severe alerts.
             state.warnings.take(2).forEach {
-                WarningBanner(it, state.motorErrorCode, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp))
+                // Left side, under the HUD: the centre of the video stays clear for the pilot.
+                WarningBanner(it, state.motorErrorCode, Modifier.align(Alignment.Start).padding(top = 6.dp).widthIn(max = 320.dp))
             }
             state.photoProgress?.let {
                 LinearProgressIndicator(
@@ -150,18 +165,26 @@ fun FlightScreen(
                     onMove = onLeftStick,
                     onRelease = { onLeftStick(0f, 0f) },
                     enabled = state.controlsEnabled,
-                    modifier = Modifier.align(Alignment.BottomStart).size(stickSize).systemGestureExclusion(),
+                    modifier = Modifier.align(Alignment.BottomStart).size(stickSize).systemGestureExclusion()
+                        .graphicsLayer { alpha = sticksAlphaState.value },
                 )
+                if (state.sticksHidden) RevealZone(onRevealSticks, Modifier.align(Alignment.BottomStart).size(stickSize))
                 ActionPanel(state, onAction, Modifier.align(Alignment.BottomCenter))
                 Joystick(
                     onMove = onRightStick,
                     onRelease = { onRightStick(0f, 0f) },
                     enabled = state.controlsEnabled,
-                    modifier = Modifier.align(Alignment.BottomEnd).size(stickSize).systemGestureExclusion(),
+                    modifier = Modifier.align(Alignment.BottomEnd).size(stickSize).systemGestureExclusion()
+                        .graphicsLayer { alpha = sticksAlphaState.value },
                 )
+                if (state.sticksHidden) RevealZone(onRevealSticks, Modifier.align(Alignment.BottomEnd).size(stickSize))
             }
         }
-        SnackbarHost(snackbar, Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(top = 56.dp))
+        // Right side, under the icons: messages never cover the centre of the video.
+        SnackbarHost(
+            snackbar,
+            Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(top = 60.dp, end = 12.dp).widthIn(max = 360.dp),
+        )
     }
 }
 
@@ -214,7 +237,10 @@ private fun TopBar(state: FlightUiState) {
 
 @Composable
 private fun HudText(text: String, color: Color = Color.White) {
-    Text(text, color = color, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+    Text(
+        text, color = color, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
+        maxLines = 1, softWrap = false,
+    )
 }
 
 /** Icon actions, top right: small translucent circles that leave the video visible. */
@@ -307,6 +333,27 @@ private fun WarningBanner(warning: Warning, motorErrorCode: Int, modifier: Modif
 }
 
 private const val FEET_PER_METER = 3.28084f
+private const val HIDDEN_STICK_ALPHA = 0.12f
+
+/**
+ * Over a hidden stick: swallows the whole gesture (an invisible stick never commands the drone,
+ * e.g. a thumb resting on a corner) and shows the sticks again; the next touch pilots.
+ */
+@Composable
+private fun RevealZone(onReveal: () -> Unit, modifier: Modifier) {
+    Box(
+        modifier.pointerInput(Unit) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false).consume()
+                onReveal()
+                do {
+                    val event = awaitPointerEvent()
+                    event.changes.forEach { it.consume() }
+                } while (event.changes.any { it.pressed })
+            }
+        },
+    )
+}
 private const val MPH_PER_MS = 2.23694f
 
 @Composable
@@ -341,7 +388,7 @@ private fun ModesMenu(state: FlightUiState, enabled: Boolean, onAction: (FlightA
     var flipPad by remember { mutableStateOf(false) }
     Box {
         HudIcon(R.drawable.ic_modes, R.string.action_modes, enabled) { open = true }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }, properties = NonFocusablePopup) {
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }, offset = MenuTowardCentre, properties = NonFocusablePopup) {
             DropdownMenuItem(text = { Text(stringResource(R.string.mode_flip)) }, onClick = { open = false; flipPad = true })
             DropdownMenuItem(
                 text = { Text(stringResource(if (state.bounce) R.string.mode_bounce_off else R.string.mode_bounce_on)) },
@@ -366,6 +413,9 @@ private fun ModesMenu(state: FlightUiState, enabled: Boolean, onAction: (FlightA
  */
 private val NonFocusablePopup = androidx.compose.ui.window.PopupProperties(focusable = false)
 
+/** Menus anchored on the top-right icons open toward the centre, not over the right stick. */
+private val MenuTowardCentre = androidx.compose.ui.unit.DpOffset(x = (-240).dp, y = 0.dp)
+
 /** 3 x 3 pad: the eight flip directions around a cancel button. */
 @Composable
 private fun FlipPad(onFlip: (FlipDirection) -> Unit, onDismiss: () -> Unit) {
@@ -374,7 +424,7 @@ private fun FlipPad(onFlip: (FlipDirection) -> Unit, onDismiss: () -> Unit) {
         listOf(FlipDirection.LEFT, null, FlipDirection.RIGHT),
         listOf(FlipDirection.BACK_LEFT, FlipDirection.BACK, FlipDirection.BACK_RIGHT),
     )
-    DropdownMenu(expanded = true, onDismissRequest = onDismiss, properties = NonFocusablePopup) {
+    DropdownMenu(expanded = true, onDismissRequest = onDismiss, offset = MenuTowardCentre, properties = NonFocusablePopup) {
         Text(
             stringResource(R.string.mode_flip_hint),
             Modifier.padding(horizontal = 12.dp),

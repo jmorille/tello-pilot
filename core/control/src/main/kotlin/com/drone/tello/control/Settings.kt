@@ -23,6 +23,10 @@ data class PilotSettings(
     val confirmTakeoff: Boolean = true,
     /** Start recording on the phone automatically at takeoff. */
     val autoRecord: Boolean = false,
+    /** Fade the screen sticks out while the gamepad flies (a touch brings them back). */
+    val hideSticksWithPad: Boolean = true,
+    /** GPU upscaling + sharpening of the 960x720 video (about 1 ms more). */
+    val videoSharpen: Boolean = true,
     /** Gamepad button assignment. */
     val padBindings: GamepadBindings = GamepadBindings.Default,
 ) {

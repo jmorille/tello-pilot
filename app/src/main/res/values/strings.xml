@@ -181,5 +181,9 @@
     <string name="pad_action_flip">Flip %1$s</string>
     <string name="warning_phone_overheating">Téléphone en surchauffe : vidéo et commandes ralenties, atterrissez</string>
     <string name="warning_phone_hot">Téléphone chaud : mettez-le à l\'ombre</string>
+    <string name="settings_video_sharpen">Image agrandie et affinée par la puce graphique</string>
+    <string name="settings_video_sharpen_help">Agrandit la vidéo 960 × 720 du drone à la taille de l\'écran avec un filtre de netteté. Ajoute environ 1 ms de délai.</string>
+    <string name="settings_hide_sticks">Masquer les manches de l\'écran quand la manette pilote</string>
+    <string name="settings_hide_sticks_help">Un toucher sur un côté de l\'écran fait réapparaître les manches (ce toucher n\'envoie rien au drone), le geste suivant pilote. Ils réapparaissent aussi si la manette se déconnecte.</string>
 </resources>
 

@@ -59,6 +59,9 @@ class FlightViewModel @Inject constructor(
 ) : ViewModel(), GamepadInput.Listener {
 
     private val fastMode = MutableStateFlow(false)
+
+    /** The gamepad drove last (sticks or buttons); a touch on a screen stick hands back to touch. */
+    private val padDriving = MutableStateFlow(false)
     private val mixer = StickMixer()
 
     /** Last flying state reported by the drone; survives link losses and session restarts. */
@@ -85,11 +88,21 @@ class FlightViewModel @Inject constructor(
         combine(session.wifiAvailable, session.link, session.telemetry, ::Triple),
         combine(session.videoActive, fastMode, knownFlying, ::Triple),
         combine(recordingUi, session.photoProgress, ::Pair),
-        combine(session.maneuvers, gamepad.status, phoneThermal.heat, ::Triple),
+        combine(session.maneuvers, gamepad.status, phoneThermal.heat, padDriving, ::Extras),
         pilot,
-    ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), (maneuvers, pad, heat), pilot ->
-        FlightUiState.from(wifi, link, telemetry, video, fast, flying, recording, photo, pilot, maneuvers, pad, heat)
+    ) { (wifi, link, telemetry), (video, fast, flying), (recording, photo), extras, pilot ->
+        FlightUiState.from(
+            wifi, link, telemetry, video, fast, flying, recording, photo, pilot,
+            extras.maneuvers, extras.pad, extras.heat, extras.padDriving,
+        )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, FlightUiState())
+
+    private data class Extras(
+        val maneuvers: com.drone.tello.control.ManeuverState,
+        val pad: com.drone.tellopilot.input.GamepadStatus,
+        val heat: com.drone.tellopilot.data.PhoneHeat,
+        val padDriving: Boolean,
+    )
 
     init {
         // The drone session lives as long as the flight screen.
@@ -122,6 +135,10 @@ class FlightViewModel @Inject constructor(
             session.events.collect { if (it is DroneEvent.ManeuverRefused) _messages.trySend(UserMessage.DroneRefused) }
         }
         viewModelScope.launch { vibrateOnAlerts() }
+        // Pad gone or not centred: the screen sticks come back, and stay until the pad drives again.
+        viewModelScope.launch {
+            gamepad.status.collect { if (it != com.drone.tellopilot.input.GamepadStatus.READY) padDriving.value = false }
+        }
     }
 
     /** Felt without looking: link lost, and every new alert (once per appearance). */
@@ -129,7 +146,8 @@ class FlightViewModel @Inject constructor(
         var previous = FlightUiState()
         val lastVibration = HashMap<Warning, Long>()
         uiState.collect { state ->
-            val linkLost = state.status == ConnectionStatus.RECONNECTING && previous.status == ConnectionStatus.CONNECTED
+            // Out of range the phone often drops the Wi-Fi first (WAITING_WIFI), or the session restarts (CONNECTING).
+            val linkLost = previous.status == ConnectionStatus.CONNECTED && state.status != ConnectionStatus.CONNECTED
             val now = android.os.SystemClock.elapsedRealtime()
             // A flapping alert (wind, battery around the threshold) vibrates at most every 30 s.
             val fresh = (state.warnings - previous.warnings.toSet())
@@ -147,8 +165,9 @@ class FlightViewModel @Inject constructor(
     fun setGamepadActive(active: Boolean) {
         if (active) {
             gamepad.attach(this)
-        } else if (gamepad.isAttached(this)) {
-            gamepad.attach(null) // re-centres the pad sticks through onPadSticks
+        } else {
+            padDriving.value = false
+            if (gamepad.isAttached(this)) gamepad.attach(null) // re-centres the pad sticks through onPadSticks
         }
     }
 
@@ -173,16 +192,21 @@ class FlightViewModel @Inject constructor(
 
     fun onLeftStick(x: Float, y: Float) {
         touch[0] = x; touch[1] = y
+        if (x != 0f || y != 0f) padDriving.value = false
         pushSticks()
     }
 
     fun onRightStick(x: Float, y: Float) {
         touch[2] = x; touch[3] = y
+        if (x != 0f || y != 0f) padDriving.value = false
         pushSticks()
     }
 
     override fun onPadSticks(sticks: PadSticks) {
         pad = sticks
+        // Only a deliberate pad movement takes over: stick drift or noise must never hide the
+        // screen sticks again right after the pilot switched back to the phone.
+        if (touchIdle() && sticks.maxDeflection() >= PAD_TAKEOVER) padDriving.value = true
         pushSticks()
     }
 
@@ -192,12 +216,23 @@ class FlightViewModel @Inject constructor(
         session.controller.value?.setSticks(mixer.setRight(merge(touch[2], pad.rightX), merge(touch[3], pad.rightY), fast))
     }
 
+    private fun touchIdle() = touch.all { it == 0f }
+
+    private fun PadSticks.maxDeflection() =
+        maxOf(kotlin.math.abs(leftX), kotlin.math.abs(leftY), kotlin.math.abs(rightX), kotlin.math.abs(rightY))
+
+    /** A touch on a hidden screen stick: show them again (that touch sends nothing). */
+    fun revealSticks() {
+        padDriving.value = false
+    }
+
     private fun merge(a: Float, b: Float) = if (kotlin.math.abs(a) >= kotlin.math.abs(b)) a else b
 
     /** Last takeoff/land from the pad combo (anti double-press). */
     private var lastPadCombo = Long.MIN_VALUE / 2
 
     override fun onPadAction(action: PadAction) {
+        if (touchIdle()) padDriving.value = true
         when (action) {
             // The R2+Y combo is the gamepad's takeoff guard (slide-to-confirm is touch only).
             PadAction.TakeoffOrLand -> padTakeoffOrLand()
@@ -245,6 +280,7 @@ class FlightViewModel @Inject constructor(
                 session.controller.value?.setFastMode(fastMode.value)
             }
             FlightAction.ReleaseSticks -> {
+                padDriving.value = false
                 touch.fill(0f)
                 pad = PadSticks.Neutral
                 mixer.reset()
@@ -270,8 +306,10 @@ class FlightViewModel @Inject constructor(
 
     /** Takeoff / landing: a vibration confirms the command left (touch or gamepad). */
     private fun confirmed(block: suspend TelloController.() -> Boolean) {
-        if (session.controller.value != null) haptics.confirm()
-        command(block)
+        val controller = session.controller.value ?: return
+        viewModelScope.launch {
+            if (withContext(RealtimeThreads.control) { controller.block() }) haptics.confirm()
+        }
     }
 
     /** Network I/O never runs on the main thread. */
@@ -301,6 +339,8 @@ class FlightViewModel @Inject constructor(
 
 private const val PAD_COMBO_COOLDOWN_MS = 2_000L
 private const val ALERT_REPEAT_MS = 30_000L
+/** Pad deflection that counts as "the pilot flies with the pad" (hides the screen sticks). */
+private const val PAD_TAKEOVER = 0.35f
 
 /** Convenience used by the UI. */
 val SmartVideoMode.label: Int

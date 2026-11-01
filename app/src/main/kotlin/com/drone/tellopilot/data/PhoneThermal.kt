@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.scan
+import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -39,12 +42,21 @@ class PhoneThermal @Inject constructor(@ApplicationContext private val context: 
             emit(value)
             delay(POLL_MS)
         }
+    }.flowOn(Dispatchers.IO) // binder call to the thermal HAL
+
+    /** Hysteresis on the forecast: warm from 0.9, normal again only below 0.8 (no flapping alert). */
+    private val warmForecast: Flow<Boolean> = headroom.scan(false) { warm, h ->
+        when {
+            h.isNaN() -> warm
+            warm -> h >= COOL_HEADROOM
+            else -> h >= WARM_HEADROOM
+        }
     }
 
-    val heat: Flow<PhoneHeat> = combine(status, headroom) { s, h ->
+    val heat: Flow<PhoneHeat> = combine(status, warmForecast) { s, warm ->
         when {
             s >= PowerManager.THERMAL_STATUS_SEVERE -> PhoneHeat.HOT
-            s >= PowerManager.THERMAL_STATUS_MODERATE || (!h.isNaN() && h >= WARM_HEADROOM) -> PhoneHeat.WARM
+            s >= PowerManager.THERMAL_STATUS_MODERATE || warm -> PhoneHeat.WARM
             else -> PhoneHeat.NORMAL
         }
     }.distinctUntilChanged()
@@ -54,5 +66,6 @@ class PhoneThermal @Inject constructor(@ApplicationContext private val context: 
         const val POLL_MS = 10_000L
         /** Close to the throttling point (1.0). */
         const val WARM_HEADROOM = 0.9f
+        const val COOL_HEADROOM = 0.8f
     }
 }

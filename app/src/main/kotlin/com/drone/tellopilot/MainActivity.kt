@@ -43,18 +43,52 @@ class MainActivity : ComponentActivity() {
      * API 37 until ACCESS_LOCAL_NETWORK is granted: ask for it, then reopen the sockets.
      */
     private val localNetworkPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        localNetworkRequestPending = false
         if (granted) {
-            session.reconnect()
+            // onStart may already have reconnected (activity stopped while the dialog was shown).
+            if (localNetworkMissing) {
+                localNetworkMissing = false
+                session.reconnect()
+            }
         } else {
             Toast.makeText(this, R.string.local_network_denied, Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun requestLocalNetworkIfNeeded() {
+    /** The system dialog is showing (kept across recreation: never ask twice at once). */
+    private var localNetworkRequestPending = false
+
+    /**
+     * Checked on every start, not only on the first creation: the permission may have been
+     * revoked (process restored with a saved state) or granted later from the system settings.
+     */
+    private fun checkLocalNetwork() {
         if (Build.VERSION.SDK_INT < LOCAL_NETWORK_API) return
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_LOCAL_NETWORK) != PackageManager.PERMISSION_GRANTED) {
-            localNetworkPermission.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_LOCAL_NETWORK) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            // Granted from the settings while the sockets were failing with EPERM: reopen them.
+            if (localNetworkMissing) {
+                localNetworkMissing = false
+                session.reconnect()
+            }
+        } else {
+            localNetworkMissing = true
+            if (!localNetworkRequestPending) {
+                localNetworkRequestPending = true
+                localNetworkPermission.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+            }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        checkLocalNetwork()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(KEY_LOCAL_NETWORK_PENDING, localNetworkRequestPending)
     }
 
     // Gamepad events are handled before Compose sees them (sticks never wait for a frame).
@@ -77,13 +111,20 @@ class MainActivity : ComponentActivity() {
         preferHighestRefreshRate()
     }
 
+    /** Resolution change without recreation (split screen, display size): pick the mode again. */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        preferHighestRefreshRate()
+    }
+
     /**
      * The Pixel drops to 60 Hz when the content changes little (30 fps drone video): pinning the
      * highest refresh rate of the current resolution halves the touch sampling and display delay.
      * Only while the app is in the foreground.
      */
     private fun preferHighestRefreshRate() {
-        val display = window.decorView.display ?: return
+        // Activity.getDisplay(): valid from onCreate (the decor view has no display before its first traversal).
+        val display = runCatching { display }.getOrNull() ?: return
         val current = display.mode
         val best = display.supportedModes
             .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
@@ -101,7 +142,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        if (savedInstanceState == null) requestLocalNetworkIfNeeded()
+        localNetworkRequestPending = savedInstanceState?.getBoolean(KEY_LOCAL_NETWORK_PENDING) ?: false
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -143,3 +184,7 @@ private data object GamepadConfig
 
 /** First release enforcing the local network permission (Android 17). */
 private const val LOCAL_NETWORK_API = 37
+private const val KEY_LOCAL_NETWORK_PENDING = "local_network_pending"
+
+/** Seen missing in this process: once granted, the session must reopen its sockets. */
+private var localNetworkMissing = false

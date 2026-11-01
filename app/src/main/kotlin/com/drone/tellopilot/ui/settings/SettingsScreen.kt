@@ -138,6 +138,8 @@ fun SettingsScreen(
             range = PilotSettings.JOYSTICK_SIZE_RANGE.first.toFloat()..PilotSettings.JOYSTICK_SIZE_RANGE.last.toFloat(),
         ) { v -> updatePilot { it.copy(joystickSizeDp = v.roundToInt()) } }
         SwitchSetting(R.string.settings_confirm_takeoff, pilot.confirmTakeoff) { v -> updatePilot { it.copy(confirmTakeoff = v) } }
+        SwitchSetting(R.string.settings_hide_sticks, pilot.hideSticksWithPad) { v -> updatePilot { it.copy(hideSticksWithPad = v) } }
+        Text(stringResource(R.string.settings_hide_sticks_help), style = MaterialTheme.typography.bodySmall)
         androidx.compose.material3.OutlinedButton(onClick = onOpenGamepad) { Text(stringResource(R.string.settings_gamepad)) }
 
         Section(R.string.settings_section_display)
@@ -151,6 +153,8 @@ fun SettingsScreen(
             }
         }
         SwitchSetting(R.string.settings_auto_record, pilot.autoRecord) { v -> updatePilot { it.copy(autoRecord = v) } }
+        SwitchSetting(R.string.settings_video_sharpen, pilot.videoSharpen) { v -> updatePilot { it.copy(videoSharpen = v) } }
+        Text(stringResource(R.string.settings_video_sharpen_help), style = MaterialTheme.typography.bodySmall)
 
         Section(R.string.settings_section_drone)
         Text(stringResource(R.string.settings_drone_hint), style = MaterialTheme.typography.bodySmall)

@@ -82,6 +82,8 @@ data class FlightUiState(
     val smartVideo: SmartVideoMode? = null,
     val smartVideoRunning: Boolean = false,
     val gamepad: com.drone.tellopilot.input.GamepadStatus = com.drone.tellopilot.input.GamepadStatus.NONE,
+    /** The gamepad is flying: screen sticks invisible (but still touchable). */
+    val sticksHidden: Boolean = false,
 ) {
     val controlsEnabled: Boolean get() = status == ConnectionStatus.CONNECTED
     val warning: Warning? get() = warnings.firstOrNull()
@@ -104,6 +106,7 @@ data class FlightUiState(
             maneuvers: ManeuverState = ManeuverState(),
             gamepad: com.drone.tellopilot.input.GamepadStatus = com.drone.tellopilot.input.GamepadStatus.NONE,
             phoneHeat: com.drone.tellopilot.data.PhoneHeat = com.drone.tellopilot.data.PhoneHeat.NORMAL,
+            padDriving: Boolean = false,
         ): FlightUiState {
             val status = when {
                 !wifiAvailable -> ConnectionStatus.WAITING_WIFI
@@ -142,6 +145,10 @@ data class FlightUiState(
                 // Not gated on the link: Stop must stay reachable while reconnecting.
                 smartVideoRunning = maneuvers.smartVideoActive,
                 gamepad = gamepad,
+                // Flying with the gamepad: the screen sticks fade out (still active where they
+                // are), and come back as soon as the pilot touches one or the pad goes away.
+                sticksHidden = pilot.hideSticksWithPad && padDriving &&
+                    gamepad == com.drone.tellopilot.input.GamepadStatus.READY,
             )
         }
     }
