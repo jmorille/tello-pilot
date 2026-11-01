@@ -21,6 +21,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -162,11 +163,12 @@ class TranscodeQueue internal constructor(
         try {
             coroutineScope {
                 val paused = pauseFlow().stateIn(this)
-                val pauseUi = launch {
+                launch {
                     paused.collect { p -> _state.update { if (it is TranscodeState.Running) it.copy(paused = p) else it } }
                 }
                 drainLoop(paused)
-                pauseUi.cancel()
+                // The UI collector and the stateIn sharing coroutine never end by themselves.
+                coroutineContext.cancelChildren()
             }
             completed = true
         } catch (e: CancellationException) {

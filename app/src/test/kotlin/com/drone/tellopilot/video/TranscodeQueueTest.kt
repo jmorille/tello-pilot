@@ -114,6 +114,7 @@ class TranscodeQueueTest {
         assertEquals(TranscodeState.Done(1, 0, 0, 600), q.state.value)
         assertEquals(listOf(v), published)
         assertEquals(listOf(v.uri), deleted)
+        assertFalse(q.busy.value)
         assertTrue(tmp.root.resolve("transcode").listFiles()!!.isEmpty()) // no temporary file left
     }
 
@@ -349,7 +350,6 @@ class TranscodeQueueTest {
 
     // ------------------------------------------------------- known bugs
 
-    @Ignore("Bug: the worker never ends (pauseFlow().stateIn(this) keeps drain's coroutineScope alive)")
     @Test
     fun `the worker ends with the queue - not busy any more, a later video is processed`() = test {
         val q = queue()
