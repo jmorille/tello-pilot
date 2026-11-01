@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
@@ -49,14 +50,27 @@ import javax.inject.Singleton
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @Singleton
-class DroneSession @Inject constructor(
+class DroneSession internal constructor(
     private val wifi: WifiNetworkMonitor,
     private val settings: SettingsRepository,
     private val recorder: VideoRecorder,
     private val photoStore: PhotoStore,
     private val hints: PerformanceHints,
     private val flightRecorder: com.drone.tellopilot.flightlog.FlightRecorder,
+    /** Control loop and commands: the realtime control thread (a test dispatcher in the JVM tests). */
+    private val controlDispatcher: CoroutineDispatcher,
+    /** Opens the UDP sockets on the drone's network ([DroneSockets.open]). */
+    private val openSockets: (android.net.Network) -> DroneSockets,
 ) {
+    @Inject constructor(
+        wifi: WifiNetworkMonitor,
+        settings: SettingsRepository,
+        recorder: VideoRecorder,
+        photoStore: PhotoStore,
+        hints: PerformanceHints,
+        flightRecorder: com.drone.tellopilot.flightlog.FlightRecorder,
+    ) : this(wifi, settings, recorder, photoStore, hints, flightRecorder, RealtimeThreads.control, { DroneSockets.open(it) })
+
     private val _controller = MutableStateFlow<TelloController?>(null)
     val controller: StateFlow<TelloController?> = _controller.asStateFlow()
 
@@ -208,7 +222,7 @@ class DroneSession @Inject constructor(
                 onDrone = true
                 droneWifiLost = false
                 val sockets = try {
-                    withContext(RealtimeThreads.control) { DroneSockets.open(network) }
+                    withContext(controlDispatcher) { openSockets(network) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -231,10 +245,10 @@ class DroneSession @Inject constructor(
                                 Log.d(TAG, "traffic: ${sockets.stats}, link ${controller.link.value}")
                             }
                         }
-                        launch(RealtimeThreads.control) { controller.run() }
+                        launch(controlDispatcher) { controller.run() }
                         launch(RealtimeThreads.video) { receiveVideo(sockets, controller) }
                         // Drone settings: stored in the controller, sent on connect and on change.
-                        launch(RealtimeThreads.control) {
+                        launch(controlDispatcher) {
                             try {
                                 settings.settings.map { it.drone }.distinctUntilChanged()
                                     .collect { controller.applyDroneSettings(it) }
@@ -339,7 +353,7 @@ class DroneSession @Inject constructor(
                 frameWork += System.nanoTime() - workStart
             }
             if (decision.requestKeyFrame && (sink.get() != null || recorder.isActive || analysis.get() != null)) {
-                launch(RealtimeThreads.control) { controller.requestKeyFrame() }
+                launch(controlDispatcher) { controller.requestKeyFrame() }
             }
         }
     }

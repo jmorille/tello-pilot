@@ -21,12 +21,12 @@ import java.net.SocketTimeoutException
  * UDP sockets towards the drone, bound to the Tello Wi-Fi [network] so that traffic never
  * goes through mobile data even though the Tello access point has no Internet.
  */
-class DroneSockets private constructor(
+class DroneSockets internal constructor(
     private val control: DatagramSocket,
     val video: DatagramSocket,
+    /** The drone's control port (a local fake drone in the JVM tests). */
+    private val drone: InetSocketAddress = InetSocketAddress(InetAddress.getByAddress(byteArrayOf(192.toByte(), 168.toByte(), 10, 1)), 8889),
 ) : Closeable, ControlTransport {
-
-    private val drone = InetSocketAddress(InetAddress.getByAddress(byteArrayOf(192.toByte(), 168.toByte(), 10, 1)), 8889)
 
     override val videoPort: Int get() = video.localPort
 

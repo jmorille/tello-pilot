@@ -22,6 +22,7 @@ import com.drone.tellopilot.data.DroneSession
 import com.drone.tellopilot.data.RealtimeThreads
 import com.drone.tellopilot.data.SettingsRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -70,13 +71,19 @@ sealed interface AutopilotEnd {
  * module); this class only feeds them telemetry / detections and applies their output.
  */
 @Singleton
-class Autopilot @Inject constructor(
+class Autopilot internal constructor(
     private val session: DroneSession,
     settingsRepository: SettingsRepository,
+    /** The automatic flight loop: one thread at a time (a test dispatcher in the JVM tests). */
+    loop: CoroutineDispatcher,
+    /** Monotonic time in ms ([SystemClock.elapsedRealtime]). */
+    private val clock: () -> Long,
 ) {
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    private val loop = Dispatchers.Default.limitedParallelism(1)
+    @Inject constructor(session: DroneSession, settingsRepository: SettingsRepository) :
+        this(session, settingsRepository, Dispatchers.Default.limitedParallelism(1), SystemClock::elapsedRealtime)
+
     private val scope = CoroutineScope(
         SupervisorJob() + loop + CoroutineExceptionHandler { _, e -> Log.e(TAG, "automatic flight", e) },
     )
@@ -229,7 +236,7 @@ class Autopilot @Inject constructor(
         val freshness = Freshness()
         val odometry = OdometryFeed(controller())
         while (isActive) {
-            val now = SystemClock.elapsedRealtime()
+            val now = clock()
             val controller = controller()
             freshness.check(controller, now)?.let { return AutopilotEnd.MissionAborted(it) }
             // Only a new flight data packet counts as telemetry for the runner.
@@ -264,7 +271,7 @@ class Autopilot @Inject constructor(
         val decoder = try {
             AnalysisDecoder(
                 onImage = { image, release ->
-                    val at = SystemClock.elapsedRealtime()
+                    val at = clock()
                     detector.process(image) { detections ->
                         release()
                         latest.set(detections to at)
@@ -272,7 +279,7 @@ class Autopilot @Inject constructor(
                 },
                 requestKeyFrame = {
                     // The analysis decoder lost its place: ask the drone for a key frame (1/s at most).
-                    val now = SystemClock.elapsedRealtime()
+                    val now = clock()
                     if (now - lastKeyFrameRequest >= KEY_FRAME_INTERVAL_MS) {
                         lastKeyFrameRequest = now
                         controller()?.let { c -> scope.launch(RealtimeThreads.control) { c.requestKeyFrame() } }
@@ -290,14 +297,14 @@ class Autopilot @Inject constructor(
         val s = settings.value
         val geofence = s.pilot.geofenceConfig(s.drone.maxAltitudeMeters)?.let(::Geofence)
         val odometry = OdometryFeed(controller())
-        geofence?.start(SystemClock.elapsedRealtime())
+        geofence?.start(clock())
         var lockedId: Int? = null
         var lastConsumed = -1L
         var box: RectF? = null
         try {
             publish(token, AutopilotState.Tracking(mode, null))
             while (isActive) {
-                val now = SystemClock.elapsedRealtime()
+                val now = clock()
                 val controller = controller()
                 freshness.check(controller, now)?.let { return AutopilotEnd.MissionAborted(it) }
                 if (geofence != null) {

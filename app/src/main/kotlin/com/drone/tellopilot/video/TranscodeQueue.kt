@@ -13,6 +13,7 @@ import com.drone.tellopilot.data.PhoneThermal
 import com.drone.tellopilot.data.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -64,17 +65,29 @@ sealed interface TranscodeState {
  * file is published and checked.
  */
 @Singleton
-class TranscodeQueue @Inject constructor(
-    @ApplicationContext private val context: Context,
+class TranscodeQueue internal constructor(
+    private val context: Context,
     private val library: VideoLibrary,
     private val transcoder: VideoTranscoder,
     settings: SettingsRepository,
     recorder: VideoRecorder,
     private val thermal: PhoneThermal,
     private val overlays: TelemetryOverlayFactory,
+    /** Where the queue works ([Dispatchers.Default]; a test dispatcher in the JVM tests). */
+    dispatcher: CoroutineDispatcher,
 ) {
+    @Inject constructor(
+        @ApplicationContext context: Context,
+        library: VideoLibrary,
+        transcoder: VideoTranscoder,
+        settings: SettingsRepository,
+        recorder: VideoRecorder,
+        thermal: PhoneThermal,
+        overlays: TelemetryOverlayFactory,
+    ) : this(context, library, transcoder, settings, recorder, thermal, overlays, Dispatchers.Default)
+
     private val scope = CoroutineScope(
-        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e(TAG, "transcode queue", e) },
+        SupervisorJob() + dispatcher + CoroutineExceptionHandler { _, e -> Log.e(TAG, "transcode queue", e) },
     )
     /** Video -> telemetry overlay choice (`null`: the setting at processing time). */
     private val pending = LinkedHashMap<Uri, Boolean?>()
