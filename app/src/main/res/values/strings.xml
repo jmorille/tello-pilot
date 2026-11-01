@@ -88,6 +88,10 @@
     <string name="settings_drone_hint">Envoyés au drone à chaque connexion et à chaque modification.</string>
     <string name="settings_max_altitude">Altitude max : %1$d m</string>
     <string name="settings_low_battery">Alerte batterie faible : %1$d %%</string>
+    <string name="settings_battery_voice">Alerte vocale batterie</string>
+    <string name="settings_battery_voice_help">En vol, bip et annonce vocale (volume média) sous le seuil, puis à chaque baisse de 5 %. Batterie critique : rappel toutes les 30 s. Réglage de l\'application, non envoyé au drone.</string>
+    <string name="battery_voice_low">Batterie faible, %1$d pour cent</string>
+    <string name="battery_voice_critical">Batterie critique, atterrissez</string>
     <string name="settings_exposure">Exposition : %1$+.1f EV</string>
     <string name="settings_bitrate">Débit vidéo</string>
 

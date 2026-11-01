@@ -56,6 +56,7 @@ class DroneSession @Inject constructor(
     private val photoStore: PhotoStore,
     private val hints: PerformanceHints,
     private val flightRecorder: com.drone.tellopilot.flightlog.FlightRecorder,
+    private val batteryAlert: BatteryVoiceAlert,
 ) {
     private val _controller = MutableStateFlow<TelloController?>(null)
     val controller: StateFlow<TelloController?> = _controller.asStateFlow()
@@ -170,6 +171,13 @@ class DroneSession @Inject constructor(
                     flightRecorder.record {
                         _controller.value?.takeIf { it.isConnected }?.telemetry?.value
                     }
+                }
+                // Low / critical battery: tone + spoken announcement in flight.
+                launch {
+                    batteryAlert.watch(
+                        flight = { _controller.value?.takeIf { it.isConnected }?.telemetry?.value?.flight },
+                        settings = settings.settings,
+                    )
                 }
                 runSession()
             }
