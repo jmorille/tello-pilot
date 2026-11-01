@@ -118,6 +118,8 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
         var muxer: MediaMuxer? = null
         var track = -1
         var firstPtsNs = 0L
+        /** Wall-clock time of the first frame (presentation time 0), for the telemetry overlay. */
+        var firstFrameEpochMs = 0L
         var written = 0
         var waitingKey = false
         var sps: ByteArray? = null
@@ -172,6 +174,7 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
                     csd = s to p
                     muxer.start()
                     firstPtsNs = frame.arrivalNs
+                    firstFrameEpochMs = System.currentTimeMillis() - (System.nanoTime() - frame.arrivalNs) / 1_000_000
                     Log.i(TAG, "recording started (sps ${s.size} B, pps ${p.size} B)")
                     session.publish(RecordingState.Recording(System.currentTimeMillis()))
                 }
@@ -200,7 +203,16 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
         runCatching { muxer?.release() }
         runCatching { pfd.close() }
         val published = ok && runCatching {
-            context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
+            context.contentResolver.update(
+                uri,
+                ContentValues().apply {
+                    put(MediaStore.Video.Media.IS_PENDING, 0)
+                    // Exact start (ms) for the overlay alignment (see VideoStartTime.resolve).
+                    if (firstFrameEpochMs > 0) put(MediaStore.Video.Media.DATE_TAKEN, firstFrameEpochMs)
+                },
+                null,
+                null,
+            )
         }.isSuccess
         if (!published) runCatching { context.contentResolver.delete(uri, null, null) }
         finish(

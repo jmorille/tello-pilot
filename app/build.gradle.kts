@@ -96,6 +96,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.core)
     implementation(libs.androidx.media3.transformer)
     implementation(libs.androidx.media3.common)
+    implementation(libs.androidx.media3.effect)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

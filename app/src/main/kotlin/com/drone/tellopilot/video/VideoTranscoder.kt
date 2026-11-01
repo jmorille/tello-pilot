@@ -12,9 +12,12 @@ import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.OverlayEffect
+import androidx.media3.effect.TextureOverlay
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
@@ -62,7 +65,8 @@ class VideoTranscoder @Inject constructor(@ApplicationContext private val contex
 
     /**
      * Transcodes [input] into [output]; [onProgress] gets 0..1. Cancelling the calling coroutine
-     * cancels the export. Throws on failure; the output is then deleted.
+     * cancels the export. Throws on failure; the output is then deleted. [overlay] (optional)
+     * is burnt into every frame (telemetry); it is released by Media3 with the export.
      */
     @OptIn(UnstableApi::class)
     suspend fun transcode(
@@ -70,6 +74,7 @@ class VideoTranscoder @Inject constructor(@ApplicationContext private val contex
         output: File,
         codec: TranscodeCodec,
         sourceBitrate: Int,
+        overlay: TextureOverlay? = null,
         onProgress: (Float) -> Unit,
     ) = coroutineScope {
         val bitrate = (sourceBitrate * when (codec) {
@@ -100,7 +105,9 @@ class VideoTranscoder @Inject constructor(@ApplicationContext private val contex
                 })
                 .build()
                 .also { t ->
-                    val item = EditedMediaItem.Builder(MediaItem.fromUri(input)).setRemoveAudio(true).build()
+                    val item = EditedMediaItem.Builder(MediaItem.fromUri(input)).setRemoveAudio(true)
+                        .apply { overlay?.let { setEffects(Effects(emptyList(), listOf(OverlayEffect(listOf(it))))) } }
+                        .build()
                     t.start(item, output.absolutePath)
                 }
         }

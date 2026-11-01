@@ -60,6 +60,10 @@ fun VideoSection(
     }
     SwitchSetting(R.string.settings_keep_original, pilot.keepOriginal) { v -> updatePilot { it.copy(keepOriginal = v) } }
     Text(stringResource(R.string.settings_transcode_help), style = MaterialTheme.typography.bodySmall)
+    SwitchSetting(R.string.settings_overlay_on_transcode, pilot.overlayOnTranscode) { v ->
+        updatePilot { it.copy(overlayOnTranscode = v) }
+    }
+    Text(stringResource(R.string.settings_overlay_help), style = MaterialTheme.typography.bodySmall)
     val running = state is TranscodeState.Running
     OutlinedButton(onClick = viewModel::reencodeExisting, enabled = !running) {
         Text(stringResource(R.string.settings_transcode_existing))

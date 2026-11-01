@@ -82,6 +82,7 @@ internal object SettingsCodec {
             autoTranscode = p[AUTO_TRANSCODE] ?: d.autoTranscode,
             transcodeCodec = p[TRANSCODE_CODEC].toEnum(d.transcodeCodec),
             keepOriginal = p[KEEP_ORIGINAL] ?: d.keepOriginal,
+            overlayOnTranscode = p[OVERLAY_ON_TRANSCODE] ?: d.overlayOnTranscode,
             customMissions = p[CUSTOM_MISSIONS].orEmpty().lines().mapNotNull { com.drone.tello.control.Mission.decode(it) },
             trackingTarget = p[TRACKING_TARGET].toEnum(d.trackingTarget),
         )
@@ -105,6 +106,7 @@ internal object SettingsCodec {
         p[AUTO_TRANSCODE] = s.autoTranscode
         p[TRANSCODE_CODEC] = s.transcodeCodec.name
         p[KEEP_ORIGINAL] = s.keepOriginal
+        p[OVERLAY_ON_TRANSCODE] = s.overlayOnTranscode
         p[CUSTOM_MISSIONS] = s.customMissions.joinToString("\n") { it.encode() }
         p[TRACKING_TARGET] = s.trackingTarget.name
     }
@@ -146,6 +148,7 @@ internal object SettingsCodec {
     private val AUTO_TRANSCODE = booleanPreferencesKey("auto_transcode")
     private val TRANSCODE_CODEC = stringPreferencesKey("transcode_codec")
     private val KEEP_ORIGINAL = booleanPreferencesKey("keep_original")
+    private val OVERLAY_ON_TRANSCODE = booleanPreferencesKey("overlay_on_transcode")
     private val CUSTOM_MISSIONS = stringPreferencesKey("custom_missions")
     private val TRACKING_TARGET = stringPreferencesKey("tracking_target")
     private val MAX_ALTITUDE = intPreferencesKey("max_altitude_m")

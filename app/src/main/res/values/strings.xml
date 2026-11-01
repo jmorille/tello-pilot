@@ -231,6 +231,8 @@
     <string name="settings_auto_transcode">Réencoder chaque vidéo après l\'atterrissage</string>
     <string name="settings_keep_original">Conserver l\'original H.264</string>
     <string name="settings_transcode_help">Le drone enregistre en H.264. Le réencodage divise la taille par 2 environ à qualité visuelle proche. Il ne tourne jamais en vol ni si le téléphone chauffe : il reprend après l\'atterrissage.</string>
+    <string name="settings_overlay_on_transcode">Incruster la télémétrie dans la copie réencodée</string>
+    <string name="settings_overlay_help">Heure, hauteur, vitesse, vario et batterie en bas à gauche, d\'après le journal de vol. L\'original n\'est jamais modifié ; sans journal de vol, seule l\'heure est incrustée.</string>
     <string name="settings_transcode_existing">Réencoder les vidéos existantes</string>
     <string name="transcode_running">Réencodage %1$d/%2$d : %3$s (%4$d %%)</string>
     <string name="transcode_paused">%1$d/%2$d : %3$s, en pause (vol ou téléphone chaud)</string>
@@ -318,6 +320,8 @@
     <string name="gallery_share">Partager</string>
     <string name="gallery_reencode">Réencoder</string>
     <string name="gallery_delete">Supprimer</string>
+    <string name="gallery_reencode_title">Réencoder la vidéo</string>
+    <string name="gallery_reencode_overlay">Avec incrustation de la télémétrie</string>
     <string name="gallery_reencode_started">Réencodage lancé (suivi dans Réglages › Enregistrement et vidéos)</string>
     <string name="gallery_flights">Vols</string>
     <string name="flights_title">Carnet de vols</string>

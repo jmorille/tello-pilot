@@ -3,6 +3,9 @@ package com.drone.tellopilot.video
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.TextureOverlay
 import com.drone.tello.control.PilotSettings
 import com.drone.tello.control.TranscodeCodec
 import com.drone.tellopilot.data.PhoneHeat
@@ -68,11 +71,13 @@ class TranscodeQueue @Inject constructor(
     settings: SettingsRepository,
     recorder: VideoRecorder,
     private val thermal: PhoneThermal,
+    private val overlays: TelemetryOverlayFactory,
 ) {
     private val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e(TAG, "transcode queue", e) },
     )
-    private val pending = LinkedHashSet<Uri>()
+    /** Video -> telemetry overlay choice (`null`: the setting at processing time). */
+    private val pending = LinkedHashMap<Uri, Boolean?>()
     private var worker: Job? = null
 
     /** Flight screens currently reporting a flying drone (a closing screen cannot unpause another one). */
@@ -132,12 +137,15 @@ class TranscodeQueue @Inject constructor(
         }
     }
 
-    /** Re-encodes one video now (gallery), whatever the automatic setting. */
-    fun enqueueVideo(uri: Uri) = enqueue(listOf(uri))
+    /**
+     * Re-encodes one video now (gallery), whatever the automatic setting; [overlay]: burn the
+     * telemetry into the copy (`null`: as the setting says).
+     */
+    fun enqueueVideo(uri: Uri, overlay: Boolean? = null) = enqueue(listOf(uri), overlay)
 
-    private fun enqueue(uris: List<Uri>) {
+    private fun enqueue(uris: List<Uri>, overlay: Boolean? = null) {
         synchronized(pending) {
-            pending.addAll(uris)
+            uris.forEach { pending[it] = overlay }
             if (worker?.isActive == true) return
             _busy.value = true
             worker = scope.launch { drain() }
@@ -184,7 +192,7 @@ class TranscodeQueue @Inject constructor(
         var index = 0
         val thermalAborts = HashMap<Uri, Int>()
         while (true) {
-            val uri = synchronized(pending) { pending.firstOrNull() } ?: break
+            val (uri, overlayChoice) = synchronized(pending) { pending.entries.firstOrNull()?.toPair() } ?: break
             val total = index + synchronized(pending) { pending.size }
             val video = library.get(uri)
             if (video == null || !video.isH264) {
@@ -193,7 +201,7 @@ class TranscodeQueue @Inject constructor(
             }
             _state.value = TranscodeState.Running(video.name, index + 1, total, 0f, paused.value)
             paused.first { !it }
-            var outcome = runInterruptible(video, paused)
+            var outcome = runInterruptible(video, overlayChoice, paused)
             if (outcome == null) {
                 if (flyingOwners.value.isNotEmpty()) continue // takeoff: same video again once landed
                 // Heat: give up on a video that heats the phone again and again.
@@ -222,8 +230,8 @@ class TranscodeQueue @Inject constructor(
     }
 
     /** Null if abandoned because the drone took off or the phone got hot. */
-    private suspend fun runInterruptible(video: DroneVideo, paused: StateFlow<Boolean>): Outcome? = coroutineScope {
-        val work = async { process(video) }
+    private suspend fun runInterruptible(video: DroneVideo, overlay: Boolean?, paused: StateFlow<Boolean>): Outcome? = coroutineScope {
+        val work = async { process(video, overlay) }
         val watcher = launch { paused.first { it }; work.cancel() }
         try {
             work.await()
@@ -235,13 +243,26 @@ class TranscodeQueue @Inject constructor(
         }
     }
 
-    private suspend fun process(video: DroneVideo): Outcome {
+    @OptIn(UnstableApi::class)
+    private suspend fun process(video: DroneVideo, overlayChoice: Boolean?): Outcome {
         val tmp = File(File(context.cacheDir, TMP_DIR).apply { mkdirs() }, "${video.baseName}.mp4")
         try {
             val pilot = pilot.value ?: PilotSettings()
             val codec = pilot.transcodeCodec.takeIf { transcoder.isSupported(it) } ?: TranscodeCodec.HEVC
-            transcoder.transcode(video.uri, tmp, codec, video.bitrate.takeIf { it > 0 } ?: DEFAULT_SOURCE_BITRATE) { p ->
-                _state.update { if (it is TranscodeState.Running) it.copy(progress = p) else it }
+            val bitrate = video.bitrate.takeIf { it > 0 } ?: DEFAULT_SOURCE_BITRATE
+            val onProgress: (Float) -> Unit = { p -> _state.update { if (it is TranscodeState.Running) it.copy(progress = p) else it } }
+            val overlay = if (overlayChoice ?: pilot.overlayOnTranscode) buildOverlay(video, pilot) else null
+            try {
+                transcoder.transcode(video.uri, tmp, codec, bitrate, overlay, onProgress)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The overlay must never cost the re-encoding: try again without it.
+                if (overlay == null) throw e
+                Log.w(TAG, "${video.name}: transcoding with overlay failed, retrying without it", e)
+                tmp.delete()
+                onProgress(0f)
+                transcoder.transcode(video.uri, tmp, codec, bitrate, null, onProgress)
             }
             if (!transcoder.verify(tmp, codec, video.durationMs)) {
                 Log.w(TAG, "${video.name}: output check failed")
@@ -267,6 +288,17 @@ class TranscodeQueue @Inject constructor(
         } finally {
             tmp.delete()
         }
+    }
+
+    /** Telemetry overlay of [video], `null` (plain re-encoding) if it cannot be built. */
+    @OptIn(UnstableApi::class)
+    private suspend fun buildOverlay(video: DroneVideo, pilot: PilotSettings): TextureOverlay? = try {
+        overlays.build(video, pilot.units)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "${video.name}: overlay unavailable, plain re-encoding", e)
+        null
     }
 
     private companion object {
