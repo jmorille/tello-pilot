@@ -72,12 +72,37 @@ class BatteryAnnouncerTest {
     }
 
     @Test
-    fun `a new battery clears the state only well above the threshold`() {
+    fun `a new battery clears the state only on the ground, well above the threshold`() {
         assertEquals(listOf(Low(20)), run(20))
-        assertNull(feed(22)) // inside the hysteresis band: still low
+        assertNull(feed(22, airborne = false)) // inside the hysteresis band: still low
         assertNull(feed(20))
-        assertNull(feed(23)) // threshold + 3: cleared
+        assertNull(feed(23, airborne = false)) // threshold + 3: cleared
         assertEquals(Low(20), feed(20))
+    }
+
+    @Test
+    fun `a level bouncing back in flight is never announced again`() {
+        assertEquals(Low(20), feed(20))
+        assertNull(feed(24)) // voltage recovery while hovering
+        assertNull(feed(30))
+        assertNull(feed(20))
+        assertNull(feed(19))
+        assertEquals(Low(15), feed(15))
+    }
+
+    @Test
+    fun `a replacement battery still low is announced at takeoff`() {
+        assertEquals(listOf(Low(20), Low(15), Critical(10)), run(20, 15, 10))
+        assertNull(feed(12, airborne = false)) // landed, battery swapped for an 18 % one
+        assertNull(feed(18, airborne = false))
+        assertEquals(Low(18), feed(18))
+    }
+
+    @Test
+    fun `a small recovery on the ground after landing is not a new battery`() {
+        assertEquals(Low(18), feed(18))
+        assertNull(feed(21, airborne = false))
+        assertNull(feed(21))
     }
 
     @Test
@@ -198,7 +223,9 @@ class BatteryAnnouncerTest {
         assertNull(feed(24, lowFlag = true))
         assertNull(feed(26))
         assertNull(feed(24, lowFlag = true))
-        assertNull(feed(27)) // 24 + 3: cleared
+        assertNull(feed(27)) // in flight: never cleared
+        assertNull(feed(24, lowFlag = true))
+        assertNull(feed(27, airborne = false)) // on the ground, 24 + 3: cleared
         assertEquals(Low(24), feed(24, lowFlag = true))
     }
 

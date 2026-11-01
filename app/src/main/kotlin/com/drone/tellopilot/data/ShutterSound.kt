@@ -71,9 +71,15 @@ class ShutterSound @Inject constructor() {
         Log.i(TAG, "no usable system shutter sound: synthesised one")
     }
 
-    private val synthesized: AudioTrack? by lazy {
+    /** PCM of the synthesised shutter, computed once (only if ever needed). */
+    private val synthPcm: ShortArray by lazy { ShutterSynth.synthesize(ShutterSynth.SAMPLE_RATE) }
+
+    /** Fallback track, rebuilt after a playback failure (audio server restarted…). */
+    private var synthesized: AudioTrack? = null
+
+    private fun synthesizedTrack(): AudioTrack? = synthesized ?: run {
         runCatching {
-            val pcm = ShutterSynth.synthesize(ShutterSynth.SAMPLE_RATE)
+            val pcm = synthPcm
             AudioTrack.Builder()
                 .setAudioAttributes(attributes)
                 .setAudioFormat(
@@ -88,19 +94,23 @@ class ShutterSound @Inject constructor() {
                 .build()
                 .apply { write(pcm, 0, pcm.size) }
         }.onFailure { Log.w(TAG, "synthesised shutter unavailable", it) }.getOrNull()
-    }
+    }.also { synthesized = it }
 
     @Synchronized
     fun play() {
         val id = systemSoundId
         val p = pool
         if (id != 0 && p != null && runCatching { p.play(id, 1f, 1f, 1, 0, 1f) }.getOrDefault(0) != 0) return
-        val t = synthesized ?: return
+        val t = synthesizedTrack() ?: return
         runCatching {
             t.stop()
             t.reloadStaticData()
             t.play()
-        }.onFailure { Log.w(TAG, "cannot play", it) }
+        }.onFailure {
+            Log.w(TAG, "cannot play", it)
+            synthesized = null
+            runCatching { t.release() }
+        }
     }
 
     private companion object {

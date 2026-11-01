@@ -30,8 +30,9 @@ data class BatteryReading(
  * - Critical (drone flag or [criticalPercent] or less): announced at once, then every
  *   [CRITICAL_REPEAT_MS] while airborne.
  * - Nothing is said on the ground; a low battery found on the ground is announced at takeoff.
- * - Hysteresis: the alert state is only cleared once the level is back [HYSTERESIS] % above the
- *   threshold (new battery), so a value oscillating around it is announced once.
+ * - No spam: the alert state is only cleared on the ground, once the level is back [HYSTERESIS] %
+ *   above the threshold or [REMINDER_STEP] % above the last announcement (new battery); a value
+ *   oscillating around the threshold, or bouncing back in flight, is announced once.
  * - Missing telemetry (link lost, reconnection) changes nothing: the same level seen again after
  *   a reconnection is not announced again.
  */
@@ -53,13 +54,19 @@ class BatteryAnnouncer(private val criticalPercent: Int = CRITICAL_PERCENT_DEFAU
         val critical = reading.criticalFlag || percent <= criticalPercent
         val low = critical || reading.lowFlag || percent <= lowPercent
 
-        // Recovery (battery swapped or charged): only well above the threshold (or above the
-        // level announced on the drone's flag, if higher), flags down.
-        if (!low && percent >= maxOf(lowPercent, lastAnnouncedPercent ?: 0) + HYSTERESIS) {
-            lastAnnouncedPercent = null
-            criticalPhase = false
-            lastCriticalAtMs = null
-            return null
+        // A new battery can only appear on the ground (in flight the level bounces back a few %
+        // after an effort: never a reason to start over). Charged: well above the threshold (or
+        // above the level announced on the drone's flag, if higher), flags down. Swapped for
+        // another low one: clearly above the last announcement, so it is announced at takeoff.
+        if (!reading.airborne) {
+            val last = lastAnnouncedPercent
+            val charged = !low && percent >= maxOf(lowPercent, last ?: 0) + HYSTERESIS
+            val swapped = last != null && percent >= last + REMINDER_STEP
+            if (charged || swapped) {
+                lastAnnouncedPercent = null
+                criticalPhase = false
+                lastCriticalAtMs = null
+            }
         }
         if (criticalPhase && !critical && percent >= criticalPercent + HYSTERESIS) criticalPhase = false
 

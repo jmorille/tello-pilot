@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.PI
@@ -41,7 +42,9 @@ import kotlin.math.sin
  * spoken GPS directions: it follows the media volume (audible as soon as the media volume is
  * up, also in silent / vibrate mode, unlike notifications or system sounds), and Android treats
  * it as a short spoken prompt over other audio. Transient focus with ducking: a video or music
- * playing on the phone is lowered for the announcement, not stopped.
+ * playing on the phone is lowered for the announcement, not stopped. The Tello video has no
+ * sound, so the media volume may well be at zero: the alert then uses the alarm usage instead
+ * (a safety warning must not be silent).
  *
  * Without a TextToSpeech engine or French voice, the tone and vibration alone are played.
  */
@@ -53,48 +56,56 @@ class BatteryVoiceAlert @Inject constructor(
     /** One per process: what was already announced survives the reconnections. */
     private val announcer = BatteryAnnouncer()
 
-    private val attributes = AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
-        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-        .build()
+    private val guidance = attributes(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+    private val alarm = attributes(AudioAttributes.USAGE_ALARM)
 
     private val audioManager: AudioManager? = context.getSystemService(AudioManager::class.java)
-    private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-        .setAudioAttributes(attributes)
-        .setOnAudioFocusChangeListener { }
-        .build()
+    private val guidanceFocus = focusRequest(guidance)
+    private val alarmFocus = focusRequest(alarm)
+
+    private val lock = Any()
+    /** Running [watch] calls: the voice is released when the last one ends. */
+    private var watchers = 0
 
     @Volatile private var tts: TextToSpeech? = null
     @Volatile private var ttsReady = false
+    /** No new engine before this time (a failing engine is not retried every second). */
+    @Volatile private var nextTtsAttemptMs = 0L
     private val utteranceIds = AtomicInteger()
     @Volatile private var speaking: Pair<String, CompletableDeferred<Unit>>? = null
 
-    private val lowTone: AudioTrack? by lazy { track(BatteryTones.low()) }
-    private val criticalTone: AudioTrack? by lazy { track(BatteryTones.critical()) }
+    /** Static tone tracks by (critical, alarm usage), recreated after a playback failure. */
+    private val tones = HashMap<Pair<Boolean, Boolean>, AudioTrack>()
 
     /**
      * Watches the battery until cancelled (sampled every [POLL_MS]: the critical reminder is
      * time based). [flight] gives the live flight data, `null` when not connected.
      */
-    suspend fun watch(flight: () -> FlightData?, settings: Flow<AppSettings>) = coroutineScope {
-        val latest = settings.stateIn(this, SharingStarted.Eagerly, null)
+    suspend fun watch(flight: () -> FlightData?, settings: Flow<AppSettings>) {
+        synchronized(lock) { watchers++ }
         try {
-            while (true) {
-                delay(POLL_MS)
-                val s = latest.value ?: continue
-                if (s.pilot.batteryVoiceAlert && tts == null) startTts()
-                val reading = flight()?.let {
-                    BatteryReading(it.batteryPercent, it.batteryLow, it.batteryCritical, airborne = it.flying || it.motorsOn)
-                }
-                // Always fed (even disabled): turning the alert on mid-flight does not replay old news.
-                val announcement = announcer.update(reading, SystemClock.elapsedRealtime(), s.drone.lowBatteryPercent)
-                if (announcement != null && s.pilot.batteryVoiceAlert) {
-                    Log.i(TAG, "announce $announcement")
-                    announce(announcement)
+            coroutineScope {
+                val latest = settings.stateIn(this, SharingStarted.Eagerly, null)
+                while (true) {
+                    delay(POLL_MS)
+                    val s = latest.value ?: continue
+                    if (s.pilot.batteryVoiceAlert) ensureTts()
+                    val reading = flight()?.let {
+                        BatteryReading(it.batteryPercent, it.batteryLow, it.batteryCritical, airborne = it.flying || it.motorsOn)
+                    }
+                    // Always fed (even disabled): turning the alert on mid-flight does not replay old news.
+                    val announcement = synchronized(lock) {
+                        announcer.update(reading, SystemClock.elapsedRealtime(), s.drone.lowBatteryPercent)
+                    }
+                    if (announcement != null && s.pilot.batteryVoiceAlert) {
+                        Log.i(TAG, "announce $announcement")
+                        announce(announcement)
+                    }
                 }
             }
         } finally {
-            stopTts()
+            val last = synchronized(lock) { --watchers == 0 }
+            if (last) stopTts()
         }
     }
 
@@ -105,46 +116,83 @@ class BatteryVoiceAlert @Inject constructor(
             is BatteryAnnouncement.Low -> context.getString(R.string.battery_voice_low, a.percent)
             is BatteryAnnouncement.Critical -> context.getString(R.string.battery_voice_critical)
         }
+        val useAlarm = runCatching { audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) == 0 }.getOrDefault(false)
+        val focus = if (useAlarm) alarmFocus else guidanceFocus
         // The alert plays even if the focus is refused (a call…): it is a safety warning.
-        runCatching { audioManager?.requestAudioFocus(focusRequest) }
+        runCatching { audioManager?.requestAudioFocus(focus) }
         try {
-            val tone = if (critical) criticalTone else lowTone
-            val toneMs = if (critical) BatteryTones.CRITICAL_MS else BatteryTones.LOW_MS
-            if (tone != null && runCatching { tone.stop(); tone.reloadStaticData(); tone.play() }.isSuccess) {
-                delay(toneMs + TONE_GAP_MS)
+            if (playTone(critical, useAlarm)) {
+                delay((if (critical) BatteryTones.CRITICAL_MS else BatteryTones.LOW_MS) + TONE_GAP_MS)
             }
-            speak(text)
+            speak(text, if (useAlarm) alarm else guidance)
         } finally {
-            runCatching { audioManager?.abandonAudioFocusRequest(focusRequest) }
+            runCatching { audioManager?.abandonAudioFocusRequest(focus) }
         }
     }
 
+    private fun playTone(critical: Boolean, useAlarm: Boolean): Boolean {
+        val key = critical to useAlarm
+        val track = synchronized(tones) {
+            tones[key] ?: track(
+                if (critical) BatteryTones.critical() else BatteryTones.low(),
+                if (useAlarm) alarm else guidance,
+            )?.also { tones[key] = it }
+        } ?: return false
+        return runCatching {
+            track.stop()
+            track.reloadStaticData()
+            track.play()
+        }.onFailure {
+            // Dead track (audio server restarted…): rebuilt next time.
+            Log.w(TAG, "alert tone failed", it)
+            synchronized(tones) { tones.remove(key) }
+            runCatching { track.release() }
+        }.isSuccess
+    }
+
     /** Speaks and waits for the end of the utterance (bounded); nothing without a French voice. */
-    private suspend fun speak(text: String) {
+    private suspend fun speak(text: String, attributes: AudioAttributes) {
         val engine = tts?.takeIf { ttsReady } ?: return
         val id = "battery-${utteranceIds.incrementAndGet()}"
         val done = CompletableDeferred<Unit>()
         speaking = id to done
-        val queued = runCatching { engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) }.getOrDefault(TextToSpeech.ERROR)
+        val queued = runCatching {
+            engine.setAudioAttributes(attributes)
+            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
+        }.getOrDefault(TextToSpeech.ERROR)
         if (queued == TextToSpeech.SUCCESS) withTimeoutOrNull(SPEECH_TIMEOUT_MS) { done.await() }
         speaking = null
     }
 
-    private fun startTts() {
+    /** Creates the engine if there is none (at most every [TTS_RETRY_MS] after a failure). */
+    private fun ensureTts() {
+        val now = SystemClock.elapsedRealtime()
+        if (tts != null || now < nextTtsAttemptMs) return
+        nextTtsAttemptMs = now + TTS_RETRY_MS
         ttsReady = false
-        tts = runCatching {
-            TextToSpeech(context) { status -> onTtsInit(status) }
-        }.onFailure { Log.w(TAG, "no TextToSpeech", it) }.getOrNull()
+        // onInit may come before the constructor returns (no engine at all): kept for after.
+        val created = AtomicReference<TextToSpeech?>()
+        val early = AtomicReference<Int?>()
+        val engine = runCatching {
+            TextToSpeech(context) { status ->
+                val e = created.get()
+                if (e == null) early.set(status) else onTtsInit(e, status)
+            }
+        }.onFailure { Log.w(TAG, "no TextToSpeech", it) }.getOrNull() ?: return
+        tts = engine
+        created.set(engine)
+        early.get()?.let { onTtsInit(engine, it) }
     }
 
-    private fun onTtsInit(status: Int) {
-        val engine = tts ?: return
+    private fun onTtsInit(engine: TextToSpeech, status: Int) {
+        if (engine !== tts) return // an engine already replaced or released
         if (status != TextToSpeech.SUCCESS) {
-            Log.w(TAG, "TextToSpeech init failed ($status): tone only")
+            Log.w(TAG, "TextToSpeech init failed ($status): tone only, retry later")
+            tts = null
+            runCatching { engine.shutdown() }
             return
         }
         runCatching {
-            engine.setAudioAttributes(attributes)
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) = Unit
                 override fun onDone(utteranceId: String?) = finished(utteranceId)
@@ -165,12 +213,13 @@ class BatteryVoiceAlert @Inject constructor(
 
     private fun stopTts() {
         ttsReady = false
+        nextTtsAttemptMs = 0L
         val engine = tts ?: return
         tts = null
         runCatching { engine.shutdown() }
     }
 
-    private fun track(pcm: ShortArray): AudioTrack? = runCatching {
+    private fun track(pcm: ShortArray, attributes: AudioAttributes): AudioTrack? = runCatching {
         AudioTrack.Builder()
             .setAudioAttributes(attributes)
             .setAudioFormat(
@@ -190,7 +239,19 @@ class BatteryVoiceAlert @Inject constructor(
         const val TAG = "BatteryVoiceAlert"
         const val POLL_MS = 1_000L
         const val TONE_GAP_MS = 120L
-        const val SPEECH_TIMEOUT_MS = 8_000L
+        const val SPEECH_TIMEOUT_MS = 5_000L
+        const val TTS_RETRY_MS = 30_000L
+
+        fun attributes(usage: Int): AudioAttributes = AudioAttributes.Builder()
+            .setUsage(usage)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+
+        fun focusRequest(attributes: AudioAttributes): AudioFocusRequest =
+            AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(attributes)
+                .setOnAudioFocusChangeListener { }
+                .build()
     }
 }
 
