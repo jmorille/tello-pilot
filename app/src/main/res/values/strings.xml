@@ -59,7 +59,7 @@
     <string name="settings_title">Réglages</string>
     <string name="settings_back">← Retour</string>
     <string name="settings_section_control">Pilotage</string>
-    <string name="settings_section_display">Affichage et enregistrement</string>
+    <string name="settings_section_display">Affichage</string>
     <string name="settings_section_drone">Drone</string>
     <string name="settings_stick_mode">Mode des manches</string>
     <string name="settings_mode_n">Mode %1$d</string>
@@ -102,7 +102,7 @@
     <string name="mode_refused_ground">Posez le drone et arrêtez les moteurs</string>
     <string name="mode_refused_busy">Une autre manœuvre est en cours</string>
 
-    <string name="settings_section_maintenance">Drone : Wi-Fi et calibration</string>
+    <string name="settings_section_maintenance">Maintenance</string>
     <string name="maintenance_not_connected">Connectez le drone pour accéder à ces fonctions.</string>
     <string name="maintenance_on_ground">Drone en vol : Wi-Fi et calibrations disponibles au sol, moteurs arrêtés.</string>
     <string name="maintenance_firmware">Firmware : %1$s</string>
@@ -185,7 +185,7 @@
     <string name="settings_video_sharpen_help">Agrandit la vidéo 960 × 720 du drone à la taille de l\'écran avec un filtre de netteté. Ajoute environ 1 ms de délai.</string>
     <string name="settings_hide_sticks">Masquer les manches de l\'écran quand la manette pilote</string>
     <string name="settings_hide_sticks_help">Un toucher sur un côté de l\'écran fait réapparaître les manches (ce toucher n\'envoie rien au drone), le geste suivant pilote. Ils réapparaissent aussi si la manette se déconnecte.</string>
-    <string name="settings_section_videos">Vidéos de vol</string>
+    <string name="settings_section_videos">Enregistrement et vidéos</string>
     <string name="settings_transcode_codec">Format de réencodage</string>
     <string name="settings_codec_hevc">HEVC (H.265)</string>
     <string name="settings_codec_av1">AV1</string>
@@ -204,5 +204,13 @@
     <string name="transcode_notification_title">Réencodage des vidéos de vol</string>
     <string name="transcode_notification_text">Compression des vidéos en cours, en pause pendant les vols.</string>
     <string name="transcode_kept">%1$d vidéo(s) gardée(s) en H.264 : le réencodage ne les réduisait pas</string>
+    <string name="settings_section_gamepad">Manette</string>
+    <string name="settings_units">Unités</string>
+    <string name="settings_summary_control">Mode des manches, sensibilité, décollage</string>
+    <string name="settings_summary_gamepad">Boutons, masquage des manches</string>
+    <string name="settings_summary_display">Unités, netteté de la vidéo</string>
+    <string name="settings_summary_videos">Enregistrement auto, réencodage HEVC/AV1</string>
+    <string name="settings_summary_drone">Altitude max, batterie, exposition, débit</string>
+    <string name="settings_summary_maintenance">Wi-Fi du drone, calibrations</string>
 </resources>
 

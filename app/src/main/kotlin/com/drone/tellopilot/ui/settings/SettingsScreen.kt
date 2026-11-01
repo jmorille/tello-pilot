@@ -5,6 +5,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.background
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -95,6 +104,20 @@ fun SettingsRoute(
     }
 }
 
+/** Settings categories, one pane each. */
+enum class SettingsCategory(val title: Int, val summary: Int) {
+    CONTROL(R.string.settings_section_control, R.string.settings_summary_control),
+    GAMEPAD(R.string.settings_section_gamepad, R.string.settings_summary_gamepad),
+    DISPLAY(R.string.settings_section_display, R.string.settings_summary_display),
+    VIDEOS(R.string.settings_section_videos, R.string.settings_summary_videos),
+    DRONE(R.string.settings_section_drone, R.string.settings_summary_drone),
+    MAINTENANCE(R.string.settings_section_maintenance, R.string.settings_summary_maintenance),
+}
+
+/**
+ * Landscape two-pane settings: the categories on the left, the selected one on the right
+ * (each pane scrolls on its own, nothing is ever more than one tap away).
+ */
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
@@ -105,96 +128,133 @@ fun SettingsScreen(
     videos: @Composable (PilotSettings) -> Unit = {},
     maintenance: @Composable () -> Unit = {},
 ) {
-    val pilot = settings.pilot
-    val drone = settings.drone
-    Column(
-        Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text(stringResource(R.string.settings_back)) }
-            Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.headlineSmall)
+    var category by rememberSaveable { mutableStateOf(SettingsCategory.CONTROL) }
+    Row(Modifier.fillMaxSize().safeDrawingPadding()) {
+        Column(
+            Modifier.width(300.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(vertical = 4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text(stringResource(R.string.settings_back)) }
+                Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.titleLarge)
+            }
+            SettingsCategory.entries.forEach { c -> CategoryItem(c, selected = c == category) { category = c } }
         }
-
-        Section(R.string.settings_section_control)
-        Label(R.string.settings_stick_mode)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StickMode.entries.forEach { mode ->
-                FilterChip(
-                    selected = pilot.stickMode == mode,
-                    onClick = { updatePilot { it.copy(stickMode = mode) } },
-                    label = { Text(stringResource(R.string.settings_mode_n, mode.ordinal + 1)) },
+        VerticalDivider()
+        // key: each category gets its own scroll position, starting at the top.
+        key(category) {
+            Column(
+                Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    stringResource(category.title),
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.primary,
                 )
+                when (category) {
+                    SettingsCategory.CONTROL -> ControlSettings(settings.pilot, updatePilot)
+                    SettingsCategory.GAMEPAD -> GamepadSettings(settings.pilot, updatePilot, onOpenGamepad)
+                    SettingsCategory.DISPLAY -> DisplaySettings(settings.pilot, updatePilot)
+                    SettingsCategory.VIDEOS -> {
+                        SwitchSetting(R.string.settings_auto_record, settings.pilot.autoRecord) { v ->
+                            updatePilot { it.copy(autoRecord = v) }
+                        }
+                        videos(settings.pilot)
+                    }
+                    SettingsCategory.DRONE -> DroneSettingsPane(settings.drone, updateDrone)
+                    SettingsCategory.MAINTENANCE -> maintenance()
+                }
             }
         }
-        Text(stringResource(stickModeHelp(pilot.stickMode)), style = MaterialTheme.typography.bodySmall)
-        SliderSetting(
-            label = { stringResource(R.string.settings_dead_zone, (it * 100).roundToInt()) },
-            value = pilot.deadZone, range = PilotSettings.DEAD_ZONE_RANGE,
-        ) { v -> updatePilot { it.copy(deadZone = v) } }
-        SliderSetting(
-            label = { stringResource(R.string.settings_expo, (it * 100).roundToInt()) },
-            value = pilot.expo, range = PilotSettings.EXPO_RANGE,
-        ) { v -> updatePilot { it.copy(expo = v) } }
-        SliderSetting(
-            label = { stringResource(R.string.settings_joystick_size, it.roundToInt()) },
-            value = pilot.joystickSizeDp.toFloat(),
-            range = PilotSettings.JOYSTICK_SIZE_RANGE.first.toFloat()..PilotSettings.JOYSTICK_SIZE_RANGE.last.toFloat(),
-        ) { v -> updatePilot { it.copy(joystickSizeDp = v.roundToInt()) } }
-        SwitchSetting(R.string.settings_confirm_takeoff, pilot.confirmTakeoff) { v -> updatePilot { it.copy(confirmTakeoff = v) } }
-        SwitchSetting(R.string.settings_hide_sticks, pilot.hideSticksWithPad) { v -> updatePilot { it.copy(hideSticksWithPad = v) } }
-        Text(stringResource(R.string.settings_hide_sticks_help), style = MaterialTheme.typography.bodySmall)
-        androidx.compose.material3.OutlinedButton(onClick = onOpenGamepad) { Text(stringResource(R.string.settings_gamepad)) }
+    }
+}
 
-        Section(R.string.settings_section_display)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Units.entries.forEach { u ->
-                FilterChip(
-                    selected = pilot.units == u,
-                    onClick = { updatePilot { it.copy(units = u) } },
-                    label = { Text(stringResource(if (u == Units.METRIC) R.string.settings_metric else R.string.settings_imperial)) },
-                )
-            }
+@Composable
+private fun ControlSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) -> PilotSettings) -> Unit) {
+    Label(R.string.settings_stick_mode)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        StickMode.entries.forEach { mode ->
+            FilterChip(
+                selected = pilot.stickMode == mode,
+                onClick = { updatePilot { it.copy(stickMode = mode) } },
+                label = { Text(stringResource(R.string.settings_mode_n, mode.ordinal + 1)) },
+            )
         }
-        SwitchSetting(R.string.settings_auto_record, pilot.autoRecord) { v -> updatePilot { it.copy(autoRecord = v) } }
-        SwitchSetting(R.string.settings_video_sharpen, pilot.videoSharpen) { v -> updatePilot { it.copy(videoSharpen = v) } }
-        Text(stringResource(R.string.settings_video_sharpen_help), style = MaterialTheme.typography.bodySmall)
+    }
+    Text(stringResource(stickModeHelp(pilot.stickMode)), style = MaterialTheme.typography.bodySmall)
+    SliderSetting(
+        label = { stringResource(R.string.settings_dead_zone, (it * 100).roundToInt()) },
+        value = pilot.deadZone, range = PilotSettings.DEAD_ZONE_RANGE,
+    ) { v -> updatePilot { it.copy(deadZone = v) } }
+    SliderSetting(
+        label = { stringResource(R.string.settings_expo, (it * 100).roundToInt()) },
+        value = pilot.expo, range = PilotSettings.EXPO_RANGE,
+    ) { v -> updatePilot { it.copy(expo = v) } }
+    SliderSetting(
+        label = { stringResource(R.string.settings_joystick_size, it.roundToInt()) },
+        value = pilot.joystickSizeDp.toFloat(),
+        range = PilotSettings.JOYSTICK_SIZE_RANGE.first.toFloat()..PilotSettings.JOYSTICK_SIZE_RANGE.last.toFloat(),
+    ) { v -> updatePilot { it.copy(joystickSizeDp = v.roundToInt()) } }
+    SwitchSetting(R.string.settings_confirm_takeoff, pilot.confirmTakeoff) { v -> updatePilot { it.copy(confirmTakeoff = v) } }
+}
 
-        videos(pilot)
+@Composable
+private fun GamepadSettings(
+    pilot: PilotSettings,
+    updatePilot: ((PilotSettings) -> PilotSettings) -> Unit,
+    onOpenGamepad: () -> Unit,
+) {
+    SwitchSetting(R.string.settings_hide_sticks, pilot.hideSticksWithPad) { v -> updatePilot { it.copy(hideSticksWithPad = v) } }
+    Text(stringResource(R.string.settings_hide_sticks_help), style = MaterialTheme.typography.bodySmall)
+    OutlinedButton(onClick = onOpenGamepad) { Text(stringResource(R.string.settings_gamepad)) }
+}
 
-        Section(R.string.settings_section_drone)
-        Text(stringResource(R.string.settings_drone_hint), style = MaterialTheme.typography.bodySmall)
-        SliderSetting(
-            label = { stringResource(R.string.settings_max_altitude, it.roundToInt()) },
-            value = drone.maxAltitudeMeters.toFloat(),
-            range = DroneSettings.MAX_ALTITUDE_RANGE.first.toFloat()..DroneSettings.MAX_ALTITUDE_RANGE.last.toFloat(),
-            steps = DroneSettings.MAX_ALTITUDE_RANGE.last - DroneSettings.MAX_ALTITUDE_RANGE.first - 1,
-        ) { v -> updateDrone { it.copy(maxAltitudeMeters = v.roundToInt()) } }
-        SliderSetting(
-            label = { stringResource(R.string.settings_low_battery, it.roundToInt()) },
-            value = drone.lowBatteryPercent.toFloat(),
-            range = DroneSettings.LOW_BATTERY_RANGE.first.toFloat()..DroneSettings.LOW_BATTERY_RANGE.last.toFloat(),
-            steps = DroneSettings.LOW_BATTERY_RANGE.last - DroneSettings.LOW_BATTERY_RANGE.first - 1,
-        ) { v -> updateDrone { it.copy(lowBatteryPercent = v.roundToInt()) } }
-        SliderSetting(
-            label = { stringResource(R.string.settings_exposure, it.roundToInt() / 3f) },
-            value = drone.exposureSteps.toFloat(),
-            range = DroneSettings.EXPOSURE_RANGE.first.toFloat()..DroneSettings.EXPOSURE_RANGE.last.toFloat(),
-            steps = DroneSettings.EXPOSURE_RANGE.last - DroneSettings.EXPOSURE_RANGE.first - 1,
-        ) { v -> updateDrone { it.copy(exposureSteps = v.roundToInt()) } }
-        Label(R.string.settings_bitrate)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            VideoBitrate.entries.forEach { b ->
-                FilterChip(
-                    selected = drone.bitrate == b,
-                    onClick = { updateDrone { it.copy(bitrate = b) } },
-                    label = { Text(b.label) },
-                )
-            }
+@Composable
+private fun DisplaySettings(pilot: PilotSettings, updatePilot: ((PilotSettings) -> PilotSettings) -> Unit) {
+    Label(R.string.settings_units)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Units.entries.forEach { u ->
+            FilterChip(
+                selected = pilot.units == u,
+                onClick = { updatePilot { it.copy(units = u) } },
+                label = { Text(stringResource(if (u == Units.METRIC) R.string.settings_metric else R.string.settings_imperial)) },
+            )
         }
-        Section(R.string.settings_section_maintenance)
-        maintenance()
-        Spacer(Modifier.width(1.dp))
+    }
+    SwitchSetting(R.string.settings_video_sharpen, pilot.videoSharpen) { v -> updatePilot { it.copy(videoSharpen = v) } }
+    Text(stringResource(R.string.settings_video_sharpen_help), style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable
+private fun DroneSettingsPane(drone: DroneSettings, updateDrone: ((DroneSettings) -> DroneSettings) -> Unit) {
+    Text(stringResource(R.string.settings_drone_hint), style = MaterialTheme.typography.bodySmall)
+    SliderSetting(
+        label = { stringResource(R.string.settings_max_altitude, it.roundToInt()) },
+        value = drone.maxAltitudeMeters.toFloat(),
+        range = DroneSettings.MAX_ALTITUDE_RANGE.first.toFloat()..DroneSettings.MAX_ALTITUDE_RANGE.last.toFloat(),
+        steps = DroneSettings.MAX_ALTITUDE_RANGE.last - DroneSettings.MAX_ALTITUDE_RANGE.first - 1,
+    ) { v -> updateDrone { it.copy(maxAltitudeMeters = v.roundToInt()) } }
+    SliderSetting(
+        label = { stringResource(R.string.settings_low_battery, it.roundToInt()) },
+        value = drone.lowBatteryPercent.toFloat(),
+        range = DroneSettings.LOW_BATTERY_RANGE.first.toFloat()..DroneSettings.LOW_BATTERY_RANGE.last.toFloat(),
+        steps = DroneSettings.LOW_BATTERY_RANGE.last - DroneSettings.LOW_BATTERY_RANGE.first - 1,
+    ) { v -> updateDrone { it.copy(lowBatteryPercent = v.roundToInt()) } }
+    SliderSetting(
+        label = { stringResource(R.string.settings_exposure, it.roundToInt() / 3f) },
+        value = drone.exposureSteps.toFloat(),
+        range = DroneSettings.EXPOSURE_RANGE.first.toFloat()..DroneSettings.EXPOSURE_RANGE.last.toFloat(),
+        steps = DroneSettings.EXPOSURE_RANGE.last - DroneSettings.EXPOSURE_RANGE.first - 1,
+    ) { v -> updateDrone { it.copy(exposureSteps = v.roundToInt()) } }
+    Label(R.string.settings_bitrate)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        VideoBitrate.entries.forEach { b ->
+            FilterChip(
+                selected = drone.bitrate == b,
+                onClick = { updateDrone { it.copy(bitrate = b) } },
+                label = { Text(b.label) },
+            )
+        }
     }
 }
 
@@ -205,6 +265,30 @@ private fun stickModeHelp(mode: StickMode) = when (mode) {
     StickMode.MODE_4 -> R.string.settings_mode4_help
 }
 
+/** Compact menu entry (two lines) so that every category fits on a landscape phone. */
+@Composable
+private fun CategoryItem(category: SettingsCategory, selected: Boolean, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 1.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
+            .background(if (selected) colors.secondaryContainer else androidx.compose.ui.graphics.Color.Transparent)
+            .selectable(selected = selected, role = androidx.compose.ui.semantics.Role.Tab, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+    ) {
+        Text(
+            stringResource(category.title), style = MaterialTheme.typography.titleSmall,
+            color = if (selected) colors.onSecondaryContainer else colors.onSurface,
+        )
+        Text(
+            stringResource(category.summary), style = MaterialTheme.typography.bodySmall,
+            color = colors.onSurfaceVariant, maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** Sub-heading inside a pane. */
 @Composable
 internal fun Section(title: Int) {
     HorizontalDivider()

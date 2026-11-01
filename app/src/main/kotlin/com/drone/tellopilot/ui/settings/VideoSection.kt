@@ -44,7 +44,6 @@ fun VideoSection(
     viewModel: VideoSectionViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    Section(R.string.settings_section_videos)
     SwitchSetting(R.string.settings_auto_transcode, pilot.autoTranscode) { v -> updatePilot { it.copy(autoTranscode = v) } }
     Text(stringResource(R.string.settings_transcode_codec), style = MaterialTheme.typography.bodyLarge)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -54,7 +53,7 @@ fun VideoSection(
             FilterChip(
                 selected = pilot.transcodeCodec == codec,
                 onClick = { updatePilot { it.copy(transcodeCodec = codec) } },
-                label = { Text("$name ($kind)") },
+                label = { Text("$name · $kind") },
             )
         }
     }
