@@ -187,7 +187,11 @@ class MainActivity : ComponentActivity() {
                         com.drone.tellopilot.ui.gallery.GalleryRoute(
                             onBack = { nav.popBackStack() },
                             onOpenFlights = { nav.navigate(Flights) { launchSingleTop = true } },
+                            onOpenTranscodes = { nav.navigate(Transcodes) { launchSingleTop = true } },
                         )
+                    }
+                    composable<Transcodes> {
+                        com.drone.tellopilot.ui.gallery.TranscodeQueueRoute(onBack = { nav.popBackStack() })
                     }
                     // Takeoff from a flight log screen: straight back to the flight screen.
                     composable<Flights> {
@@ -227,6 +231,9 @@ private data object Gallery
 
 @Serializable
 private data object Flights
+
+@Serializable
+private data object Transcodes
 
 @Serializable
 private data class FlightDetail(val id: String)

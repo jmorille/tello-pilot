@@ -72,9 +72,25 @@ object VideoStartTime {
      * if the time zone changed since the recording, DATE_TAKEN (UTC epoch, exact) is still
      * recognised when it matches the name up to a whole zone offset.
      */
-    fun resolve(nameMs: Long?, dateTakenMs: Long?, durationMs: Long = 0): Long? {
-        if (nameMs == null) return dateTakenMs?.takeIf { it > 0 }
-        if (dateTakenMs == null || dateTakenMs <= 0) return nameMs + NAME_ROUNDING_MS
+    fun resolve(nameMs: Long?, dateTakenMs: Long?, durationMs: Long = 0): Long? = resolveDetailed(nameMs, dateTakenMs, durationMs)?.epochMs
+
+    /** Where the retained start time comes from (diagnostic logs). */
+    enum class Source {
+        /** Exact first-frame time written by the recorder, consistent with the name. */
+        DATE_TAKEN,
+        /** File name (DATE_TAKEN missing or replaced by the media scanner). */
+        NAME,
+        /** No recorder name: DATE_TAKEN as is (rough). */
+        DATE_TAKEN_ONLY,
+    }
+
+    data class Start(val epochMs: Long, val source: Source)
+
+    /** [resolve] with the source of the retained time. */
+    fun resolveDetailed(nameMs: Long?, dateTakenMs: Long?, durationMs: Long = 0): Start? {
+        if (nameMs == null) return dateTakenMs?.takeIf { it > 0 }?.let { Start(it, Source.DATE_TAKEN_ONLY) }
+        val byName = Start(nameMs + NAME_ROUNDING_MS, Source.NAME)
+        if (dateTakenMs == null || dateTakenMs <= 0) return byName
         val diff = dateTakenMs - nameMs
         val zoneShift = Math.round(diff.toDouble() / ZONE_STEP_MS) * ZONE_STEP_MS
         val residual = diff - zoneShift
@@ -82,7 +98,7 @@ object VideoStartTime {
             kotlin.math.abs(zoneShift) <= MAX_ZONE_OFFSET_MS &&
             // Shifted match that is really the end of the recording (scanner value): reject.
             (zoneShift == 0L || durationMs <= 0 || kotlin.math.abs(dateTakenMs - (nameMs + durationMs)) > END_TIME_MARGIN_MS)
-        return if (consistent) dateTakenMs else nameMs + NAME_ROUNDING_MS
+        return if (consistent) Start(dateTakenMs, Source.DATE_TAKEN) else byName
     }
 }
 
@@ -107,6 +123,10 @@ class OverlayTrack(samples: List<TimedSample>) {
     private val samples = samples.sortedBy { it.epochMs }
 
     val isEmpty: Boolean get() = samples.isEmpty()
+    val size: Int get() = samples.size
+
+    /** Samples within `[fromMs, toMs]` (how much of a video the telemetry covers). */
+    fun countBetween(fromMs: Long, toMs: Long): Int = samples.count { it.epochMs in fromMs..toMs }
 
     /**
      * Values at [epochMs]: linear interpolation between the two surrounding samples when they
