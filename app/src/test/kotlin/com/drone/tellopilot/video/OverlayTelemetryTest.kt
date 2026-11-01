@@ -142,4 +142,60 @@ class OverlayTelemetryTest {
         val lines = OverlayText.lines(t, values(10f, speed = 2f, climb = -1f, battery = 50), Units.IMPERIAL, zone, Locale.FRANCE)
         assertEquals(listOf("14:05:09", "H 33 ft   V 4,5 mph", "↓ 2,2 mph   Bat. 50 %"), lines)
     }
+
+    // --- pilot view values ---
+
+    @Test
+    fun `attitude is interpolated, the heading through north`() {
+        val a = values(1f).copy(rollDeg = 0f, pitchDeg = -10f, yawDeg = 358f, flyTimeS = 10f)
+        val b = values(1f).copy(rollDeg = 20f, pitchDeg = 10f, yawDeg = 4f, flyTimeS = 10.2f)
+        val track = OverlayTrack(listOf(TimedSample(0, a), TimedSample(100, b)))
+        val q = track.at(25)!!
+        assertEquals(5f, q.rollDeg!!, 1e-4f)
+        assertEquals(-5f, q.pitchDeg!!, 1e-4f)
+        assertEquals(359.5f, q.yawDeg!!, 1e-4f) // not 239.5 (the long way round)
+        assertEquals(2.5f, track.at(75)!!.yawDeg!!, 1e-4f)
+        assertEquals(10.05f, q.flyTimeS!!, 1e-4f)
+    }
+
+    @Test
+    fun `a value known on one side only is taken from the nearest sample`() {
+        val a = values(1f).copy(rollDeg = null, wifiPct = null)
+        val b = values(1f).copy(rollDeg = 4f, wifiPct = 70)
+        val track = OverlayTrack(listOf(TimedSample(0, a), TimedSample(100, b)))
+        assertNull(track.at(40)!!.rollDeg)
+        assertNull(track.at(40)!!.wifiPct)
+        assertEquals(4f, track.at(60)!!.rollDeg!!, 1e-4f)
+        assertEquals(70, track.at(60)!!.wifiPct)
+    }
+
+    @Test
+    fun `log samples map to overlay values, yaw as a heading`() {
+        val s = FlightSample(
+            tMs = 0, heightM = 1f, northMps = 3f, eastMps = 4f, climbMps = 0.5f, batteryPct = 50, flying = true,
+            rollDeg = 1f, pitchDeg = Float.NaN, yawDeg = -90f, imuTempC = 40f, wifiPct = 60, flyTimeS = 12f,
+        )
+        val v = OverlayTrack.values(s)
+        assertEquals(5f, v.speedMps, 1e-4f)
+        assertEquals(270f, v.yawDeg)
+        assertNull(v.pitchDeg) // non-finite reading dropped
+        assertEquals(12f, v.flyTimeS)
+        assertEquals(60, v.wifiPct)
+    }
+
+    @Test
+    fun `alerts come from the recorded ones, or the battery and heat flags of older files`() {
+        val base = FlightSample(tMs = 0, heightM = 1f, northMps = 0f, eastMps = 0f, climbMps = 0f, batteryPct = 50, flying = true)
+        val v1 = base.copy(batteryLow = true, overheating = true)
+        assertEquals(listOf(com.drone.tellopilot.ui.flight.Warning.OVERHEATING, com.drone.tellopilot.ui.flight.Warning.BATTERY_LOW) to 0, OverlayWarnings.of(v1))
+        val critical = base.copy(batteryLow = true, batteryCritical = true)
+        assertEquals(listOf(com.drone.tellopilot.ui.flight.Warning.BATTERY_CRITICAL) to 0, OverlayWarnings.of(critical))
+        // Recorded alerts win (the flags are part of them), unknown names are ignored.
+        val v2 = base.copy(batteryLow = true, alerts = listOf("WIND", "FUTURE_ALERT", "MOTOR_ERROR:231"))
+        assertEquals(
+            listOf(com.drone.tellopilot.ui.flight.Warning.MOTOR_ERROR, com.drone.tellopilot.ui.flight.Warning.WIND) to 231,
+            OverlayWarnings.of(v2),
+        )
+        assertEquals(emptyList<com.drone.tellopilot.ui.flight.Warning>() to 0, OverlayWarnings.of(base.copy(alerts = emptyList())))
+    }
 }

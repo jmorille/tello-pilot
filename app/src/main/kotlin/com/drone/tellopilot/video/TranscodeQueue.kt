@@ -378,12 +378,12 @@ class TranscodeQueue internal constructor(
             )
             val built = if (wantOverlay) buildOverlay(video, pilot) else null
             built?.let { b -> _board.update { it.overlay(b.status) } }
-            val overlay = built?.overlay
+            val overlays = built?.overlays.orEmpty()
             stage(TranscodeStage.EXPORTING)
             // The overlay must never cost the re-encoding: on a failed, stalled export or output
             // check with it, try again without it.
-            val overlayOk = overlay != null && try {
-                transcoder.transcode(video.uri, tmp, codec, bitrate, overlay, onStall, onProgress)
+            val overlayOk = overlays.isNotEmpty() && try {
+                transcoder.transcode(video.uri, tmp, codec, bitrate, overlays, onStall, onProgress)
                 stage(TranscodeStage.VERIFYING)
                 transcoder.verify(tmp, codec, video.durationMs).also {
                     if (!it) Log.w(TAG, "${video.name}: output check failed with overlay, retrying without it")
@@ -395,7 +395,7 @@ class TranscodeQueue internal constructor(
                 Log.w(TAG, "${video.name}: transcoding with overlay failed, retrying without it", e)
                 false
             }
-            if (overlay != null && !overlayOk) {
+            if (overlays.isNotEmpty() && !overlayOk) {
                 tmp.delete()
                 _board.update { it.overlay(OverlayStatus.DROPPED) }
                 _state.update { if (it is TranscodeState.Running) it.copy(progress = 0f) else it }
@@ -404,7 +404,7 @@ class TranscodeQueue internal constructor(
             }
             if (!overlayOk) {
                 try {
-                    transcoder.transcode(video.uri, tmp, codec, bitrate, null, onStall, onProgress)
+                    transcoder.transcode(video.uri, tmp, codec, bitrate, emptyList(), onStall, onProgress)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: TranscodeStalledException) {
@@ -465,12 +465,12 @@ class TranscodeQueue internal constructor(
     /** Telemetry overlay of [video], `null` overlay (plain re-encoding) if it cannot be built. */
     @OptIn(UnstableApi::class)
     private suspend fun buildOverlay(video: DroneVideo, pilot: PilotSettings): TelemetryOverlayFactory.Built = try {
-        overlays.build(video, pilot.units) { stage(TranscodeStage.WAITING_FLIGHT_LOG) }
+        overlays.build(video, pilot) { stage(TranscodeStage.WAITING_FLIGHT_LOG) }
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         Log.w(TAG, "${video.name}: overlay UNAVAILABLE, plain re-encoding", e)
-        TelemetryOverlayFactory.Built(null, OverlayStatus.UNAVAILABLE)
+        TelemetryOverlayFactory.Built(emptyList(), OverlayStatus.UNAVAILABLE)
     }
 
     internal companion object {

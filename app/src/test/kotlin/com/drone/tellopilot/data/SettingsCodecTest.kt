@@ -12,6 +12,7 @@ import com.drone.tello.control.HudItem
 import com.drone.tello.control.Mission
 import com.drone.tello.control.MissionStep
 import com.drone.tello.control.MoveDirection
+import com.drone.tello.control.OverlayStyle
 import com.drone.tello.control.PadBinding
 import com.drone.tello.control.PadButton
 import com.drone.tello.control.PadCommand
@@ -53,6 +54,7 @@ class SettingsCodecTest {
             transcodeCodec = TranscodeCodec.AV1,
             keepOriginal = true,
             overlayOnTranscode = true,
+            overlayStyle = OverlayStyle.COMPACT,
             customMissions = listOf(
                 Mission("Un", listOf(MissionStep.Climb(1.5f), MissionStep.Move(MoveDirection.LEFT, 2f))),
                 Mission("Deux", listOf(MissionStep.Rotate(-90f), MissionStep.Hover(3f))),
@@ -103,6 +105,18 @@ class SettingsCodecTest {
         assertEquals(GamepadBindings.Default, pilot.padBindings)
         assertEquals(VideoBitrate.AUTO, SettingsCodec.readDrone(prefs).bitrate)
         assertEquals(listOf(Mission("Ok", listOf(MissionStep.Hover(2f), MissionStep.Climb(1f)))), pilot.customMissions)
+    }
+
+    @Test
+    fun `overlay style defaults to the pilot view and survives a write and read back`() {
+        assertEquals(OverlayStyle.PILOT, SettingsCodec.readPilot(emptyPreferences()).overlayStyle)
+        OverlayStyle.entries.forEach { style ->
+            val prefs = mutablePreferencesOf()
+            SettingsCodec.writePilot(prefs, PilotSettings(overlayStyle = style))
+            assertEquals(style, SettingsCodec.readPilot(prefs).overlayStyle)
+        }
+        val unknown = mutablePreferencesOf(stringPreferencesKey("overlay_style") to "HOLOGRAM")
+        assertEquals(OverlayStyle.PILOT, SettingsCodec.readPilot(unknown).overlayStyle)
     }
 
     @Test

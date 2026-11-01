@@ -73,7 +73,7 @@ class FlightRecorderTest {
         val flight = flights().single()
         assertFalse(flight.interrupted)
         assertEquals(3f, flight.summary.maxHeightM, 0.01f)
-        assertTrue(flight.summary.samples in 40..45) // 5 Hz: 3.3 s in flight + 5 s of tail
+        assertTrue(flight.summary.samples in 80..90) // 10 Hz: 3.3 s in flight + 5 s of tail
         assertEquals(1, store.changes.value)
     }
 

@@ -8,6 +8,7 @@ import com.drone.tello.control.Telemetry
 import com.drone.tello.control.Units
 import com.drone.tello.protocol.FlightData
 import com.drone.tello.protocol.FlipDirection
+import com.drone.tellopilot.R
 
 enum class ConnectionStatus { WAITING_WIFI, CONNECTING, CONNECTED, RECONNECTING }
 
@@ -50,7 +51,44 @@ enum class Warning(val critical: Boolean) {
         get() = critical || this == BATTERY_LOW || this == NO_POSITIONING || this == WIFI_INTERFERENCE ||
             this == GEOFENCE_OUT || this == GEOFENCE_NEAR
 
+    /** Banner text; [MOTOR_ERROR] takes the motor code as argument. */
+    val textRes: Int
+        get() = when (this) {
+            BATTERY_CRITICAL -> R.string.warning_battery_critical
+            IMPACT -> R.string.warning_impact
+            GEOFENCE_OUT -> R.string.warning_geofence_out
+            GEOFENCE_NEAR -> R.string.warning_geofence_near
+            OVERHEATING -> R.string.warning_overheating
+            SENSOR_ERROR -> R.string.warning_sensor_error
+            WIFI_INTERFERENCE -> R.string.warning_wifi_interference
+            GROUND_HEAT -> R.string.warning_ground_heat
+            BAROMETER -> R.string.warning_barometer
+            MOTOR_ERROR -> R.string.warning_motor_error
+            IMU_ERROR -> R.string.warning_imu_error
+            BATTERY_ERROR -> R.string.warning_battery_error
+            PHONE_OVERHEATING -> R.string.warning_phone_overheating
+            PHONE_HOT -> R.string.warning_phone_hot
+            BATTERY_LOW -> R.string.warning_battery_low
+            WIND -> R.string.warning_wind
+            NO_POSITIONING -> R.string.warning_no_positioning
+            VISION_SENSOR -> R.string.warning_vision_sensor
+            TOO_DARK -> R.string.warning_too_dark
+            CAMERA_FAULT -> R.string.warning_camera_fault
+            IMU_PREHEATING -> R.string.warning_imu_preheating
+            CALIBRATION_NEEDED -> R.string.warning_calibration
+        }
+
     companion object {
+        /** Banners shown at once (the most severe ones). */
+        const val MAX_SHOWN = 2
+
+        /**
+         * Warnings on screen: information alerts can be hidden by the pilot, but never the
+         * critical ones nor those that matter in flight.
+         */
+        fun shown(warnings: List<Warning>, pilot: PilotSettings): List<Warning> =
+            if (pilot.shows(com.drone.tello.control.HudItem.INFO_ALERTS)) warnings else warnings.filter { it.alwaysShown }
+
         /** Motor/ESC code 206 only means "not activated yet": handled by the activation, not an alarm. */
         private const val MOTOR_NOT_ACTIVATED = 206
 
@@ -139,8 +177,7 @@ data class FlightUiState(
      * critical ones nor those that matter in flight. Vibrations always use [warnings].
      */
     val shownWarnings: List<Warning>
-        get() = if (pilot.shows(com.drone.tello.control.HudItem.INFO_ALERTS)) warnings
-        else warnings.filter { it.alwaysShown }
+        get() = Warning.shown(warnings, pilot)
     val units: Units get() = pilot.units
 
     /** Settings can be changed on the ground only (stick mode changes mid-flight are dangerous). */

@@ -32,6 +32,12 @@ enum class VideoFit { FIT, WIDE, FILL, STRETCH_WIDE, STRETCH_FULL }
  */
 enum class HudItem { BATTERY, HEIGHT, SPEED, VARIO, FLIGHT_TIME, WIFI, GAMEPAD, RECORDING, HORIZON, MAP, TEMPERATURE, INFO_ALERTS }
 
+/**
+ * Look of the telemetry burnt into re-encoded videos: [PILOT] reproduces the flight screen HUD
+ * (top panel, horizon, mini-map, alerts), [COMPACT] is the small bottom-left text box.
+ */
+enum class OverlayStyle { PILOT, COMPACT }
+
 /** Target format of the post-flight re-encoding of recorded videos. */
 enum class TranscodeCodec(val suffix: String) { HEVC("hevc"), AV1("av1") }
 
@@ -67,6 +73,8 @@ data class PilotSettings(
     val keepOriginal: Boolean = false,
     /** Burn a telemetry overlay (time, height, speed, climb, battery) into the re-encoded copy. */
     val overlayOnTranscode: Boolean = false,
+    /** Look of that overlay; the pilot view follows [hiddenHud]. */
+    val overlayStyle: OverlayStyle = OverlayStyle.PILOT,
     /** Missions created by the pilot (the presets come in addition). */
     val customMissions: List<Mission> = emptyList(),
     val trackingTarget: TrackingTarget = TrackingTarget.PERSON,

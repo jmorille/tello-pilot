@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.drone.tello.control.OverlayStyle
 import com.drone.tello.control.PilotSettings
 import com.drone.tello.control.TranscodeCodec
 import com.drone.tellopilot.R
@@ -64,6 +65,26 @@ fun VideoSection(
         updatePilot { it.copy(overlayOnTranscode = v) }
     }
     Text(stringResource(R.string.settings_overlay_help), style = MaterialTheme.typography.bodySmall)
+    Text(stringResource(R.string.settings_overlay_style), style = MaterialTheme.typography.bodyLarge)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OverlayStyle.entries.forEach { style ->
+            FilterChip(
+                selected = pilot.overlayStyle == style,
+                onClick = { updatePilot { it.copy(overlayStyle = style) } },
+                label = {
+                    Text(
+                        stringResource(
+                            when (style) {
+                                OverlayStyle.PILOT -> R.string.settings_overlay_style_pilot
+                                OverlayStyle.COMPACT -> R.string.settings_overlay_style_compact
+                            },
+                        ),
+                    )
+                },
+            )
+        }
+    }
+    Text(stringResource(R.string.settings_overlay_style_help), style = MaterialTheme.typography.bodySmall)
     val running = state is TranscodeState.Running
     OutlinedButton(onClick = viewModel::reencodeExisting, enabled = !running) {
         Text(stringResource(R.string.settings_transcode_existing))

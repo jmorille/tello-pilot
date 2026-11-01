@@ -1,6 +1,7 @@
 package com.drone.tellopilot.flightlog
 
 import com.drone.tello.control.Telemetry
+import com.drone.tellopilot.ui.flight.Warning
 import java.util.Locale
 import kotlin.math.hypot
 import kotlin.math.max
@@ -10,7 +11,10 @@ import kotlin.math.max
  * CSV format, per-flight summary, statistics and storage cap. Unit tested on the JVM.
  */
 
-/** One telemetry sample (~5 Hz). Log-stream fields are `null` until the drone sends them. */
+/**
+ * One telemetry sample (~10 Hz). Log-stream fields are `null` until the drone sends them, and
+ * the fields added after v1 of the file format are `null` when read from an older file.
+ */
 data class FlightSample(
     /** Offset from the takeoff, ms. */
     val tMs: Long,
@@ -33,6 +37,13 @@ data class FlightSample(
     val batteryLow: Boolean = false,
     val batteryCritical: Boolean = false,
     val overheating: Boolean = false,
+    /** Flight time counted by the drone, s (flight screen timer). */
+    val flyTimeS: Float? = null,
+    /**
+     * Alerts raised by the drone's own state ([Warning.from]), as [Warning] names; the motor
+     * error carries its code (`MOTOR_ERROR:231`). Empty: none; `null`: not recorded (old file).
+     */
+    val alerts: List<String>? = null,
 ) {
     val horizontalMps: Float get() = hypot(northMps, eastMps)
 
@@ -61,8 +72,15 @@ data class FlightSample(
                 batteryLow = f.batteryLow,
                 batteryCritical = f.batteryCritical,
                 overheating = f.overheating,
+                flyTimeS = f.flyTimeSeconds.takeIf { it.isFinite() },
+                alerts = Warning.from(f, t).map {
+                    if (it == Warning.MOTOR_ERROR) "${it.name}$CODE_SEPARATOR${f.motorErrorCode}" else it.name
+                },
             )
         }
+
+        /** Between an alert name and its code in [alerts]. */
+        const val CODE_SEPARATOR = ':'
     }
 }
 
@@ -128,7 +146,14 @@ class FlightSampler(
     }
 
     companion object {
-        const val INTERVAL_MS = 200L
+        /**
+         * 10 Hz: the rate of the drone's flight data and log stream, so the attitude replayed in
+         * the video overlay is as smooth as it was live (a 5 Hz track interpolated linearly
+         * cuts the corners of quick rolls and flips). About 85 bytes a row, i.e. ~50 KB a
+         * minute: ~0.65 MB for a full 13-minute battery. [FlightRetention.MAX_BYTES] still
+         * holds 75 such flights, or the [FlightRetention.MAX_FLIGHTS] of 5 minutes.
+         */
+        const val INTERVAL_MS = 100L
         const val TAIL_MS = 5_000L
         const val NO_DATA_TIMEOUT_MS = 60_000L
         private val NOTHING = Tick()
@@ -203,18 +228,22 @@ data class FlightLog(
 /**
  * File format (UTF-8, LF, one file per flight):
  * ```
- * # tellopilot-flight v1 start=<epoch ms>
+ * # tellopilot-flight v2 start=<epoch ms>
  * t_ms,height_m,north_mps,east_mps,climb_mps,battery_pct,flying,roll_deg,…
- * 0,0.30,0.00,0.00,0.10,87,1,,,,,,,,,90,0,0,0
+ * 0,0.30,0.00,0.00,0.10,87,1,,,,,,,,,90,0,0,0,1.2,BATTERY_LOW
  * …
  * # summary duration_ms=… max_height_m=… …
  * ```
  * Comment lines start with `#`; empty cells are unknown values; booleans are 1 / 0. Rows are
  * appended and flushed one by one, so a file cut by a crash is still readable (the truncated
  * last row is skipped, the summary is recomputed).
+ *
+ * Columns are read by name, so files of any version read back: a column missing from an older
+ * file gives `null` values. v2 added `fly_time_s` and `alerts` (`;`-separated names, see
+ * [FlightSample.alerts]) at the end of the row.
  */
 object FlightLogCsv {
-    const val VERSION = 1
+    const val VERSION = 2
     private const val MAGIC = "# tellopilot-flight"
     private const val SUMMARY = "# summary"
 
@@ -222,7 +251,10 @@ object FlightLogCsv {
         "t_ms", "height_m", "north_mps", "east_mps", "climb_mps", "battery_pct", "flying",
         "roll_deg", "pitch_deg", "yaw_deg", "odo_x_m", "odo_y_m", "odo_z_m", "odo_valid",
         "imu_temp_c", "wifi_pct", "battery_low", "battery_critical", "overheating",
+        "fly_time_s", "alerts",
     )
+
+    private const val ALERT_SEPARATOR = ';'
 
     fun header(startEpochMs: Long): String = "$MAGIC v$VERSION start=$startEpochMs\n${COLUMNS.joinToString(",")}\n"
 
@@ -247,7 +279,13 @@ object FlightLogCsv {
         append(',')
         b(s.batteryLow).append(',')
         b(s.batteryCritical).append(',')
-        b(s.overheating).append('\n')
+        b(s.overheating).append(',')
+        f(s.flyTimeS, 1).append(',')
+        s.alerts?.forEachIndexed { i, name ->
+            if (i > 0) append(ALERT_SEPARATOR)
+            append(name)
+        }
+        append('\n')
     }
 
     fun footer(summary: FlightSummary, interrupted: Boolean = false): String = buildString {
@@ -333,6 +371,9 @@ object FlightLogCsv {
             batteryLow = bool("battery_low") ?: false,
             batteryCritical = bool("battery_critical") ?: false,
             overheating = bool("overheating") ?: false,
+            flyTimeS = float("fly_time_s"),
+            // Present column, empty cell: no alert (not "unknown").
+            alerts = if ("alerts" in columns) cell("alerts")?.split(ALERT_SEPARATOR)?.filter { it.isNotBlank() }.orEmpty() else null,
         )
     }
 

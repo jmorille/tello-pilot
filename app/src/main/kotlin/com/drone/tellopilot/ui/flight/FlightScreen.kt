@@ -64,6 +64,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.ui.platform.LocalResources
 import com.drone.tello.control.Units
 import com.drone.tello.control.HudItem
+import com.drone.tellopilot.hud.HudMath
 import com.drone.tello.protocol.FlipDirection
 import com.drone.tello.protocol.SmartVideoMode
 import com.drone.tellopilot.R
@@ -217,7 +218,7 @@ fun FlightScreen(
                 TopActions(state, onAction, onOpenSettings, onOpenGallery)
             }
             // The two most severe alerts.
-            state.shownWarnings.take(2).forEach {
+            state.shownWarnings.take(Warning.MAX_SHOWN).forEach {
                 // Left side, under the HUD: the centre of the video stays clear for the pilot.
                 WarningBanner(it, state.motorErrorCode, Modifier.align(Alignment.Start).padding(top = 6.dp).widthIn(max = 320.dp))
             }
@@ -282,29 +283,25 @@ private fun TopBar(state: FlightUiState) {
             val show = state.pilot::shows
             if (show(HudItem.BATTERY)) {
                 HudText(state.batteryPercent?.let { stringResource(R.string.hud_battery, it) } ?: "--",
-                    color = if ((state.batteryPercent ?: 100) <= 20) Color(0xFFEF5350) else Color.White)
+                    color = if (HudMath.batteryLow(state.batteryPercent ?: 100)) Color(0xFFEF5350) else Color.White)
             }
             val imperial = state.units == Units.IMPERIAL
             if (show(HudItem.HEIGHT)) {
                 HudText(state.heightMeters?.let {
-                    if (imperial) stringResource(R.string.hud_height_ft, it * FEET_PER_METER) else stringResource(R.string.hud_height, it)
+                    if (imperial) stringResource(R.string.hud_height_ft, it * HudMath.FEET_PER_METER) else stringResource(R.string.hud_height, it)
                 } ?: "H --")
             }
             if (show(HudItem.SPEED)) {
                 HudText(state.horizontalSpeed?.let {
-                    if (imperial) stringResource(R.string.hud_speed_mph, it * MPH_PER_MS) else stringResource(R.string.hud_speed, it)
+                    if (imperial) stringResource(R.string.hud_speed_mph, it * HudMath.MPH_PER_MS) else stringResource(R.string.hud_speed, it)
                 } ?: "V --")
             }
             if (show(HudItem.VARIO)) state.climbRate?.let { rate ->
                 // Vario: arrow by direction, hidden noise under 0.1 m/s.
-                val arrow = when {
-                    rate >= VARIO_DEADBAND -> "↑"
-                    rate <= -VARIO_DEADBAND -> "↓"
-                    else -> "↕"
-                }
+                val arrow = HudMath.varioArrow(rate)
                 val value = kotlin.math.abs(rate)
                 HudText(
-                    if (imperial) stringResource(R.string.hud_vario_mph, arrow, value * MPH_PER_MS)
+                    if (imperial) stringResource(R.string.hud_vario_mph, arrow, value * HudMath.MPH_PER_MS)
                     else stringResource(R.string.hud_vario, arrow, value),
                 )
             }
@@ -312,7 +309,7 @@ private fun TopBar(state: FlightUiState) {
                 HudText(state.flyTimeSeconds?.let { stringResource(R.string.hud_time, it / 60, it % 60) } ?: "--:--")
             }
             if (show(HudItem.TEMPERATURE)) state.imuTemperatureC?.let {
-                HudText(stringResource(R.string.hud_temperature, it), color = if (it >= HOT_DRONE_C) Color(0xFFFFCA28) else Color.White)
+                HudText(stringResource(R.string.hud_temperature, it), color = if (HudMath.droneHot(it)) Color(0xFFFFCA28) else Color.White)
             }
             if (show(HudItem.WIFI)) {
                 HudText(state.wifiStrength?.let { stringResource(R.string.hud_wifi, it) } ?: "Wi-Fi --")
@@ -435,30 +432,7 @@ private fun HudIcon(
 
 @Composable
 private fun WarningBanner(warning: Warning, motorErrorCode: Int, modifier: Modifier = Modifier) {
-    val text = when (warning) {
-        Warning.BATTERY_CRITICAL -> stringResource(R.string.warning_battery_critical)
-        Warning.IMPACT -> stringResource(R.string.warning_impact)
-        Warning.GEOFENCE_OUT -> stringResource(R.string.warning_geofence_out)
-        Warning.GEOFENCE_NEAR -> stringResource(R.string.warning_geofence_near)
-        Warning.OVERHEATING -> stringResource(R.string.warning_overheating)
-        Warning.SENSOR_ERROR -> stringResource(R.string.warning_sensor_error)
-        Warning.WIFI_INTERFERENCE -> stringResource(R.string.warning_wifi_interference)
-        Warning.GROUND_HEAT -> stringResource(R.string.warning_ground_heat)
-        Warning.BAROMETER -> stringResource(R.string.warning_barometer)
-        Warning.MOTOR_ERROR -> stringResource(R.string.warning_motor_error, motorErrorCode)
-        Warning.IMU_ERROR -> stringResource(R.string.warning_imu_error)
-        Warning.BATTERY_ERROR -> stringResource(R.string.warning_battery_error)
-        Warning.PHONE_OVERHEATING -> stringResource(R.string.warning_phone_overheating)
-        Warning.PHONE_HOT -> stringResource(R.string.warning_phone_hot)
-        Warning.BATTERY_LOW -> stringResource(R.string.warning_battery_low)
-        Warning.WIND -> stringResource(R.string.warning_wind)
-        Warning.NO_POSITIONING -> stringResource(R.string.warning_no_positioning)
-        Warning.VISION_SENSOR -> stringResource(R.string.warning_vision_sensor)
-        Warning.TOO_DARK -> stringResource(R.string.warning_too_dark)
-        Warning.CAMERA_FAULT -> stringResource(R.string.warning_camera_fault)
-        Warning.IMU_PREHEATING -> stringResource(R.string.warning_imu_preheating)
-        Warning.CALIBRATION_NEEDED -> stringResource(R.string.warning_calibration)
-    }
+    val text = if (warning == Warning.MOTOR_ERROR) stringResource(warning.textRes, motorErrorCode) else stringResource(warning.textRes)
     Surface(
         modifier = modifier,
         color = if (warning.critical) Color(0xCCD32F2F) else Color(0xCCF57C00),
@@ -468,7 +442,6 @@ private fun WarningBanner(warning: Warning, motorErrorCode: Int, modifier: Modif
     }
 }
 
-private const val FEET_PER_METER = 3.28084f
 private const val HIDDEN_STICK_ALPHA = 0.12f
 
 /**
@@ -490,7 +463,6 @@ private fun RevealZone(onReveal: () -> Unit, modifier: Modifier) {
         },
     )
 }
-private const val MPH_PER_MS = 2.23694f
 
 @Composable
 private fun ActionPanel(state: FlightUiState, onAction: (FlightAction) -> Unit, modifier: Modifier = Modifier) {
@@ -645,9 +617,6 @@ private const val VIDEO_ASPECT = 4f / 3f
 
 private val com.drone.tello.control.VideoFit.stretched: Boolean
     get() = this == com.drone.tello.control.VideoFit.STRETCH_WIDE || this == com.drone.tello.control.VideoFit.STRETCH_FULL
-private const val VARIO_DEADBAND = 0.1f
-/** Unverified threshold: shown in amber above it. */
-private const val HOT_DRONE_C = 60f
 
 /** Frame around the followed target, drawn over the video (same size and place, stretched or not). */
 @Composable

@@ -83,6 +83,7 @@ internal object SettingsCodec {
             transcodeCodec = p[TRANSCODE_CODEC].toEnum(d.transcodeCodec),
             keepOriginal = p[KEEP_ORIGINAL] ?: d.keepOriginal,
             overlayOnTranscode = p[OVERLAY_ON_TRANSCODE] ?: d.overlayOnTranscode,
+            overlayStyle = p[OVERLAY_STYLE].toEnum(d.overlayStyle),
             customMissions = p[CUSTOM_MISSIONS].orEmpty().lines().mapNotNull { com.drone.tello.control.Mission.decode(it) },
             trackingTarget = p[TRACKING_TARGET].toEnum(d.trackingTarget),
             geofence = p[GEOFENCE] ?: d.geofence,
@@ -119,6 +120,7 @@ internal object SettingsCodec {
         p[TRANSCODE_CODEC] = s.transcodeCodec.name
         p[KEEP_ORIGINAL] = s.keepOriginal
         p[OVERLAY_ON_TRANSCODE] = s.overlayOnTranscode
+        p[OVERLAY_STYLE] = s.overlayStyle.name
         p[CUSTOM_MISSIONS] = s.customMissions.joinToString("\n") { it.encode() }
         p[TRACKING_TARGET] = s.trackingTarget.name
         p[GEOFENCE] = s.geofence
@@ -169,6 +171,7 @@ internal object SettingsCodec {
     private val TRANSCODE_CODEC = stringPreferencesKey("transcode_codec")
     private val KEEP_ORIGINAL = booleanPreferencesKey("keep_original")
     private val OVERLAY_ON_TRANSCODE = booleanPreferencesKey("overlay_on_transcode")
+    private val OVERLAY_STYLE = stringPreferencesKey("overlay_style")
     private val CUSTOM_MISSIONS = stringPreferencesKey("custom_missions")
     private val TRACKING_TARGET = stringPreferencesKey("tracking_target")
     private val GEOFENCE = booleanPreferencesKey("geofence")

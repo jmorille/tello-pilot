@@ -14,7 +14,11 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.StaticOverlaySettings
 import androidx.media3.effect.TextureOverlay
+import android.content.Context
+import com.drone.tello.control.OverlayStyle
+import com.drone.tello.control.PilotSettings
 import com.drone.tello.control.Units
+import dagger.hilt.android.qualifiers.ApplicationContext
 import com.drone.tellopilot.flightlog.FlightLogStore
 import com.drone.tellopilot.flightlog.FlightSampler
 import kotlinx.coroutines.delay
@@ -27,27 +31,36 @@ import kotlin.math.max
 
 /**
  * Builds the telemetry overlay of one video: resolves its wall-clock start, loads the
- * overlapping flight logs once and hands a [TelemetryBitmapOverlay] to the transcoder.
+ * overlapping flight logs once and hands the overlay bitmaps to the transcoder, in the style
+ * chosen by the pilot ([PilotSettings.overlayStyle]):
+ * - [OverlayStyle.PILOT]: the flight screen HUD ([PilotHudOverlays]), with the items the pilot
+ *   shows on screen ([PilotSettings.hiddenHud]);
+ * - [OverlayStyle.COMPACT]: the bottom-left text box ([TelemetryBitmapOverlay]).
  *
- * - No usable start time (not a recorder file, no DATE_TAKEN): `null`, plain re-encoding.
- * - No overlapping flight log: the overlay shows the time of day only (still useful, and the
- *   pilot asked for an overlay); the same holds for the frames before the takeoff.
+ * - No usable start time (not a recorder file, no DATE_TAKEN): no overlay, plain re-encoding.
+ * - No overlapping flight log: the compact box with the time of day only (still useful, and
+ *   the pilot asked for an overlay), whatever the style.
  */
 @Singleton
-class TelemetryOverlayFactory @Inject constructor(private val flights: FlightLogStore) {
+class TelemetryOverlayFactory @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val flights: FlightLogStore,
+) {
 
-    /** Overlay of one video ([overlay] null: plain re-encoding) and why ([status]). */
+    /** Overlays of one video ([overlays] empty: plain re-encoding) and why ([status]). */
     @OptIn(UnstableApi::class)
-    class Built(val overlay: TextureOverlay?, val status: OverlayStatus)
+    class Built(val overlays: List<TextureOverlay>, val status: OverlayStatus) {
+        constructor(overlay: TextureOverlay?, status: OverlayStatus) : this(listOfNotNull(overlay), status)
+    }
 
     /** [onWaitingFlightLog]: called once if the flight file is still open (landing tail). */
     @OptIn(UnstableApi::class)
-    suspend fun build(video: DroneVideo, units: Units, onWaitingFlightLog: () -> Unit = {}): Built {
+    suspend fun build(video: DroneVideo, pilot: PilotSettings, onWaitingFlightLog: () -> Unit = {}): Built {
         val zone = ZoneId.systemDefault()
         val nameMs = VideoStartTime.fromName(video.name, zone)
         val start = VideoStartTime.resolveDetailed(nameMs, video.dateTakenMs, video.durationMs) ?: run {
             Log.i(TAG, "${video.name}: overlay OFF, start time unknown (name=$nameMs, taken=${video.dateTakenMs})")
-            return Built(null, OverlayStatus.NO_START_TIME)
+            return Built(emptyList(), OverlayStatus.NO_START_TIME)
         }
         Log.i(
             TAG,
@@ -72,8 +85,14 @@ class TelemetryOverlayFactory @Inject constructor(private val flights: FlightLog
                 "samples=${track.size} (in the video: $covered)",
         )
         val status = if (covered == 0) OverlayStatus.TIME_ONLY else OverlayStatus.ACTIVE
-        Log.i(TAG, "${video.name}: overlay ON, $status")
-        return Built(TelemetryBitmapOverlay(track, start.epochMs, units, zone, Locale.getDefault()), status)
+        val pilotView = pilot.overlayStyle == OverlayStyle.PILOT && status == OverlayStatus.ACTIVE
+        Log.i(TAG, "${video.name}: overlay ON, $status, ${if (pilotView) "pilot view, hidden=${pilot.hiddenHud}" else "compact"}")
+        val overlays = if (pilotView) {
+            PilotHudOverlays.create(track, OverlayMapTrack.of(logs), start.epochMs, pilot, PilotHudOverlays.texts(context.resources))
+        } else {
+            listOf(TelemetryBitmapOverlay(track, start.epochMs, pilot.units, zone, Locale.getDefault()))
+        }
+        return Built(overlays, status)
     }
 
     /**
@@ -136,18 +155,37 @@ class TelemetryBitmapOverlay(
     }
 
     override fun getBitmap(presentationTimeUs: Long): Bitmap {
-        val epochMs = startEpochMs + presentationTimeUs / 1_000
-        val lines = OverlayText.lines(epochMs, track.at(epochMs), units, zone, locale)
-        val current = bitmap ?: createBitmap().also {
-            bitmap = it
-            // Proof that Media3 really draws the overlay (and with which geometry).
-            Log.i(OVERLAY_TAG, "overlay drawn: frame ${frameWidth}x$frameHeight, box ${it.width}x${it.height}, first t=$presentationTimeUs us")
+        val current = bitmap ?: try {
+            createBitmap().also {
+                bitmap = it
+                // Proof that Media3 really draws the overlay (and with which geometry).
+                Log.i(OVERLAY_TAG, "overlay drawn: frame ${frameWidth}x$frameHeight, box ${it.width}x${it.height}, first t=$presentationTimeUs us")
+            }
+        } catch (e: Exception) {
+            failed(e)
+            return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).also { bitmap = it }
         }
-        if (lines != lastLines) {
-            draw(current, lines)
-            lastLines = lines
+        if (failed) return current
+        // A drawing error never breaks the export: the box is left out for the rest of the video.
+        try {
+            val epochMs = startEpochMs + presentationTimeUs / 1_000
+            val lines = OverlayText.lines(epochMs, track.at(epochMs), units, zone, locale)
+            if (lines != lastLines) {
+                draw(current, lines)
+                lastLines = lines
+            }
+        } catch (e: Exception) {
+            failed(e)
+            current.eraseColor(Color.TRANSPARENT)
         }
         return current
+    }
+
+    private var failed = false
+
+    private fun failed(e: Exception) {
+        if (!failed) Log.w(OVERLAY_TAG, "overlay drawing failed, box left out", e)
+        failed = true
     }
 
     override fun getOverlaySettings(presentationTimeUs: Long): OverlaySettings = settings ?: run {

@@ -68,7 +68,7 @@ class TranscodeQueueTest {
         val transcoder: VideoTranscoder = mockk {
             every { isSupported(any()) } returns true
             coEvery { transcode(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
-                val withOverlay = arg<TextureOverlay?>(4)
+                val withOverlay = arg<List<TextureOverlay>>(4).firstOrNull()
                 exports += withOverlay
                 arg<(Float) -> Unit>(6)(0.5f)
                 delay(exportMs)
@@ -258,11 +258,12 @@ class TranscodeQueueTest {
 
     @Test
     fun `the overlay waits for the flight log still being written after landing`() = test {
-        val store = FlightLogStore(object : ContextWrapper(null) {
+        val files = object : ContextWrapper(null) {
             override fun getFilesDir(): File = tmp.root
-        })
+        }
+        val store = FlightLogStore(files)
         store.activeId = "flight-20261101-115900" // landing tail in progress
-        val q = queue(TelemetryOverlayFactory(store))
+        val q = queue(TelemetryOverlayFactory(files, store))
         q.enqueueVideo(video().uri, overlay = true)
         scope.advanceTimeBy(4_000)
         assertTrue(exports.isEmpty())

@@ -105,6 +105,8 @@ class FlightLogTest {
         assertEquals(true, s.odoValid)
         assertEquals(41.5f, s.imuTempC)
         assertEquals(90, s.wifiPct)
+        assertEquals(emptyList<String>(), s.alerts)
+        assertEquals(0f, s.flyTimeS)
         assertNull(FlightSample.from(0, Telemetry()))
         val bare = FlightSample.from(0, telemetry(true))!!
         assertNull(bare.rollDeg)
@@ -113,12 +115,21 @@ class FlightLogTest {
         assertNull(bare.wifiPct)
     }
 
+    @Test
+    fun `sample records the drone alerts, the motor error with its code`() {
+        val f = flight(true).copy(batteryLow = true, motorErrorCode = 231, flyTimeSeconds = 42.5f)
+        val s = FlightSample.from(0, Telemetry(flight = f))!!
+        assertEquals(listOf("MOTOR_ERROR:231", "BATTERY_LOW"), s.alerts)
+        assertEquals(42.5f, s.flyTimeS)
+    }
+
     // --- CSV ------------------------------------------------------------------------------
 
     private val full = FlightSample(
         tMs = 400, heightM = 1.23f, northMps = -0.5f, eastMps = 0.25f, climbMps = 0.1f, batteryPct = 77, flying = true,
         rollDeg = 1.5f, pitchDeg = -3.25f, yawDeg = 179.9f, odoX = 0.12f, odoY = -1.5f, odoZ = 0.8f, odoValid = true,
         imuTempC = 40.2f, wifiPct = 88, batteryLow = true, batteryCritical = false, overheating = true,
+        flyTimeS = 95.3f, alerts = listOf("OVERHEATING", "MOTOR_ERROR:231", "BATTERY_LOW"),
     )
     private val bare = FlightSample(tMs = 0, heightM = 0f, northMps = 0f, eastMps = 0f, climbMps = 0f, batteryPct = 80, flying = true)
 
@@ -127,8 +138,8 @@ class FlightLogTest {
         val default = java.util.Locale.getDefault()
         try {
             java.util.Locale.setDefault(java.util.Locale.FRANCE) // decimal comma must not leak in
-            assertEquals("400,1.23,-0.50,0.25,0.10,77,1,1.5,-3.3,179.9,0.12,-1.50,0.80,1,40.2,88,1,0,1\n", FlightLogCsv.row(full))
-            assertEquals("0,0.00,0.00,0.00,0.00,80,1,,,,,,,,,,0,0,0\n", FlightLogCsv.row(bare))
+            assertEquals("400,1.23,-0.50,0.25,0.10,77,1,1.5,-3.3,179.9,0.12,-1.50,0.80,1,40.2,88,1,0,1,95.3,OVERHEATING;MOTOR_ERROR:231;BATTERY_LOW\n", FlightLogCsv.row(full))
+            assertEquals("0,0.00,0.00,0.00,0.00,80,1,,,,,,,,,,0,0,0,,\n", FlightLogCsv.row(bare))
         } finally {
             java.util.Locale.setDefault(default)
         }
@@ -152,6 +163,46 @@ class FlightLogTest {
         assertEquals(full.copy(pitchDeg = -3.3f, odoX = 0.12f), back.copy(pitchDeg = -3.3f))
         assertNull(log.samples[0].odoValid)
         assertNull(log.samples[0].wifiPct)
+    }
+
+    @Test
+    fun `a v1 file without the newer columns still reads, their values unknown`() {
+        val v1 = """
+            # tellopilot-flight v1 start=1700000000000
+            t_ms,height_m,north_mps,east_mps,climb_mps,battery_pct,flying,roll_deg,pitch_deg,yaw_deg,odo_x_m,odo_y_m,odo_z_m,odo_valid,imu_temp_c,wifi_pct,battery_low,battery_critical,overheating
+            0,0.30,0.00,0.00,0.10,87,1,,,,,,,,,90,0,0,0
+            200,1.20,0.50,0.00,0.40,86,1,2.0,-1.0,359.0,0.10,0.20,0.00,1,45.0,88,1,0,0
+            # summary duration_ms=200 max_height_m=1.20 max_speed_mps=0.50 battery_start=87 battery_end=86 samples=2 track=1
+        """.trimIndent()
+        val log = FlightLogCsv.parse(v1.lineSequence())!!
+        assertEquals(2, log.samples.size)
+        assertFalse(log.interrupted)
+        val s = log.samples[1]
+        assertEquals(359f, s.yawDeg)
+        assertEquals(true, s.batteryLow)
+        assertNull(s.flyTimeS)
+        assertNull(s.alerts) // not recorded: the overlay falls back to the battery / heat flags
+    }
+
+    @Test
+    fun `an empty alerts cell is no alert, not unknown`() {
+        val text = FlightLogCsv.header(5) + FlightLogCsv.row(bare.copy(alerts = emptyList()))
+        assertEquals(emptyList<String>(), FlightLogCsv.parse(text.lineSequence())!!.samples.single().alerts)
+    }
+
+    @Test
+    fun `columns are read by name, in any order, unknown ones ignored`() {
+        val text = listOf(
+            "# tellopilot-flight v3 start=5",
+            "flying,t_ms,future_col,height_m,north_mps,east_mps,climb_mps,battery_pct,fly_time_s",
+            "1,100,zzz,2.00,0,0,0,50,12.5",
+        )
+        val s = FlightLogCsv.parse(text.asSequence())!!.samples.single()
+        assertEquals(100L, s.tMs)
+        assertEquals(2f, s.heightM)
+        assertEquals(12.5f, s.flyTimeS)
+        assertNull(s.rollDeg)
+        assertNull(s.alerts)
     }
 
     @Test

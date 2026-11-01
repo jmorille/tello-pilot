@@ -241,7 +241,11 @@
     <string name="settings_keep_original">Conserver l\'original H.264</string>
     <string name="settings_transcode_help">Le drone enregistre en H.264. Le réencodage divise la taille par 2 environ à qualité visuelle proche. Il ne tourne jamais en vol ni si le téléphone chauffe : il reprend après l\'atterrissage.</string>
     <string name="settings_overlay_on_transcode">Incruster la télémétrie dans la copie réencodée</string>
-    <string name="settings_overlay_help">Heure, hauteur, vitesse, vario et batterie en bas à gauche, d\'après le journal de vol. L\'original n\'est jamais modifié ; sans journal de vol, seule l\'heure est incrustée.</string>
+    <string name="settings_overlay_help">D\'après le journal de vol. L\'original n\'est jamais modifié ; sans journal de vol, seule l\'heure est incrustée.</string>
+    <string name="settings_overlay_style">Style d\'incrustation</string>
+    <string name="settings_overlay_style_pilot">Vue pilote</string>
+    <string name="settings_overlay_style_compact">Compact</string>
+    <string name="settings_overlay_style_help">Vue pilote : la vidéo montre ce que vous voyiez à l\'écran de vol (panneau d\'informations, horizon et cap, mini-carte, alertes), avec les mêmes éléments affichés que dans « Informations affichées en vol ». Compact : un petit cadre en bas à gauche avec l\'heure, la hauteur, la vitesse, le vario et la batterie.</string>
     <string name="settings_transcode_existing">Réencoder les vidéos existantes</string>
     <string name="transcode_running">Réencodage %1$d/%2$d : %3$s (%4$d %%)</string>
     <string name="transcode_paused">%1$d/%2$d : %3$s, en pause (vol ou téléphone chaud)</string>

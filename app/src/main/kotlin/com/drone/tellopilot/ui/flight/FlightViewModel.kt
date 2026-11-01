@@ -194,8 +194,8 @@ class FlightViewModel internal constructor(
                     val p = androidx.compose.ui.geometry.Offset(odo.x, odo.y)
                     val points = track.value
                     val last = points.lastOrNull()
-                    if (last == null || (p - last).getDistance() >= TRACK_STEP_M) {
-                        track.value = (if (points.size >= TRACK_MAX_POINTS) points.drop(1) else points) + p
+                    if (last == null || com.drone.tellopilot.hud.TrackMapMath.isNewPoint(last.x, last.y, p.x, p.y)) {
+                        track.value = (if (points.size >= com.drone.tellopilot.hud.TrackMapMath.MAX_POINTS) points.drop(1) else points) + p
                     }
                 }
                 when (flight.gravityCalibrationStatus) {
@@ -668,8 +668,6 @@ private const val ALERT_REPEAT_MS = 30_000L
 private const val SMART_VIDEO_OVERRIDE_COOLDOWN_MS = 1_000L
 private const val SMART_VIDEO_STOP_RETRIES = 4
 private const val GROUND_HEAT_MS = 3 * 60_000L
-private const val TRACK_STEP_M = 0.1f
-private const val TRACK_MAX_POINTS = 2_000
 private const val GROUND_CHECK_MS = 5_000L
 /** Pad deflection that counts as "the pilot flies with the pad" (hides the screen sticks). */
 private const val PAD_TAKEOVER = 0.35f

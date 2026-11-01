@@ -2,6 +2,10 @@ package com.drone.tellopilot.video
 
 import com.drone.tello.control.Units
 import com.drone.tellopilot.flightlog.FlightLog
+import com.drone.tellopilot.flightlog.FlightSample
+import com.drone.tellopilot.hud.HudMath
+import com.drone.tellopilot.hud.TrackMapMath
+import com.drone.tellopilot.ui.flight.Warning
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -20,7 +24,11 @@ import kotlin.math.roundToInt
  * `log start (epoch ms) + t_ms`; the overlay shows the telemetry at that instant.
  */
 
-/** Telemetry values shown at one instant. */
+/**
+ * Telemetry values shown at one instant. The optional ones are `null` when the flight log does
+ * not have them (log stream not received yet, or a column missing from an older file): the
+ * matching HUD item is then not drawn.
+ */
 data class OverlayValues(
     val heightM: Float,
     /** Horizontal speed, m/s. */
@@ -28,7 +36,42 @@ data class OverlayValues(
     /** Climb rate, positive upwards, m/s. */
     val climbMps: Float,
     val batteryPct: Int,
+    val flying: Boolean = true,
+    /** Flight time counted by the drone, s. */
+    val flyTimeS: Float? = null,
+    val imuTempC: Float? = null,
+    val wifiPct: Int? = null,
+    val rollDeg: Float? = null,
+    val pitchDeg: Float? = null,
+    /** Heading, degrees in `[0, 360)`. */
+    val yawDeg: Float? = null,
+    /** Drone alerts, most severe first. */
+    val warnings: List<Warning> = emptyList(),
+    val motorErrorCode: Int = 0,
 )
+
+/** Alerts of a flight log sample, as the flight screen showed them. */
+object OverlayWarnings {
+    /**
+     * From the recorded alerts; files without them (v1) fall back to the battery and heat
+     * flags, the only alerts they can rebuild. Unknown names (newer app) are ignored.
+     */
+    fun of(sample: FlightSample): Pair<List<Warning>, Int> {
+        var motorCode = 0
+        val warnings = sample.alerts?.mapNotNull { token ->
+            val name = token.substringBefore(FlightSample.CODE_SEPARATOR)
+            val warning = Warning.entries.firstOrNull { it.name == name } ?: return@mapNotNull null
+            if (warning == Warning.MOTOR_ERROR) motorCode = token.substringAfter(FlightSample.CODE_SEPARATOR, "").toIntOrNull() ?: 0
+            warning
+        } ?: buildList {
+            if (sample.batteryCritical) add(Warning.BATTERY_CRITICAL)
+            if (sample.overheating) add(Warning.OVERHEATING)
+            if (sample.batteryLow && !sample.batteryCritical) add(Warning.BATTERY_LOW)
+        }
+        // Same order as the flight screen: by severity, critical ones first.
+        return warnings.distinct().sortedBy { it.ordinal }.sortedBy { !it.critical } to motorCode
+    }
+}
 
 /** One flight log sample on the wall clock. */
 data class TimedSample(val epochMs: Long, val values: OverlayValues)
@@ -159,22 +202,127 @@ class OverlayTrack(samples: List<TimedSample>) {
         const val TOLERANCE_MS = 1_000L
 
         fun of(logs: List<FlightLog>): OverlayTrack = OverlayTrack(
-            logs.flatMap { log ->
-                log.samples.map {
-                    TimedSample(log.startEpochMs + it.tMs, OverlayValues(it.heightM, it.horizontalMps, it.climbMps, it.batteryPct))
-                }
-            },
+            logs.flatMap { log -> log.samples.map { TimedSample(log.startEpochMs + it.tMs, values(it)) } },
         )
 
+        /** Overlay values of one flight log sample (non-finite readings are dropped). */
+        fun values(s: FlightSample): OverlayValues {
+            val (warnings, motorCode) = OverlayWarnings.of(s)
+            return OverlayValues(
+                heightM = s.heightM,
+                speedMps = s.horizontalMps,
+                climbMps = s.climbMps,
+                batteryPct = s.batteryPct,
+                flying = s.flying,
+                flyTimeS = s.flyTimeS?.finite(),
+                imuTempC = s.imuTempC?.finite(),
+                wifiPct = s.wifiPct,
+                rollDeg = s.rollDeg?.finite(),
+                pitchDeg = s.pitchDeg?.finite(),
+                yawDeg = s.yawDeg?.finite()?.let(HudMath::heading),
+                warnings = warnings,
+                motorErrorCode = motorCode,
+            )
+        }
+
+        private fun Float.finite(): Float? = takeIf { it.isFinite() }
+
         private fun lerp(a: Float, b: Float, f: Float) = a + (b - a) * f
+
+        /** Both known: interpolated; otherwise the value of the nearest sample (may be `null`). */
+        private fun lerp(a: Float?, b: Float?, f: Float): Float? =
+            if (a != null && b != null) lerp(a, b, f) else if (f < 0.5f) a else b
+
+        private fun <T> nearest(a: T, b: T, f: Float): T = if (f < 0.5f) a else b
 
         internal fun interpolate(a: OverlayValues, b: OverlayValues, f: Float) = OverlayValues(
             heightM = lerp(a.heightM, b.heightM, f),
             speedMps = lerp(a.speedMps, b.speedMps, f),
             climbMps = lerp(a.climbMps, b.climbMps, f),
             // A battery reading is an integer: the nearest one, never an in-between value.
-            batteryPct = if (f < 0.5f) a.batteryPct else b.batteryPct,
+            batteryPct = nearest(a.batteryPct, b.batteryPct, f),
+            flying = nearest(a.flying, b.flying, f),
+            flyTimeS = lerp(a.flyTimeS, b.flyTimeS, f),
+            imuTempC = lerp(a.imuTempC, b.imuTempC, f),
+            wifiPct = nearest(a.wifiPct, b.wifiPct, f),
+            rollDeg = lerp(a.rollDeg, b.rollDeg, f),
+            pitchDeg = lerp(a.pitchDeg, b.pitchDeg, f),
+            // The short way round: 359° -> 1° goes through 0°.
+            yawDeg = if (a.yawDeg != null && b.yawDeg != null) HudMath.lerpAngle(a.yawDeg, b.yawDeg, f) else nearest(a.yawDeg, b.yawDeg, f),
+            warnings = nearest(a.warnings, b.warnings, f),
+            motorErrorCode = nearest(a.motorErrorCode, b.motorErrorCode, f),
         )
+    }
+}
+
+/**
+ * Visual-odometry track of the flights for the mini-map, built like the flight screen's: valid
+ * positions in flight only, a point every [TrackMapMath.STEP_M], restarted at each takeoff, at
+ * most [TrackMapMath.MAX_POINTS]. [at] gives the part of it known at an instant of the video.
+ */
+class OverlayMapTrack private constructor(
+    private val epochMs: LongArray,
+    private val xs: FloatArray,
+    private val ys: FloatArray,
+    /** Index of the first point of the flight each point belongs to. */
+    private val segmentStart: IntArray,
+) {
+    /** Points `from..to` (inclusive) of the track, as shown at one instant. */
+    data class Range(val from: Int, val to: Int) {
+        val count: Int get() = to - from + 1
+    }
+
+    val size: Int get() = epochMs.size
+
+    fun x(i: Int): Float = xs[i]
+
+    fun y(i: Int): Float = ys[i]
+
+    /** Track of the current flight up to [atEpochMs], `null` before its first point. */
+    fun at(atEpochMs: Long): Range? {
+        // Last point at or before the instant.
+        var lo = 0
+        var hi = epochMs.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (epochMs[mid] <= atEpochMs) lo = mid + 1 else hi = mid
+        }
+        val to = lo - 1
+        if (to < 0) return null
+        return Range(maxOf(segmentStart[to], to - TrackMapMath.MAX_POINTS + 1), to)
+    }
+
+    companion object {
+        val EMPTY = OverlayMapTrack(LongArray(0), FloatArray(0), FloatArray(0), IntArray(0))
+
+        fun of(logs: List<FlightLog>): OverlayMapTrack {
+            val times = ArrayList<Long>()
+            val xs = ArrayList<Float>()
+            val ys = ArrayList<Float>()
+            val starts = ArrayList<Int>()
+            for (log in logs.sortedBy { it.startEpochMs }) {
+                var start = times.size
+                var wasFlying = false
+                for (s in log.samples.sortedBy { it.tMs }) {
+                    // A takeoff restarts the track (the flight screen clears it).
+                    if (s.flying && !wasFlying) start = times.size
+                    wasFlying = s.flying
+                    val x = s.odoX ?: continue
+                    val y = s.odoY ?: continue
+                    if (!s.flying || s.odoValid != true || !x.isFinite() || !y.isFinite()) continue
+                    val epoch = log.startEpochMs + s.tMs
+                    // Logs overlapping on the wall clock (clock change): the lookup stays sorted.
+                    if (times.isNotEmpty() && epoch < times.last()) continue
+                    val last = times.size - 1
+                    if (last >= start && !TrackMapMath.isNewPoint(xs[last], ys[last], x, y)) continue
+                    times += epoch
+                    xs += x
+                    ys += y
+                    starts += start
+                }
+            }
+            return OverlayMapTrack(times.toLongArray(), xs.toFloatArray(), ys.toFloatArray(), starts.toIntArray())
+        }
     }
 }
 

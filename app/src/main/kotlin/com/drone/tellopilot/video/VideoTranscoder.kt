@@ -64,8 +64,8 @@ class VideoTranscoder @Inject constructor(@ApplicationContext private val contex
 
     /**
      * Transcodes [input] into [output]; [onProgress] gets 0..1. Cancelling the calling coroutine
-     * cancels the export. Throws on failure; the output is then deleted. [overlay] (optional)
-     * is burnt into every frame (telemetry); it is released by Media3 with the export.
+     * cancels the export. Throws on failure; the output is then deleted. [overlays] (optional)
+     * are burnt into every frame, in order (telemetry); Media3 releases them with the export.
      * [onStall]: true when the export has made no progress for a while (false once it moves
      * again); after [STALL_MS] without progress it is stopped ([TranscodeStalledException]).
      */
@@ -75,11 +75,11 @@ class VideoTranscoder @Inject constructor(@ApplicationContext private val contex
         output: File,
         codec: TranscodeCodec,
         sourceBitrate: Int,
-        overlay: TextureOverlay? = null,
+        overlays: List<TextureOverlay> = emptyList(),
         onStall: (Boolean) -> Unit = {},
         onProgress: (Float) -> Unit,
     ) = coroutineScope {
-        Log.i(TAG, "export ${output.name}: $codec, overlay=${overlay != null}")
+        Log.i(TAG, "export ${output.name}: $codec, overlays=${overlays.size}")
         val bitrate = (sourceBitrate * when (codec) {
             TranscodeCodec.HEVC -> HEVC_RATIO
             TranscodeCodec.AV1 -> AV1_RATIO
@@ -93,7 +93,7 @@ class VideoTranscoder @Inject constructor(@ApplicationContext private val contex
         // NonCancellable: once started, the Transformer reference must never be lost (it could
         // not be cancelled any more and would keep encoding in flight).
         val transformer = try {
-            withContext(dispatcher + NonCancellable) { start(thread, codec, bitrate, done, input, overlay, output) }
+            withContext(dispatcher + NonCancellable) { start(thread, codec, bitrate, done, input, overlays, output) }
         } catch (e: Throwable) {
             thread.quitSafely()
             throw e
@@ -160,7 +160,7 @@ class VideoTranscoder @Inject constructor(@ApplicationContext private val contex
         bitrate: Int,
         done: CompletableDeferred<Unit>,
         input: Uri,
-        overlay: TextureOverlay?,
+        overlays: List<TextureOverlay>,
         output: File,
     ): Transformer = Transformer.Builder(context)
         .setLooper(thread.looper)
@@ -185,7 +185,7 @@ class VideoTranscoder @Inject constructor(@ApplicationContext private val contex
             // The overlay is an effect of the video item: the source is always decoded and
             // re-encoded (H.264 to HEVC/AV1, never a transmux), so it reaches every frame.
             val item = EditedMediaItem.Builder(MediaItem.fromUri(input)).setRemoveAudio(true)
-                .apply { overlay?.let { setEffects(Effects(emptyList(), listOf(OverlayEffect(listOf(it))))) } }
+                .apply { if (overlays.isNotEmpty()) setEffects(Effects(emptyList(), listOf(OverlayEffect(overlays)))) }
                 .build()
             t.start(item, output.absolutePath)
         }
