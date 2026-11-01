@@ -31,6 +31,12 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -389,6 +395,7 @@ private fun TopActions(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HudIcon(
     icon: Int,
@@ -398,18 +405,27 @@ private fun HudIcon(
     selected: Boolean = false,
     onClick: () -> Unit,
 ) {
-    IconButton(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = Modifier.size(44.dp),
-        colors = IconButtonDefaults.iconButtonColors(
-            containerColor = Color.Black.copy(alpha = if (selected) 0.55f else 0.3f),
-            contentColor = tint,
-            disabledContainerColor = Color.Black.copy(alpha = 0.2f),
-            disabledContentColor = Color.White.copy(alpha = 0.35f),
-        ),
+    val text = stringResource(label)
+    val hint = stringResource(hintOf(label))
+    // Long press shows what the icon does.
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
+        tooltip = { PlainTooltip { Text(hint) } },
+        state = rememberTooltipState(),
     ) {
-        Icon(painterResource(icon), contentDescription = stringResource(label), modifier = Modifier.size(22.dp))
+        IconButton(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = Modifier.size(44.dp),
+            colors = IconButtonDefaults.iconButtonColors(
+                containerColor = Color.Black.copy(alpha = if (selected) 0.55f else 0.3f),
+                contentColor = tint,
+                disabledContainerColor = Color.Black.copy(alpha = 0.2f),
+                disabledContentColor = Color.White.copy(alpha = 0.35f),
+            ),
+        ) {
+            Icon(painterResource(icon), contentDescription = text, modifier = Modifier.size(22.dp))
+        }
     }
 }
 
@@ -713,4 +729,19 @@ private fun FlightScreenPreview() {
             attachVideo = {}, detachVideo = {},
         )
     }
+}
+
+/** Longer explanation shown on long press (falls back to the short label). */
+private fun hintOf(label: Int): Int = when (label) {
+    R.string.action_fast -> R.string.hint_fast
+    R.string.action_tripod -> R.string.hint_tripod
+    R.string.action_palm_land -> R.string.hint_palm_land
+    R.string.action_throw -> R.string.hint_throw
+    R.string.action_modes -> R.string.hint_modes
+    R.string.action_autopilot -> R.string.hint_autopilot
+    R.string.autopilot_tracking -> R.string.hint_tracking
+    R.string.action_record -> R.string.hint_record
+    R.string.action_photo -> R.string.hint_photo
+    R.string.action_gallery -> R.string.hint_gallery
+    else -> label
 }

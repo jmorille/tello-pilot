@@ -360,5 +360,15 @@
     <string name="flights_track_end">arrivée</string>
     <string name="flights_track_extent">étendue %1$s</string>
     <string name="flights_track_note">Position estimée par la caméra ventrale (odométrie visuelle, relative au décollage, non validée sur drone réel). Pas de GPS sur le Tello.</string>
+    <string name="hint_fast">Mode rapide : inclinaison et vitesse maximales (coupe le trépied)</string>
+    <string name="hint_tripod">Trépied : sticks adoucis pour des prises de vue lentes</string>
+    <string name="hint_palm_land">Atterrir dans la paume : présente ta main sous le drone</string>
+    <string name="hint_throw">Décollage au lancer : lance le drone quand les moteurs démarrent</string>
+    <string name="hint_modes">Modes de vol intelligents : 360°, flips, cercle…</string>
+    <string name="hint_autopilot">Vol automatique : missions préprogrammées</string>
+    <string name="hint_tracking">Suivi de cible : le drone suit la personne détectée</string>
+    <string name="hint_record">Démarrer l\'enregistrement vidéo</string>
+    <string name="hint_photo">Prendre une photo</string>
+    <string name="hint_gallery">Galerie : photos, vidéos et journaux de vol</string>
 </resources>
 
