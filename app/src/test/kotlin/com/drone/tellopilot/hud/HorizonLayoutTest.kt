@@ -144,6 +144,16 @@ class HorizonLayoutTest {
     }
 
     @Test
+    fun `with the mini-map shown the left snap sits beside it, never under it`() {
+        val base = pixel()
+        val map = HudRect(12f, 64f, 122f, 196f)
+        val g = base.copy(obstacles = base.obstacles + map)
+        val left = HorizonLayout.snapTargets(g).getValue(HorizonAnchor.LEFT)
+        assertPlaced(left, g)
+        assertFalse(HudRect.centered(left.x, left.y, g.width, g.height).overlaps(map))
+    }
+
+    @Test
     fun `without black bands the side places go against the screen sides`() {
         // Cropped to the full width: the video overflows the screen, no band.
         val g = pixel(videoWidth = 891f)

@@ -185,8 +185,14 @@ fun FlightScreen(
                 onPlaced = onHorizonPlaced,
             )
         }
-        if (state.pilot.shows(HudItem.MAP) && state.flying && state.track.size >= 2) {
-            TrackMap(state.track, Modifier.align(Alignment.TopStart).safeDrawingPadding().padding(start = 12.dp, top = 64.dp))
+        val mapShown = state.pilot.shows(HudItem.MAP) && state.flying && state.track.size >= 2
+        // The horizon avoids the mini-map only while it is shown (a snap on the left then sits beside it).
+        LaunchedEffect(mapShown) { if (!mapShown) zones.remove(HorizonZone.MAP) }
+        if (mapShown) {
+            TrackMap(
+                state.track,
+                Modifier.align(Alignment.TopStart).safeDrawingPadding().padding(start = 12.dp, top = 64.dp).horizonZone(HorizonZone.MAP),
+            )
         }
         if (state.throwCountdown > 0) {
             // Throw takeoff armed: seconds left to throw the drone (official countdown).
@@ -279,7 +285,7 @@ fun FlightScreen(
 }
 
 /** Screen parts the movable horizon never covers once placed. */
-private enum class HorizonZone { TOP_BAR, LEFT_STICK, RIGHT_STICK, ACTION_PANEL }
+private enum class HorizonZone { TOP_BAR, LEFT_STICK, RIGHT_STICK, ACTION_PANEL, MAP }
 
 private fun statusText(status: ConnectionStatus, video: Boolean) = when (status) {
     ConnectionStatus.WAITING_WIFI -> R.string.status_waiting_wifi

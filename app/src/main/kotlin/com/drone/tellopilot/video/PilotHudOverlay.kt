@@ -479,7 +479,9 @@ internal class HorizonHudOverlay(
 
     override fun anchor(): OverlaySettings {
         val width = ceil(scale.dp(WIDTH_DP))
-        val left = HorizonLayout.videoLeft(slot, frameWidth.toFloat(), width, scale.dp(SIDE_MARGIN_DP))
+        // The disc is centred in a wider box: the side margin is measured from the disc.
+        val margin = (scale.dp(SIDE_MARGIN_DP) - (width - scale.dp(DISC_DP)) / 2f).coerceAtLeast(0f)
+        val left = HorizonLayout.videoLeft(slot, frameWidth.toFloat(), width, margin)
         val bottom = if (slot == com.drone.tello.control.HorizonAnchor.CENTER) BOTTOM_DP else SIDE_BOTTOM_DP
         return bottomLeftAt(left, scale.dp(bottom))
     }

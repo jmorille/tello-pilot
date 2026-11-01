@@ -10,15 +10,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -34,7 +36,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -48,6 +52,7 @@ import com.drone.tellopilot.hud.HorizonGeometry
 import com.drone.tellopilot.hud.HorizonLayout
 import com.drone.tellopilot.hud.HudPoint
 import com.drone.tellopilot.hud.HudRect
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 /**
@@ -67,16 +72,27 @@ internal fun MovableHorizon(
     obstacles: List<Rect>,
     onPlaced: (HorizonPlacement) -> Unit,
 ) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    // Physical left / top everywhere (insets, measured bounds, drag deltas): never mirrored in RTL.
+    BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = AbsoluteAlignment.TopLeft) {
         val density = LocalDensity.current
         val direction = LocalLayoutDirection.current
         val insets = WindowInsets.safeDrawing
         val screenW = constraints.maxWidth.toFloat()
         val screenH = constraints.maxHeight.toFloat()
         var measured by remember { mutableStateOf(IntSize.Zero) }
+        // Widest size seen: the heading label may exceed the disc with a large font, and a
+        // width changing with the heading would make the instrument twitch near an edge.
+        var widest by remember { mutableIntStateOf(0) }
         // Pending drop: shown at once, until the stored settings catch up (no flicker back).
         var pending by remember { mutableStateOf<HorizonPlacement?>(null) }
-        LaunchedEffect(placement) { pending = null }
+        LaunchedEffect(placement) { if (placement == pending) pending = null }
+        LaunchedEffect(pending) {
+            // A lost write never pins the instrument: the stored place wins after a while.
+            if (pending != null) {
+                delay(PENDING_TIMEOUT_MS)
+                pending = null
+            }
+        }
         var dragRaw by remember { mutableStateOf<Offset?>(null) }
 
         val geometry = with(density) {
@@ -94,7 +110,7 @@ internal fun MovableHorizon(
                     screenH - insets.getBottom(density) - margin,
                 ),
                 video = HudRect((screenW - vw) / 2f, (screenH - vh) / 2f, (screenW + vw) / 2f, (screenH + vh) / 2f),
-                width = if (measured.width > 0) measured.width.toFloat() else FALLBACK_WIDTH.toPx(),
+                width = if (widest > 0) widest.toFloat() else FALLBACK_WIDTH.toPx(),
                 height = if (measured.height > 0) measured.height.toFloat() else FALLBACK_HEIGHT.toPx(),
                 obstacles = obstacles.map { HudRect(it.left, it.top, it.right, it.bottom) },
                 gap = OBSTACLE_GAP.toPx(),
@@ -102,13 +118,22 @@ internal fun MovableHorizon(
             )
         }
         val snapRadius = with(density) { SNAP_RADIUS.toPx() }
+        val ready = obstacles.isNotEmpty() && screenW > 0f && screenH > 0f
+        // No glide while the layout and the stored settings arrive: it appears in place.
+        var settled by remember { mutableStateOf(false) }
+        LaunchedEffect(ready) {
+            if (ready) {
+                delay(SETTLE_MS)
+                settled = true
+            }
+        }
         val resolved = HorizonLayout.center(pending ?: placement, geometry)
         val dragged = dragRaw?.let { HorizonLayout.clamp(HudPoint(it.x, it.y), geometry) }
         val target = dragged ?: resolved
         // Follows the finger exactly; glides to its place on release or when the layout changes.
-        val shown by animateOffsetAsState(
+        val shownState = animateOffsetAsState(
             Offset(target.x, target.y),
-            animationSpec = if (dragged != null) snap() else spring(stiffness = Spring.StiffnessMediumLow),
+            animationSpec = if (dragged != null || !settled) snap() else spring(stiffness = Spring.StiffnessMediumLow),
             label = "horizonPosition",
         )
         val nearSnap = dragged?.let { HorizonLayout.nearestSnap(it, geometry, snapRadius) }
@@ -124,34 +149,53 @@ internal fun MovableHorizon(
         if (dragged != null) SnapGuides(geometry, nearSnap)
 
         val currentGeometry by rememberUpdatedState(geometry)
-        val currentResolved by rememberUpdatedState(resolved)
         val currentOnPlaced by rememberUpdatedState(onPlaced)
-        val ready = obstacles.isNotEmpty() && screenW > 0f && screenH > 0f
+        val currentSnapRadius by rememberUpdatedState(snapRadius)
         val description = stringResource(R.string.hud_horizon_move_hint)
+        val anchorLabels = HorizonAnchor.entries.associateWith { stringResource(anchorLabel(it)) }
+        var moved by remember { mutableStateOf(false) }
         Box(
             Modifier
-                .offset {
+                .absoluteOffset {
+                    val shown = shownState.value
                     IntOffset((shown.x - measured.width / 2f).roundToInt(), (shown.y - measured.height / 2f).roundToInt())
                 }
-                .onSizeChanged { measured = it }
-                .semantics { contentDescription = description }
+                .onSizeChanged {
+                    measured = it
+                    if (it.width > widest) widest = it.width
+                }
+                .semantics {
+                    contentDescription = description
+                    // Screen readers: the three snap places as actions.
+                    customActions = HorizonAnchor.entries.map { anchor ->
+                        CustomAccessibilityAction(anchorLabels.getValue(anchor)) {
+                            currentOnPlaced(HorizonPlacement.snapped(anchor))
+                            true
+                        }
+                    }
+                }
                 .pointerInput(Unit) {
                     // Long press first: a touch or a brush during the flight never moves it.
                     detectDragGesturesAfterLongPress(
                         onDragStart = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            ticked = HorizonLayout.nearestSnap(currentResolved, currentGeometry, snapRadius)
-                            dragRaw = Offset(currentResolved.x, currentResolved.y)
+                            // From where it is drawn (it may still be gliding), not from its target.
+                            val start = shownState.value
+                            ticked = HorizonLayout.nearestSnap(HudPoint(start.x, start.y), currentGeometry, currentSnapRadius)
+                            moved = false
+                            dragRaw = start
                         },
                         onDrag = { change, amount ->
                             change.consume()
-                            dragRaw = (dragRaw ?: Offset(currentResolved.x, currentResolved.y)) + amount
+                            if (amount != Offset.Zero) moved = true
+                            dragRaw = (dragRaw ?: shownState.value) + amount
                         },
                         onDragEnd = {
                             val g = currentGeometry
-                            dragRaw?.let { raw ->
+                            // A long press without a move changes nothing (no silent re-snap).
+                            dragRaw?.takeIf { moved }?.let { raw ->
                                 val drop = HorizonLayout.clamp(HudPoint(raw.x, raw.y), g)
-                                val placed = HorizonLayout.drop(drop, g, snapRadius)
+                                val placed = HorizonLayout.drop(drop, g, currentSnapRadius)
                                 pending = placed
                                 haptic.performHapticFeedback(HapticFeedbackType.GestureEnd)
                                 currentOnPlaced(placed)
@@ -189,6 +233,17 @@ private fun SnapGuides(g: HorizonGeometry, near: HorizonAnchor?) {
         }
     }
 }
+
+private fun anchorLabel(anchor: HorizonAnchor) = when (anchor) {
+    HorizonAnchor.LEFT -> R.string.hud_horizon_action_left
+    HorizonAnchor.CENTER -> R.string.hud_horizon_action_center
+    HorizonAnchor.RIGHT -> R.string.hud_horizon_action_right
+}
+
+/** A dropped place not confirmed by the stored settings within this delay is dropped. */
+private const val PENDING_TIMEOUT_MS = 2_000L
+/** Layout and stored settings arriving after the first frame: placed without a glide. */
+private const val SETTLE_MS = 500L
 
 private val SnapIdle = Color.White.copy(alpha = 0.35f)
 private val SnapActive = Color(0xFFFFCA28)

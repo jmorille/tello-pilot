@@ -216,8 +216,11 @@
     <string name="settings_horizon_right">Droite</string>
     <string name="settings_horizon_free">Position libre, choisie sur l\'écran de vol.</string>
     <string name="settings_horizon_reset">Réinitialiser la position</string>
-    <string name="settings_horizon_help">Appui long sur l\'inclinomètre pour le déplacer, puis faites-le glisser. Il s\'aimante au centre bas et au milieu des bandes noires à gauche et à droite, et ne recouvre jamais les manches ni le bouton Décoller / Atterrir. Dans la vue pilote des vidéos, il se place en bas à gauche, au centre ou à droite.</string>
+    <string name="settings_horizon_help">Appui long sur l\'inclinomètre pour le déplacer, puis faites-le glisser. Il s\'aimante au centre bas et au milieu des bandes noires à gauche et à droite, et s\'écarte des manches, du bouton Décoller / Atterrir, de la barre du haut et de la mini-carte (qui peut le décaler pendant le vol). Dans la vue pilote des vidéos, il se place en bas à gauche, au centre ou à droite.</string>
     <string name="hud_horizon_move_hint">Inclinomètre : appui long pour le déplacer</string>
+    <string name="hud_horizon_action_left">Placer l\'inclinomètre à gauche</string>
+    <string name="hud_horizon_action_center">Placer l\'inclinomètre au centre</string>
+    <string name="hud_horizon_action_right">Placer l\'inclinomètre à droite</string>
     <string name="hud_heading">Cap %1$d° %2$s</string>
     <string name="hud_home_distance">Départ : %1$.1f m</string>
     <string name="hud_temperature">%1$.0f °C</string>
