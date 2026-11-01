@@ -24,6 +24,7 @@ import androidx.media3.effect.StaticOverlaySettings
 import com.drone.tello.control.PilotSettings
 import com.drone.tellopilot.R
 import com.drone.tellopilot.hud.HudColors
+import com.drone.tellopilot.hud.HorizonLayout
 import com.drone.tellopilot.hud.HudMath
 import com.drone.tellopilot.hud.TrackMapMath
 import com.drone.tellopilot.ui.flight.Warning
@@ -35,7 +36,7 @@ import kotlin.math.sin
 
 /**
  * "Pilot view" overlay: the flight screen HUD (top-left panel, alerts and mini-map; artificial
- * horizon at the bottom centre) burnt into a re-encoded video, at the same places and in the
+ * horizon at the bottom, centre or corner as placed by the pilot) burnt into a re-encoded video, at the same places and in the
  * same colours, scaled to the frame. The toolbar icons and the sticks are not drawn.
  *
  * Two bitmaps, so that the horizon (which moves at almost every frame) does not redraw and
@@ -47,7 +48,7 @@ object PilotHudOverlays {
     @OptIn(UnstableApi::class)
     fun create(track: OverlayTrack, map: OverlayMapTrack, startEpochMs: Long, pilot: PilotSettings, texts: HudTexts): List<BitmapOverlay> {
         val source = PilotHudSource(track, map, startEpochMs, pilot, texts)
-        return listOf(TopLeftHudOverlay(source, map), HorizonHudOverlay(source))
+        return listOf(TopLeftHudOverlay(source, map), HorizonHudOverlay(source, HorizonLayout.videoSlot(pilot.horizon)))
     }
 
     /** Format strings: the flight screen's own resources. */
@@ -199,10 +200,10 @@ internal abstract class SafeHudOverlay(private val name: String) : BitmapOverlay
         .setBackgroundFrameAnchor(-1f + 2f * x / frameWidth, 1f - 2f * y / frameHeight)
         .build()
 
-    /** Overlay whose bottom centre is [bottom] pixels above the frame's bottom centre. */
-    protected fun bottomCenterAt(bottom: Float): OverlaySettings = StaticOverlaySettings.Builder()
-        .setOverlayFrameAnchor(0f, -1f)
-        .setBackgroundFrameAnchor(0f, -1f + 2f * bottom / frameHeight)
+    /** Overlay whose bottom-left corner is [left] pixels right of and [bottom] pixels above the frame's bottom-left corner. */
+    protected fun bottomLeftAt(left: Float, bottom: Float): OverlaySettings = StaticOverlaySettings.Builder()
+        .setOverlayFrameAnchor(-1f, -1f)
+        .setBackgroundFrameAnchor(-1f + 2f * left / frameWidth, -1f + 2f * bottom / frameHeight)
         .build()
 
     protected fun textPaint(sizeSp: Float, weight: Int): TextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -440,9 +441,16 @@ internal class TopLeftHudOverlay(private val source: PilotHudSource, private val
     }
 }
 
-/** Screen `AttitudeIndicator`: 96 dp disc 96 dp above the bottom centre, heading label under it. */
+/**
+ * Screen `AttitudeIndicator`: 96 dp disc, heading label under it, in the [slot] matching where the
+ * pilot put it on screen ([HorizonLayout.videoSlot]): 96 dp above the bottom centre (as on the
+ * screen, above the land button), or in the bottom left / right corner of the video.
+ */
 @OptIn(UnstableApi::class)
-internal class HorizonHudOverlay(private val source: PilotHudSource) : SafeHudOverlay("pilot HUD horizon") {
+internal class HorizonHudOverlay(
+    private val source: PilotHudSource,
+    private val slot: com.drone.tello.control.HorizonAnchor = com.drone.tello.control.HorizonAnchor.CENTER,
+) : SafeHudOverlay("pilot HUD horizon") {
     private var lastKey: Any? = UNSET
     private lateinit var labelText: TextPaint
     private val sky = fill(HudColors.SKY)
@@ -469,7 +477,12 @@ internal class HorizonHudOverlay(private val source: PilotHudSource) : SafeHudOv
         return Bitmap.createBitmap(ceil(width).toInt(), ceil(height).toInt(), Bitmap.Config.ARGB_8888)
     }
 
-    override fun anchor(): OverlaySettings = bottomCenterAt(scale.dp(BOTTOM_DP))
+    override fun anchor(): OverlaySettings {
+        val width = ceil(scale.dp(WIDTH_DP))
+        val left = HorizonLayout.videoLeft(slot, frameWidth.toFloat(), width, scale.dp(SIDE_MARGIN_DP))
+        val bottom = if (slot == com.drone.tello.control.HorizonAnchor.CENTER) BOTTOM_DP else SIDE_BOTTOM_DP
+        return bottomLeftAt(left, scale.dp(bottom))
+    }
 
     override fun update(bitmap: Bitmap, presentationTimeUs: Long): Boolean {
         val h = source.at(presentationTimeUs)?.horizon
@@ -507,6 +520,9 @@ internal class HorizonHudOverlay(private val source: PilotHudSource) : SafeHudOv
         val UNSET = Any()
         const val DISC_DP = 96f
         const val BOTTOM_DP = 96f
+        /** Bottom corners: no land button under it in the video, closer to the edges. */
+        const val SIDE_BOTTOM_DP = 24f
+        const val SIDE_MARGIN_DP = 12f
         /** Disc and the widest heading label ("Cap 359° NO"). */
         const val WIDTH_DP = 140f
     }

@@ -68,7 +68,7 @@ class FlightViewModel internal constructor(
     private val transcodeQueue: com.drone.tellopilot.video.TranscodeQueue,
     private val autopilot: com.drone.tellopilot.tracking.Autopilot,
     phoneThermal: PhoneThermal,
-    settings: SettingsRepository,
+    private val settings: SettingsRepository,
     private val appContext: android.content.Context,
     private val clock: MonotonicClock,
     /** Where the drone commands run: the realtime control thread (a test dispatcher in the JVM tests). */
@@ -615,6 +615,11 @@ class FlightViewModel internal constructor(
     private fun stopRecording() {
         recorder.stop()
         command { setOnboardRecording(false) }
+    }
+
+    /** The pilot moved the artificial horizon on the flight screen (or reset it). */
+    fun setHorizonPlacement(placement: com.drone.tello.control.HorizonPlacement) {
+        viewModelScope.launch { settings.updatePilot { it.copy(horizon = placement.sanitized()) } }
     }
 
     fun attachVideo(sink: FrameSink) = session.attachVideo(sink)

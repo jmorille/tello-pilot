@@ -16,6 +16,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.drone.tello.control.DroneSettings
 import com.drone.tello.control.GamepadBindings
+import com.drone.tello.control.HorizonAnchor
+import com.drone.tello.control.HorizonPlacement
 import com.drone.tello.control.PilotSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -78,6 +80,7 @@ internal object SettingsCodec {
             videoFit = p[VIDEO_FIT].toEnum(d.videoFit),
             hiddenHud = p[HIDDEN_HUD].orEmpty()
                 .mapNotNullTo(mutableSetOf()) { name -> com.drone.tello.control.HudItem.entries.firstOrNull { it.name == name } },
+            horizon = readHorizon(p),
             hideSticksWithPad = p[HIDE_STICKS_WITH_PAD] ?: d.hideSticksWithPad,
             autoTranscode = p[AUTO_TRANSCODE] ?: d.autoTranscode,
             transcodeCodec = p[TRANSCODE_CODEC].toEnum(d.transcodeCodec),
@@ -115,6 +118,7 @@ internal object SettingsCodec {
         p[VIDEO_SHARPEN] = s.videoSharpen
         p[VIDEO_FIT] = s.videoFit.name
         p[HIDDEN_HUD] = s.hiddenHud.mapTo(mutableSetOf()) { it.name }
+        writeHorizon(p, s.horizon)
         p[HIDE_STICKS_WITH_PAD] = s.hideSticksWithPad
         p[AUTO_TRANSCODE] = s.autoTranscode
         p[TRANSCODE_CODEC] = s.transcodeCodec.name
@@ -131,6 +135,24 @@ internal object SettingsCodec {
         p[MISSION_SPEED_LIMIT] = s.missionSpeedLimit
         p[MISSION_MAX_SPEED] = s.missionMaxSpeed
         p[BATTERY_VOICE_ALERT] = s.batteryVoiceAlert
+    }
+
+    /** Snapped place by name, [HORIZON_FREE] for a free one (then its fractions). Unknown or corrupt: the default. */
+    private fun readHorizon(p: Preferences): HorizonPlacement {
+        val d = HorizonPlacement.Default
+        val anchor = when (val name = p[HORIZON_ANCHOR]) {
+            null -> return d
+            HORIZON_FREE -> null
+            else -> HorizonAnchor.entries.firstOrNull { it.name == name } ?: return d
+        }
+        return HorizonPlacement(anchor, p[HORIZON_X] ?: d.x, p[HORIZON_Y] ?: d.y).sanitized()
+    }
+
+    private fun writeHorizon(p: MutablePreferences, h: HorizonPlacement) {
+        val s = h.sanitized()
+        p[HORIZON_ANCHOR] = s.anchor?.name ?: HORIZON_FREE
+        p[HORIZON_X] = s.x
+        p[HORIZON_Y] = s.y
     }
 
     fun readDrone(p: Preferences): DroneSettings {
@@ -166,6 +188,10 @@ internal object SettingsCodec {
     private val VIDEO_SHARPEN = booleanPreferencesKey("video_sharpen")
     private val VIDEO_FIT = stringPreferencesKey("video_fit_v2") // v2: the old key held FILL for everyone who saved any setting
     private val HIDDEN_HUD = androidx.datastore.preferences.core.stringSetPreferencesKey("hidden_hud")
+    private val HORIZON_ANCHOR = stringPreferencesKey("horizon_anchor")
+    private val HORIZON_X = floatPreferencesKey("horizon_x")
+    private val HORIZON_Y = floatPreferencesKey("horizon_y")
+    private const val HORIZON_FREE = "FREE"
     private val HIDE_STICKS_WITH_PAD = booleanPreferencesKey("hide_sticks_with_pad")
     private val AUTO_TRANSCODE = booleanPreferencesKey("auto_transcode")
     private val TRANSCODE_CODEC = stringPreferencesKey("transcode_codec")

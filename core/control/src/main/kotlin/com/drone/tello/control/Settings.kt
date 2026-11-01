@@ -38,6 +38,42 @@ enum class HudItem { BATTERY, HEIGHT, SPEED, VARIO, FLIGHT_TIME, WIFI, GAMEPAD, 
  */
 enum class OverlayStyle { PILOT, COMPACT }
 
+/** Snap positions of the artificial horizon on the flight screen. */
+enum class HorizonAnchor {
+    /** Middle of the left black band (4:3 video on a wide screen), above the left stick. */
+    LEFT,
+    /** Bottom centre, above the takeoff / land button (historical place). */
+    CENTER,
+    /** Middle of the right black band, above the right stick. */
+    RIGHT,
+}
+
+/**
+ * Where the pilot put the artificial horizon. Snapped ([anchor] not null): the place is
+ * recomputed from the actual layout (screen size, video framing, sticks), so it stays in the
+ * black band after a rotation, on another phone or with another framing. Free ([anchor] null):
+ * the centre of the instrument at ([x], [y]), fractions of the screen width and height, then
+ * kept on screen and pushed off the sticks and the takeoff / land button.
+ */
+data class HorizonPlacement(
+    val anchor: HorizonAnchor? = HorizonAnchor.CENTER,
+    val x: Float = 0.5f,
+    val y: Float = DEFAULT_Y,
+) {
+    /** Finite fractions in 0..1 (a corrupt or hand-edited store never puts it off screen). */
+    fun sanitized(): HorizonPlacement = copy(x = x.fraction(0.5f), y = y.fraction(DEFAULT_Y))
+
+    companion object {
+        /** About the historical bottom-centre place on a usual phone in landscape. */
+        const val DEFAULT_Y = 0.62f
+        val Default = HorizonPlacement()
+
+        fun snapped(anchor: HorizonAnchor) = HorizonPlacement(anchor = anchor)
+
+        private fun Float.fraction(default: Float) = if (isFinite()) coerceIn(0f, 1f) else default
+    }
+}
+
 /** Target format of the post-flight re-encoding of recorded videos. */
 enum class TranscodeCodec(val suffix: String) { HEVC("hevc"), AV1("av1") }
 
@@ -66,6 +102,8 @@ data class PilotSettings(
     val videoFit: VideoFit = VideoFit.FIT,
     /** Flight screen items the pilot chose to hide (new items are therefore shown by default). */
     val hiddenHud: Set<HudItem> = emptySet(),
+    /** Place of the artificial horizon on the flight screen (moved by a long press then a drag). */
+    val horizon: HorizonPlacement = HorizonPlacement.Default,
     /** Re-encode each recorded video once landed (H.264 from the drone is large). */
     val autoTranscode: Boolean = true,
     val transcodeCodec: TranscodeCodec = TranscodeCodec.HEVC,

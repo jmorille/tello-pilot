@@ -8,6 +8,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.drone.tello.control.DroneSettings
 import com.drone.tello.control.GamepadBindings
+import com.drone.tello.control.HorizonAnchor
+import com.drone.tello.control.HorizonPlacement
 import com.drone.tello.control.HudItem
 import com.drone.tello.control.Mission
 import com.drone.tello.control.MissionStep
@@ -167,5 +169,45 @@ class SettingsCodecTest {
         val prefs = mutablePreferencesOf()
         SettingsCodec.writePilot(prefs, PilotSettings(customMissions = emptyList()))
         assertEquals(emptyList<Mission>(), SettingsCodec.readPilot(prefs).customMissions)
+    }
+
+    @Test
+    fun `horizon defaults to the bottom centre snap`() {
+        assertEquals(HorizonPlacement(HorizonAnchor.CENTER), SettingsCodec.readPilot(emptyPreferences()).horizon)
+    }
+
+    @Test
+    fun `snapped and free horizon placements survive a write and read back`() {
+        listOf(
+            HorizonPlacement.snapped(HorizonAnchor.LEFT),
+            HorizonPlacement.snapped(HorizonAnchor.RIGHT),
+            HorizonPlacement(anchor = null, x = 0.12f, y = 0.4f),
+            HorizonPlacement(anchor = null, x = 0f, y = 1f),
+        ).forEach { h ->
+            val prefs = mutablePreferencesOf()
+            SettingsCodec.writePilot(prefs, PilotSettings(horizon = h))
+            assertEquals(h, SettingsCodec.readPilot(prefs).horizon)
+        }
+    }
+
+    @Test
+    fun `corrupt horizon values are sanitised on read`() {
+        val outOfRange = mutablePreferencesOf(
+            stringPreferencesKey("horizon_anchor") to "FREE",
+            floatPreferencesKey("horizon_x") to 7f,
+            floatPreferencesKey("horizon_y") to Float.NaN,
+        )
+        assertEquals(HorizonPlacement(null, 1f, HorizonPlacement.DEFAULT_Y), SettingsCodec.readPilot(outOfRange).horizon)
+        val unknown = mutablePreferencesOf(stringPreferencesKey("horizon_anchor") to "TOP_HAT")
+        assertEquals(HorizonPlacement.Default, SettingsCodec.readPilot(unknown).horizon)
+        val missingFractions = mutablePreferencesOf(stringPreferencesKey("horizon_anchor") to "FREE")
+        assertEquals(HorizonPlacement(null, 0.5f, HorizonPlacement.DEFAULT_Y), SettingsCodec.readPilot(missingFractions).horizon)
+    }
+
+    @Test
+    fun `a non finite free horizon is never written as such`() {
+        val prefs = mutablePreferencesOf()
+        SettingsCodec.writePilot(prefs, PilotSettings(horizon = HorizonPlacement(null, Float.POSITIVE_INFINITY, -3f)))
+        assertEquals(HorizonPlacement(null, 0.5f, 0f), SettingsCodec.readPilot(prefs).horizon)
     }
 }

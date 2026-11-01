@@ -42,6 +42,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.drone.tello.control.DroneSettings
+import com.drone.tello.control.HorizonAnchor
+import com.drone.tello.control.HorizonPlacement
 import com.drone.tello.control.PilotSettings
 import com.drone.tello.control.StickMode
 import com.drone.tello.control.Units
@@ -256,6 +258,7 @@ private fun DisplaySettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
         }
     }
     Text(stringResource(R.string.settings_hud_items_help), style = MaterialTheme.typography.bodySmall)
+    HorizonPositionSettings(pilot, updatePilot)
     Label(R.string.settings_video_fit)
     @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -278,6 +281,39 @@ private fun DisplaySettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
     Text(stringResource(R.string.settings_video_fit_help), style = MaterialTheme.typography.bodySmall)
     SwitchSetting(R.string.settings_video_sharpen, pilot.videoSharpen) { v -> updatePilot { it.copy(videoSharpen = v) } }
     Text(stringResource(R.string.settings_video_sharpen_help), style = MaterialTheme.typography.bodySmall)
+}
+
+/** Quick placement of the artificial horizon (it can also be dragged on the flight screen). */
+@Composable
+private fun HorizonPositionSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) -> PilotSettings) -> Unit) {
+    Label(R.string.settings_horizon_position)
+    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+    androidx.compose.foundation.layout.FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        HorizonAnchor.entries.forEach { anchor ->
+            FilterChip(
+                selected = pilot.horizon.anchor == anchor,
+                onClick = { updatePilot { it.copy(horizon = HorizonPlacement.snapped(anchor)) } },
+                label = {
+                    Text(stringResource(when (anchor) {
+                        HorizonAnchor.LEFT -> R.string.settings_horizon_left
+                        HorizonAnchor.CENTER -> R.string.settings_horizon_center
+                        HorizonAnchor.RIGHT -> R.string.settings_horizon_right
+                    }))
+                },
+            )
+        }
+        OutlinedButton(
+            onClick = { updatePilot { it.copy(horizon = HorizonPlacement.Default) } },
+            enabled = pilot.horizon != HorizonPlacement.Default,
+        ) { Text(stringResource(R.string.settings_horizon_reset)) }
+    }
+    if (pilot.horizon.anchor == null) {
+        Text(stringResource(R.string.settings_horizon_free), style = MaterialTheme.typography.bodySmall)
+    }
+    Text(stringResource(R.string.settings_horizon_help), style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable

@@ -22,6 +22,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -122,6 +125,7 @@ fun FlightRoute(onOpenSettings: () -> Unit, onOpenGallery: () -> Unit = {}, view
         onOpenSettings = onOpenSettings,
         onOpenGallery = onOpenGallery,
         onConnectDrone = viewModel::connectToDrone,
+        onHorizonPlaced = viewModel::setHorizonPlacement,
         snackbar = snackbar,
     )
 }
@@ -138,8 +142,13 @@ fun FlightScreen(
     onOpenSettings: () -> Unit = {},
     onOpenGallery: () -> Unit = {},
     onConnectDrone: () -> Unit = {},
+    onHorizonPlaced: (com.drone.tello.control.HorizonPlacement) -> Unit = {},
     snackbar: SnackbarHostState = remember { SnackbarHostState() },
 ) {
+    // Where the movable horizon must never go, in the coordinates of the screen box (pixels).
+    val zones = remember { androidx.compose.runtime.mutableStateMapOf<HorizonZone, androidx.compose.ui.geometry.Rect>() }
+    var origin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    fun Modifier.horizonZone(zone: HorizonZone) = onGloballyPositioned { zones[zone] = it.boundsInRoot() }
     val stickSize = state.pilot.joystickSizeDp.dp
     // Read in the layer only: fading never recomposes the screen.
     val sticksAlphaState = androidx.compose.animation.core.animateFloatAsState(
@@ -148,7 +157,7 @@ fun FlightScreen(
         animationSpec = androidx.compose.animation.core.tween(if (state.sticksHidden) 600 else 150),
         label = "sticksAlpha",
     )
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(Modifier.fillMaxSize().background(Color.Black).onGloballyPositioned { origin = it.positionInRoot() }) {
         androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
             val videoSize = videoSize(state.pilot.videoFit, maxWidth, maxHeight)
             // requiredSize: in the cropped modes the 4:3 surface is taller than the screen and
@@ -164,7 +173,17 @@ fun FlightScreen(
             }
         }
         if (state.pilot.shows(HudItem.HORIZON)) state.attitude?.let {
-            AttitudeIndicator(it, Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp))
+            // Under the sticks and the action panel (composed after it): their touches never reach it.
+            MovableHorizon(
+                attitude = it,
+                placement = state.pilot.horizon,
+                videoFit = state.pilot.videoFit,
+                // The sticks always exist: until both are measured, nothing to avoid is known yet.
+                obstacles = if (HorizonZone.LEFT_STICK in zones && HorizonZone.RIGHT_STICK in zones) {
+                    zones.values.map { r -> r.translate(-origin) }
+                } else emptyList(),
+                onPlaced = onHorizonPlaced,
+            )
         }
         if (state.pilot.shows(HudItem.MAP) && state.flying && state.track.size >= 2) {
             TrackMap(state.track, Modifier.align(Alignment.TopStart).safeDrawingPadding().padding(start = 12.dp, top = 64.dp))
@@ -212,7 +231,7 @@ fun FlightScreen(
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
             // Discreet top strip: compact HUD on the left, icon actions on the right. The video
             // stays clear; only takeoff / land (safety) remain large, at the bottom.
-            Row(verticalAlignment = Alignment.Top) {
+            Row(Modifier.horizonZone(HorizonZone.TOP_BAR), verticalAlignment = Alignment.Top) {
                 // The HUD takes what the icons leave: the actions (stop recording…) never get squeezed out.
                 Box(Modifier.weight(1f)) { TopBar(state) }
                 TopActions(state, onAction, onOpenSettings, onOpenGallery)
@@ -235,15 +254,17 @@ fun FlightScreen(
                     onRelease = { onLeftStick(0f, 0f) },
                     enabled = state.controlsEnabled,
                     modifier = Modifier.align(Alignment.BottomStart).size(stickSize).systemGestureExclusion()
+                        .horizonZone(HorizonZone.LEFT_STICK)
                         .graphicsLayer { alpha = sticksAlphaState.value },
                 )
                 if (state.sticksHidden) RevealZone(onRevealSticks, Modifier.align(Alignment.BottomStart).size(stickSize))
-                ActionPanel(state, onAction, Modifier.align(Alignment.BottomCenter))
+                ActionPanel(state, onAction, Modifier.align(Alignment.BottomCenter).horizonZone(HorizonZone.ACTION_PANEL))
                 Joystick(
                     onMove = onRightStick,
                     onRelease = { onRightStick(0f, 0f) },
                     enabled = state.controlsEnabled,
                     modifier = Modifier.align(Alignment.BottomEnd).size(stickSize).systemGestureExclusion()
+                        .horizonZone(HorizonZone.RIGHT_STICK)
                         .graphicsLayer { alpha = sticksAlphaState.value },
                 )
                 if (state.sticksHidden) RevealZone(onRevealSticks, Modifier.align(Alignment.BottomEnd).size(stickSize))
@@ -256,6 +277,9 @@ fun FlightScreen(
         )
     }
 }
+
+/** Screen parts the movable horizon never covers once placed. */
+private enum class HorizonZone { TOP_BAR, LEFT_STICK, RIGHT_STICK, ACTION_PANEL }
 
 private fun statusText(status: ConnectionStatus, video: Boolean) = when (status) {
     ConnectionStatus.WAITING_WIFI -> R.string.status_waiting_wifi
@@ -596,7 +620,7 @@ private fun trackingModeLabel(mode: com.drone.tello.control.TrackingMode) = when
  * aspect inside the screen. Cropped modes: the video takes its width (its height may exceed the
  * screen). Stretched modes: the video fills exactly that window (picture deformed).
  */
-private fun videoSize(
+internal fun videoSize(
     fit: com.drone.tello.control.VideoFit,
     maxWidth: androidx.compose.ui.unit.Dp,
     maxHeight: androidx.compose.ui.unit.Dp,
