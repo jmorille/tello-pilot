@@ -90,7 +90,8 @@ class DroneSession @Inject constructor(
         inForeground = true
         // Once per loss: Android's dialog itself pauses and resumes the activity, and a
         // cancelled or failed request must not reopen it (the "connect" button stays there).
-        if (droneWifiLost && !foregroundRetried && !wifi.requesting.value &&
+        // A request stuck for a long time (no answer from Android) does not block it.
+        if (droneWifiLost && !foregroundRetried && (!wifi.requesting.value || wifi.requestStale()) &&
             _wifiState.value !is WifiState.Drone
         ) {
             foregroundRetried = true

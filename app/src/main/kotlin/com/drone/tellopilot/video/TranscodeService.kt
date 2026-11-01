@@ -51,6 +51,11 @@ class TranscodeService : Service() {
                 add(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING)
             }
             add(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            // Last resort, needs no permission (3 min, then onTimeout): never leave a
+            // startForegroundService() unanswered, Android would kill the app.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                add(ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE)
+            }
         }
         var started: Result<Unit> = Result.failure(IllegalStateException("no foreground type"))
         for (type in types) {
@@ -86,7 +91,13 @@ class TranscodeService : Service() {
         return START_NOT_STICKY
     }
 
-    /** Android 15+: mediaProcessing has a 6 h budget; never reached, but stop cleanly if it is. */
+    /** shortService fallback (Android 14+): its 3 minutes are over, stop at once (else ANR). */
+    @Deprecated("Android 15 calls the two-argument version")
+    override fun onTimeout(startId: Int) {
+        stopSelf()
+    }
+
+    /** Android 15+: mediaProcessing / dataSync time budget reached; stop cleanly. */
     override fun onTimeout(startId: Int, fgsType: Int) {
         stopSelf()
     }

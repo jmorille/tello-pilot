@@ -42,6 +42,6 @@
         <service
             android:name=".video.TranscodeService"
             android:exported="false"
-            android:foregroundServiceType="mediaProcessing|dataSync" />
+            android:foregroundServiceType="mediaProcessing|dataSync|shortService" />
     </application>
 </manifest>

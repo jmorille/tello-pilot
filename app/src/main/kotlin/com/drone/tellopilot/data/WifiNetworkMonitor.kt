@@ -86,6 +86,14 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
     private val _requesting = MutableStateFlow(false)
     /** A drone network request is pending (dialog shown, drone searched) and not yet granted. */
     val requesting: StateFlow<Boolean> = _requesting.asStateFlow()
+    @Volatile private var requestedAt = 0L
+
+    /**
+     * A request pending for so long that it is probably stuck (Android gave neither the
+     * network nor a refusal): a new request may replace it.
+     */
+    fun requestStale(): Boolean =
+        _requesting.value && android.os.SystemClock.elapsedRealtime() - requestedAt > STALE_REQUEST_MS
 
     /** The network to talk to the drone on: the requested one first, else the system Wi-Fi if it is the drone's. */
     val wifiState: Flow<WifiState> = combine(systemWifi, requested) { system, req ->
@@ -140,6 +148,7 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
             }
         }
         droneRequest = callback
+        requestedAt = android.os.SystemClock.elapsedRealtime()
         _requesting.value = true
         try {
             connectivity.requestNetwork(request, callback)
@@ -198,5 +207,6 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
         const val PREFS = "drone_wifi"
         const val KEY_SSID = "ssid"
         const val KEY_PASSWORD = "password"
+        const val STALE_REQUEST_MS = 30_000L
     }
 }
