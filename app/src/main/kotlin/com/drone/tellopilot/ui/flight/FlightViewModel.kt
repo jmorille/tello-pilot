@@ -13,6 +13,7 @@ import com.drone.tello.protocol.FlipDirection
 import com.drone.tello.protocol.SmartVideoMode
 import com.drone.tellopilot.data.DroneSession
 import com.drone.tellopilot.data.Haptics
+import com.drone.tellopilot.data.MonotonicClock
 import com.drone.tellopilot.data.PhoneThermal
 import com.drone.tellopilot.data.RealtimeThreads
 import com.drone.tellopilot.data.SettingsRepository
@@ -21,6 +22,7 @@ import com.drone.tellopilot.video.FrameSink
 import com.drone.tellopilot.video.RecordingState
 import com.drone.tellopilot.video.VideoRecorder
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,7 +59,7 @@ sealed interface UserMessage {
 }
 
 @HiltViewModel
-class FlightViewModel @Inject constructor(
+class FlightViewModel internal constructor(
     private val session: DroneSession,
     private val recorder: VideoRecorder,
     private val gamepad: GamepadInput,
@@ -67,8 +69,27 @@ class FlightViewModel @Inject constructor(
     private val autopilot: com.drone.tellopilot.tracking.Autopilot,
     phoneThermal: PhoneThermal,
     settings: SettingsRepository,
-    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
+    private val appContext: android.content.Context,
+    private val clock: MonotonicClock,
+    /** Where the drone commands run: the realtime control thread (a test dispatcher in the JVM tests). */
+    private val controlDispatcher: CoroutineDispatcher,
 ) : ViewModel(), GamepadInput.Listener {
+
+    @Inject constructor(
+        session: DroneSession,
+        recorder: VideoRecorder,
+        gamepad: GamepadInput,
+        haptics: Haptics,
+        shutter: com.drone.tellopilot.data.ShutterSound,
+        transcodeQueue: com.drone.tellopilot.video.TranscodeQueue,
+        autopilot: com.drone.tellopilot.tracking.Autopilot,
+        phoneThermal: PhoneThermal,
+        settings: SettingsRepository,
+        @dagger.hilt.android.qualifiers.ApplicationContext appContext: android.content.Context,
+    ) : this(
+        session, recorder, gamepad, haptics, shutter, transcodeQueue, autopilot, phoneThermal, settings, appContext,
+        MonotonicClock.System, RealtimeThreads.control,
+    )
 
     /** Automatic climb / descent to the chosen height right after takeoff. */
     private var takeoffAdjust: kotlinx.coroutines.Job? = null
@@ -198,7 +219,7 @@ class FlightViewModel @Inject constructor(
                 val flight = controller?.telemetry?.value?.flight
                 val onGround = controller?.link?.value == com.drone.tello.control.LinkState.CONNECTED &&
                     flight != null && !flight.flying && !flight.motorsOn
-                val now = android.os.SystemClock.elapsedRealtime()
+                val now = clock.elapsedRealtime()
                 if (!onGround) groundSince = -1L else if (groundSince < 0) groundSince = now
                 groundTooLong.value = onGround && now - groundSince >= GROUND_HEAT_MS
                 kotlinx.coroutines.delay(GROUND_CHECK_MS)
@@ -271,7 +292,7 @@ class FlightViewModel @Inject constructor(
     private fun checkSafety(t: com.drone.tello.control.Telemetry) {
         val controller = session.controller.value
         val maneuvers = controller?.maneuvers?.value
-        val now = android.os.SystemClock.elapsedRealtime()
+        val now = clock.elapsedRealtime()
         val maneuver = maneuvers?.smartVideoActive == true || maneuvers?.bounce == true || controller?.isLanding == true
         val report = safety.onTelemetry(t, pilot.value, maneuver, now)
         var alerts = safetyAlerts.value
@@ -300,7 +321,7 @@ class FlightViewModel @Inject constructor(
         uiState.collect { state ->
             // Out of range the phone often drops the Wi-Fi first (WAITING_WIFI), or the session restarts (CONNECTING).
             val linkLost = previous.status == ConnectionStatus.CONNECTED && state.status != ConnectionStatus.CONNECTED
-            val now = android.os.SystemClock.elapsedRealtime()
+            val now = clock.elapsedRealtime()
             // A flapping alert (wind, battery around the threshold) vibrates at most every 30 s.
             val fresh = (state.warnings - previous.warnings.toSet())
                 .filter { now - (lastVibration[it] ?: (Long.MIN_VALUE / 2)) > ALERT_REPEAT_MS }
@@ -406,7 +427,7 @@ class FlightViewModel @Inject constructor(
     private var smartVideoRetry: kotlinx.coroutines.Job? = null
 
     private fun cancelSmartVideo() {
-        val now = android.os.SystemClock.uptimeMillis()
+        val now = clock.uptimeMillis()
         if (now - lastSmartVideoOverride < SMART_VIDEO_OVERRIDE_COOLDOWN_MS) return
         lastSmartVideoOverride = now
         command { stopSmartVideo() }
@@ -462,7 +483,7 @@ class FlightViewModel @Inject constructor(
      * on-ground state, and never within 2 s of the previous combo.
      */
     private fun padTakeoffOrLand() {
-        val now = android.os.SystemClock.uptimeMillis()
+        val now = clock.uptimeMillis()
         if (now - lastPadCombo < PAD_COMBO_COOLDOWN_MS) return
         lastPadCombo = now
         val landing = session.controller.value?.isLanding == true
@@ -478,23 +499,23 @@ class FlightViewModel @Inject constructor(
         }
         when (action) {
             FlightAction.Takeoff -> {
-                takeoffRequestedAt = android.os.SystemClock.elapsedRealtime()
+                takeoffRequestedAt = clock.elapsedRealtime()
                 confirmed { takeoff() }
             }
             FlightAction.Land -> confirmed { land() }
             FlightAction.ThrowTakeoff -> {
                 // Motors idling in the hand, then the throw itself: never a shock.
-                safety.suppressImpacts(android.os.SystemClock.elapsedRealtime(), THROW_QUIET_MS)
+                safety.suppressImpacts(clock.elapsedRealtime(), THROW_QUIET_MS)
                 confirmed { throwTakeoff() }
             }
             FlightAction.PalmLand -> {
                 // Touching the hand is not a shock.
-                safety.suppressImpacts(android.os.SystemClock.elapsedRealtime(), PALM_LAND_QUIET_MS)
+                safety.suppressImpacts(clock.elapsedRealtime(), PALM_LAND_QUIET_MS)
                 confirmed { palmLand() }
             }
             is FlightAction.Flip -> {
                 // A flip turns the drone upside down: no shock detection until well after it.
-                safety.suppressImpacts(android.os.SystemClock.elapsedRealtime(), FLIP_QUIET_MS)
+                safety.suppressImpacts(clock.elapsedRealtime(), FLIP_QUIET_MS)
                 modeCommand { flip(action.direction) }
             }
             is FlightAction.SetBounce -> modeCommand { setBounce(action.enabled) }
@@ -561,7 +582,7 @@ class FlightViewModel @Inject constructor(
         val target = pilot.value.takeoffHeight
         // Only right after the app's own takeoff: never after an app restart in flight (a
         // "flying" edge with no takeoff), a throw takeoff (height from the hand) or a bounce.
-        if (!TakeoffHeight.armed(target, android.os.SystemClock.elapsedRealtime(), takeoffRequestedAt)) return
+        if (!TakeoffHeight.armed(target, clock.elapsedRealtime(), takeoffRequestedAt)) return
         takeoffRequestedAt = Long.MIN_VALUE / 2
         takeoffAdjust?.cancel()
         takeoffAdjust = viewModelScope.launch {
@@ -603,14 +624,14 @@ class FlightViewModel @Inject constructor(
     private fun confirmed(block: suspend TelloController.() -> Boolean) {
         val controller = session.controller.value ?: return
         viewModelScope.launch {
-            if (withContext(RealtimeThreads.control) { controller.block() }) haptics.confirm()
+            if (withContext(controlDispatcher) { controller.block() }) haptics.confirm()
         }
     }
 
     /** Network I/O never runs on the main thread. */
     private fun command(block: suspend TelloController.() -> Boolean) {
         val controller = session.controller.value ?: return
-        viewModelScope.launch(RealtimeThreads.control) { controller.block() }
+        viewModelScope.launch(controlDispatcher) { controller.block() }
     }
 
     /** Manoeuvre with preconditions: a refusal is explained to the pilot. */
@@ -620,7 +641,7 @@ class FlightViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            val result = withContext(RealtimeThreads.control) { controller.block() }
+            val result = withContext(controlDispatcher) { controller.block() }
             if (result != ModeCheck.OK) _messages.trySend(UserMessage.ModeRefused(result))
         }
     }

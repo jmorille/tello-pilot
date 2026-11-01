@@ -115,4 +115,7 @@ dependencies {
     ksp(libs.hilt.compiler)
 
     testImplementation(libs.junit4)
+    testImplementation(libs.kotlinx.coroutines.test)
+    // Android framework classes (Context, InputDevice, MediaMuxer…) and app singletons in JVM tests.
+    testImplementation(libs.mockk)
 }

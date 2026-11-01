@@ -232,7 +232,8 @@ class GamepadMapper(var bindings: GamepadBindings = GamepadBindings.Default) {
          */
         fun sticks(lx: Float, ly: Float, rx: Float, ry: Float, flat: Float): PadSticks {
             val f = flat.coerceIn(0f, 0.5f)
-            return PadSticks(axis(lx, f), -axis(ly, f), axis(rx, f), -axis(ry, f))
+            // 0f - v, not -v: a centred axis must be +0.0 (PadSticks equality tells -0.0 from 0.0).
+            return PadSticks(axis(lx, f), 0f - axis(ly, f), axis(rx, f), 0f - axis(ry, f))
         }
 
         internal fun axis(value: Float, flat: Float): Float {

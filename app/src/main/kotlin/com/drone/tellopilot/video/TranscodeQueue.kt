@@ -13,6 +13,7 @@ import com.drone.tellopilot.data.PhoneThermal
 import com.drone.tellopilot.data.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +21,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -64,17 +66,29 @@ sealed interface TranscodeState {
  * file is published and checked.
  */
 @Singleton
-class TranscodeQueue @Inject constructor(
-    @ApplicationContext private val context: Context,
+class TranscodeQueue internal constructor(
+    private val context: Context,
     private val library: VideoLibrary,
     private val transcoder: VideoTranscoder,
     settings: SettingsRepository,
     recorder: VideoRecorder,
     private val thermal: PhoneThermal,
     private val overlays: TelemetryOverlayFactory,
+    /** Where the queue works ([Dispatchers.Default]; a test dispatcher in the JVM tests). */
+    dispatcher: CoroutineDispatcher,
 ) {
+    @Inject constructor(
+        @ApplicationContext context: Context,
+        library: VideoLibrary,
+        transcoder: VideoTranscoder,
+        settings: SettingsRepository,
+        recorder: VideoRecorder,
+        thermal: PhoneThermal,
+        overlays: TelemetryOverlayFactory,
+    ) : this(context, library, transcoder, settings, recorder, thermal, overlays, Dispatchers.Default)
+
     private val scope = CoroutineScope(
-        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e(TAG, "transcode queue", e) },
+        SupervisorJob() + dispatcher + CoroutineExceptionHandler { _, e -> Log.e(TAG, "transcode queue", e) },
     )
     /** Video -> telemetry overlay choice (`null`: the setting at processing time). */
     private val pending = LinkedHashMap<Uri, Boolean?>()
@@ -107,7 +121,8 @@ class TranscodeQueue @Inject constructor(
      * WARM would heat it up again straight away). Cold: only watched while the queue works.
      */
     private fun pauseFlow(): Flow<Boolean> {
-        val thermalHold = thermal.heat.runningFold(false) { hold, heat -> thermalHold(hold, heat) }
+        // drop(1): the fold's seed is not a reading (a hot phone must not look cool for an instant).
+        val thermalHold = thermal.heat.runningFold(false) { hold, heat -> thermalHold(hold, heat) }.drop(1)
         return combine(flyingOwners, thermalHold) { owners, hold -> owners.isNotEmpty() || hold }.distinctUntilChanged()
     }
 
@@ -149,11 +164,12 @@ class TranscodeQueue @Inject constructor(
         try {
             coroutineScope {
                 val paused = pauseFlow().stateIn(this)
-                val pauseUi = launch {
+                launch {
                     paused.collect { p -> _state.update { if (it is TranscodeState.Running) it.copy(paused = p) else it } }
                 }
                 drainLoop(paused)
-                pauseUi.cancel()
+                // The UI collector and the stateIn sharing coroutine never end by themselves.
+                coroutineContext.cancelChildren()
             }
             completed = true
         } catch (e: CancellationException) {

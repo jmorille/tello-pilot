@@ -35,7 +35,13 @@ sealed interface WifiState {
 }
 
 @Singleton
-class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val context: Context) {
+class WifiNetworkMonitor internal constructor(
+    private val context: Context,
+    /** Monotonic time in ms ([android.os.SystemClock.elapsedRealtime]). */
+    private val clock: () -> Long,
+) {
+
+    @Inject constructor(@ApplicationContext context: Context) : this(context, android.os.SystemClock::elapsedRealtime)
 
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private val wifiManager = context.getSystemService(WifiManager::class.java)
@@ -94,7 +100,7 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
      * network nor a refusal): a new request may replace it.
      */
     fun requestStale(): Boolean =
-        _requesting.value && android.os.SystemClock.elapsedRealtime() - requestedAt > STALE_REQUEST_MS
+        _requesting.value && clock() - requestedAt > STALE_REQUEST_MS
 
     /** The network to talk to the drone on: the requested one first, else the system Wi-Fi if it is the drone's. */
     val wifiState: Flow<WifiState> = combine(systemWifi, requested) { system, req ->
@@ -152,7 +158,7 @@ class WifiNetworkMonitor @Inject constructor(@ApplicationContext private val con
             }
         }
         droneRequest = callback
-        requestedAt = android.os.SystemClock.elapsedRealtime()
+        requestedAt = clock()
         _requesting.value = true
         try {
             connectivity.requestNetwork(request, callback)

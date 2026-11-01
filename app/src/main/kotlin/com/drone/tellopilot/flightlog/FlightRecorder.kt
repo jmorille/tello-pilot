@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.drone.tello.control.Telemetry
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -22,7 +23,15 @@ import javax.inject.Singleton
  * of the current flight, never the drone session.
  */
 @Singleton
-class FlightRecorder @Inject constructor(private val store: FlightLogStore) {
+class FlightRecorder internal constructor(
+    private val store: FlightLogStore,
+    /** Monotonic time in ms ([SystemClock.elapsedRealtime]). */
+    private val clock: () -> Long,
+    /** Where the recorder polls and writes: an I/O thread (a test dispatcher in the JVM tests). */
+    private val io: CoroutineDispatcher,
+) {
+
+    @Inject constructor(store: FlightLogStore) : this(store, SystemClock::elapsedRealtime, Dispatchers.IO)
 
     /**
      * Runs until cancelled. [latest] returns the live telemetry, or `null` when the link is
@@ -33,12 +42,12 @@ class FlightRecorder @Inject constructor(private val store: FlightLogStore) {
     /** Overlapping session runs (screen recreated) must not record the same flight twice. */
     private val single = Mutex()
 
-    private suspend fun recordFlights(latest: () -> Telemetry?) = withContext(Dispatchers.IO) {
+    private suspend fun recordFlights(latest: () -> Telemetry?) = withContext(io) {
         val sampler = FlightSampler()
         var writer: FlightLogStore.FlightWriter? = null
         try {
             while (isActive) {
-                val tick = sampler.onTick(SystemClock.elapsedRealtime(), latest())
+                val tick = sampler.onTick(clock(), latest())
                 try {
                     if (tick.start) {
                         val start = System.currentTimeMillis()
