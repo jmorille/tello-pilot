@@ -70,7 +70,10 @@ data class PilotSettings(
 ) {
     fun shows(item: HudItem): Boolean = item !in hiddenHud
 
-    val shaping: StickShaping get() = StickShaping(deadZone.coerceIn(0f, 0.5f), expo.coerceIn(0f, 1f))
+    val shaping: StickShaping get() = StickShaping(
+        (if (deadZone.isNaN()) 0.05f else deadZone).coerceIn(0f, 0.5f),
+        (if (expo.isNaN()) 0.3f else expo).coerceIn(0f, 1f),
+    )
 
     companion object {
         val DEAD_ZONE_RANGE = 0f..0.2f
