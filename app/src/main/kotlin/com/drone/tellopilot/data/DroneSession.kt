@@ -57,6 +57,7 @@ class DroneSession internal constructor(
     private val photoStore: PhotoStore,
     private val hints: PerformanceHints,
     private val flightRecorder: com.drone.tellopilot.flightlog.FlightRecorder,
+    private val batteryAlert: BatteryVoiceAlert,
     /** Control loop and commands: the realtime control thread (a test dispatcher in the JVM tests). */
     private val controlDispatcher: CoroutineDispatcher,
     /** Opens the UDP sockets on the drone's network ([DroneSockets.open]). */
@@ -69,7 +70,8 @@ class DroneSession internal constructor(
         photoStore: PhotoStore,
         hints: PerformanceHints,
         flightRecorder: com.drone.tellopilot.flightlog.FlightRecorder,
-    ) : this(wifi, settings, recorder, photoStore, hints, flightRecorder, RealtimeThreads.control, { DroneSockets.open(it) })
+        batteryAlert: BatteryVoiceAlert,
+    ) : this(wifi, settings, recorder, photoStore, hints, flightRecorder, batteryAlert, RealtimeThreads.control, { DroneSockets.open(it) })
 
     private val _controller = MutableStateFlow<TelloController?>(null)
     val controller: StateFlow<TelloController?> = _controller.asStateFlow()
@@ -184,6 +186,13 @@ class DroneSession internal constructor(
                     flightRecorder.record {
                         _controller.value?.takeIf { it.isConnected }?.telemetry?.value
                     }
+                }
+                // Low / critical battery: tone + spoken announcement in flight.
+                launch {
+                    batteryAlert.watch(
+                        flight = { _controller.value?.takeIf { it.isConnected }?.telemetry?.value?.flight },
+                        settings = settings.settings,
+                    )
                 }
                 runSession()
             }

@@ -163,7 +163,7 @@ fun SettingsScreen(
                         videos(settings.pilot)
                     }
                     SettingsCategory.AUTOPILOT -> AutopilotSettings(settings.pilot, updatePilot)
-                    SettingsCategory.DRONE -> DroneSettingsPane(settings.drone, updateDrone)
+                    SettingsCategory.DRONE -> DroneSettingsPane(settings.drone, updateDrone, settings.pilot, updatePilot)
                     SettingsCategory.MAINTENANCE -> maintenance()
                 }
             }
@@ -281,7 +281,12 @@ private fun DisplaySettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
 }
 
 @Composable
-private fun DroneSettingsPane(drone: DroneSettings, updateDrone: ((DroneSettings) -> DroneSettings) -> Unit) {
+private fun DroneSettingsPane(
+    drone: DroneSettings,
+    updateDrone: ((DroneSettings) -> DroneSettings) -> Unit,
+    pilot: PilotSettings,
+    updatePilot: ((PilotSettings) -> PilotSettings) -> Unit,
+) {
     Text(stringResource(R.string.settings_drone_hint), style = MaterialTheme.typography.bodySmall)
     SliderSetting(
         label = { stringResource(R.string.settings_max_altitude, it.roundToInt()) },
@@ -295,6 +300,8 @@ private fun DroneSettingsPane(drone: DroneSettings, updateDrone: ((DroneSettings
         range = DroneSettings.LOW_BATTERY_RANGE.first.toFloat()..DroneSettings.LOW_BATTERY_RANGE.last.toFloat(),
         steps = DroneSettings.LOW_BATTERY_RANGE.last - DroneSettings.LOW_BATTERY_RANGE.first - 1,
     ) { v -> updateDrone { it.copy(lowBatteryPercent = v.roundToInt()) } }
+    SwitchSetting(R.string.settings_battery_voice, pilot.batteryVoiceAlert) { v -> updatePilot { it.copy(batteryVoiceAlert = v) } }
+    Text(stringResource(R.string.settings_battery_voice_help), style = MaterialTheme.typography.bodySmall)
     SliderSetting(
         label = { stringResource(R.string.settings_exposure, it.roundToInt() / 3f) },
         value = drone.exposureSteps.toFloat(),

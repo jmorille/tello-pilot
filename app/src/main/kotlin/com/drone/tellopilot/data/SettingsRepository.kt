@@ -96,6 +96,7 @@ internal object SettingsCodec {
             missionMaxSpeed = (p[MISSION_MAX_SPEED] ?: d.missionMaxSpeed).let {
                 if (it.isFinite()) it.coerceIn(PilotSettings.MISSION_SPEED_RANGE) else d.missionMaxSpeed
             },
+            batteryVoiceAlert = p[BATTERY_VOICE_ALERT] ?: d.batteryVoiceAlert,
         )
     }
 
@@ -127,6 +128,7 @@ internal object SettingsCodec {
         p[MISSION_NOSE_FIRST] = s.missionNoseFirst
         p[MISSION_SPEED_LIMIT] = s.missionSpeedLimit
         p[MISSION_MAX_SPEED] = s.missionMaxSpeed
+        p[BATTERY_VOICE_ALERT] = s.batteryVoiceAlert
     }
 
     fun readDrone(p: Preferences): DroneSettings {
@@ -176,6 +178,7 @@ internal object SettingsCodec {
     private val MISSION_NOSE_FIRST = booleanPreferencesKey("mission_nose_first")
     private val MISSION_SPEED_LIMIT = booleanPreferencesKey("mission_speed_limit")
     private val MISSION_MAX_SPEED = floatPreferencesKey("mission_max_speed_mps")
+    private val BATTERY_VOICE_ALERT = booleanPreferencesKey("battery_voice_alert")
     private val MAX_ALTITUDE = intPreferencesKey("max_altitude_m")
     private val LOW_BATTERY = intPreferencesKey("low_battery_percent")
     private val EXPOSURE = intPreferencesKey("exposure_steps")

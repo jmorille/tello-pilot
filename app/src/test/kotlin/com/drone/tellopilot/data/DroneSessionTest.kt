@@ -64,6 +64,7 @@ class DroneSessionTest {
         private val recorder: VideoRecorder = mockk(relaxed = true)
         val session = DroneSession(
             wifi, settings, recorder, mockk(relaxed = true), mockk(relaxed = true), flightRecorder,
+            mockk<BatteryVoiceAlert>(relaxed = true),
             StandardTestDispatcher(scope.testScheduler),
         ) { opens++; open?.invoke(it) ?: throw IOException("bind failed") }
         lateinit var job: Job

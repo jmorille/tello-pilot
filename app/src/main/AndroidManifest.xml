@@ -19,6 +19,13 @@
     <uses-feature android:name="android.hardware.wifi" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen.multitouch.distinct" android:required="true" />
 
+    <!-- Package visibility (Android 11+): find the TextToSpeech engine of the battery alert. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".TelloPilotApp"
         android:allowBackup="false"

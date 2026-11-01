@@ -88,6 +88,8 @@ data class PilotSettings(
     val missionSpeedLimit: Boolean = true,
     /** m/s. */
     val missionMaxSpeed: Float = MISSION_SPEED_DEFAULT,
+    /** Tone + spoken announcement (and vibration) when the drone battery gets low in flight. */
+    val batteryVoiceAlert: Boolean = true,
 ) {
     /** Mission runner tuning that follows these settings. */
     fun missionConfig(): MissionConfig = MissionConfig(
