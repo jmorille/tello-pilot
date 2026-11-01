@@ -10,18 +10,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import com.drone.tello.control.TouchStickGate
 import kotlin.math.min
 
 /**
  * Virtual stick. Latency notes:
  * - the knob position is only read in the draw phase → moving it redraws, never recomposes;
  * - [onMove] is called synchronously from the pointer event, before the next frame.
- * Values: x right-positive, y up-positive, both in -1..1 (each axis clamped: square gate).
+ * Values: x right-positive, y up-positive, both in -1..1 (square gate with axis lock, see TouchStickGate).
  */
 @Composable
 fun Joystick(
@@ -40,10 +43,10 @@ fun Joystick(
             fun handle(position: Offset) {
                 val center = Offset(size.width / 2f, size.height / 2f)
                 val radius = min(size.width, size.height) / 2f * TRAVEL
-                // Square gate, like the official app: each axis reaches full deflection on its
-                // own (a diagonal gives full pitch AND full roll, not 71 % of each).
+                // Square gate + axis lock, like the official app (touch only, see TouchStickGate).
                 val raw = (position - center) / radius
-                val v = Offset(raw.x.coerceIn(-1f, 1f), raw.y.coerceIn(-1f, 1f))
+                val (gx, gy) = TouchStickGate.apply(raw.x, raw.y)
+                val v = Offset(gx, gy)
                 knob = v
                 if (isEnabled) move(v.x, -v.y)
             }
@@ -69,8 +72,12 @@ fun Joystick(
     ) {
         val radius = min(size.width, size.height) / 2f
         val alpha = if (isEnabled) 1f else 0.4f
-        drawCircle(Color.Black.copy(alpha = 0.25f * alpha), radius)
-        drawCircle(Color.White.copy(alpha = 0.6f * alpha), radius, style = Stroke(2.dp.toPx()))
+        // Square gate: the knob reaches the corners, so the base is a rounded square.
+        val corner = CornerRadius(radius * 0.3f)
+        val topLeft = Offset(center.x - radius, center.y - radius)
+        val base = Size(radius * 2, radius * 2)
+        drawRoundRect(Color.Black.copy(alpha = 0.25f * alpha), topLeft, base, corner)
+        drawRoundRect(Color.White.copy(alpha = 0.6f * alpha), topLeft, base, corner, style = Stroke(2.dp.toPx()))
         drawCircle(Color.White.copy(alpha = 0.25f * alpha), radius * 0.08f)
         val k = center + knob * (radius * TRAVEL)
         drawCircle(Color.White.copy(alpha = 0.85f * alpha), radius * 0.28f, k)
