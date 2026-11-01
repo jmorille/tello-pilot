@@ -186,7 +186,7 @@ class GalleryViewModel @Inject constructor(
 }
 
 @Composable
-fun GalleryRoute(onBack: () -> Unit, viewModel: GalleryViewModel = hiltViewModel()) {
+fun GalleryRoute(onBack: () -> Unit, onOpenFlights: () -> Unit, viewModel: GalleryViewModel = hiltViewModel()) {
     val items by viewModel.items.collectAsStateWithLifecycle()
     val flying by viewModel.flying.collectAsStateWithLifecycle()
     LaunchedEffect(flying) { if (flying) onBack() }
@@ -200,7 +200,7 @@ fun GalleryRoute(onBack: () -> Unit, viewModel: GalleryViewModel = hiltViewModel
         GalleryScreen(items, onBack, viewModel::thumbnail, reencode = {
             viewModel.reencode(it)
             android.widget.Toast.makeText(context, R.string.gallery_reencode_started, android.widget.Toast.LENGTH_SHORT).show()
-        }, refresh = viewModel::refresh)
+        }, refresh = viewModel::refresh, onOpenFlights = onOpenFlights)
     }
 }
 
@@ -211,6 +211,7 @@ private fun GalleryScreen(
     thumbnail: suspend (Uri) -> Bitmap?,
     reencode: (GalleryItem) -> Unit,
     refresh: () -> Unit,
+    onOpenFlights: () -> Unit,
 ) {
     val context = LocalContext.current
     var filter by remember { mutableStateOf(GalleryFilter.ALL) }
@@ -243,7 +244,10 @@ private fun GalleryScreen(
             Text(
                 stringResource(R.string.gallery_summary, shown.size, Formatter.formatShortFileSize(context, shown.sumOf { it.sizeBytes })),
                 style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
             )
+            // Flight logs and statistics (ground-only screen, like the gallery itself).
+            TextButton(onClick = onOpenFlights) { Text(stringResource(R.string.gallery_flights)) }
         }
         when {
             items == null -> Unit

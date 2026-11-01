@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flight logs shared as CSV (Gallery > Flights > Export). -->
+<paths>
+    <files-path name="flights" path="flights/" />
+</paths>

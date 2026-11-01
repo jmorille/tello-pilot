@@ -55,6 +55,7 @@ class DroneSession @Inject constructor(
     private val recorder: VideoRecorder,
     private val photoStore: PhotoStore,
     private val hints: PerformanceHints,
+    private val flightRecorder: com.drone.tellopilot.flightlog.FlightRecorder,
 ) {
     private val _controller = MutableStateFlow<TelloController?>(null)
     val controller: StateFlow<TelloController?> = _controller.asStateFlow()
@@ -163,7 +164,15 @@ class DroneSession @Inject constructor(
         val instance = runs.incrementAndGet()
         Log.i(TAG, "session run #$instance start (concurrent runs: ${active.incrementAndGet()})")
         try {
-            runSession()
+            coroutineScope {
+                // Black box: polls the live telemetry on an I/O thread (never the realtime ones).
+                launch {
+                    flightRecorder.record {
+                        _controller.value?.takeIf { it.isConnected }?.telemetry?.value
+                    }
+                }
+                runSession()
+            }
         } finally {
             Log.i(TAG, "session run #$instance end (concurrent runs: ${active.decrementAndGet()})")
         }
