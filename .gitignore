@@ -1,0 +1,24 @@
+# Gradle / build
+.gradle/
+build/
+**/build/
+.kotlin/
+
+# Local config
+local.properties
+*.keystore
+*.jks
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / captures
+*.log
+captures/
+*.hprof

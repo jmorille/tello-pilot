@@ -1,0 +1,70 @@
+package com.drone.tellopilot.ui.flight
+
+import com.drone.tello.control.LinkState
+import com.drone.tello.control.Telemetry
+import com.drone.tello.protocol.FlightData
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class FlightUiStateTest {
+
+    private fun flight(flying: Boolean = true, battery: Int = 80, low: Boolean = false, critical: Boolean = false) = FlightData(
+        heightMeters = 1.2f, northSpeed = 3f, eastSpeed = 4f, verticalSpeed = 0f, flyTimeSeconds = 65.4f,
+        batteryPercent = battery, flying = flying, onGround = !flying, hovering = false,
+        batteryLow = low, batteryCritical = critical, windWarning = false, imuOk = true, flyMode = 1,
+    )
+
+    private fun state(
+        wifi: Boolean = true,
+        link: LinkState = LinkState.CONNECTED,
+        telemetry: Telemetry = Telemetry(flight = flight()),
+        knownFlying: Boolean = false,
+    ) = FlightUiState.from(wifi, link, telemetry, videoActive = true, fastMode = false, knownFlying = knownFlying)
+
+    @Test
+    fun `status follows wifi and link`() {
+        assertEquals(ConnectionStatus.WAITING_WIFI, state(wifi = false).status)
+        assertEquals(ConnectionStatus.CONNECTING, state(link = LinkState.CONNECTING).status)
+        assertEquals(ConnectionStatus.RECONNECTING, state(link = LinkState.RECONNECTING).status)
+        assertEquals(ConnectionStatus.CONNECTED, state().status)
+    }
+
+    @Test
+    fun `controls are enabled only when connected`() {
+        assertTrue(state().controlsEnabled)
+        assertFalse(state(link = LinkState.RECONNECTING).controlsEnabled)
+    }
+
+    @Test
+    fun `telemetry is shown when connected`() {
+        val s = state()
+        assertEquals(80, s.batteryPercent)
+        assertEquals(5f, s.horizontalSpeed!!, 1e-4f)
+        assertEquals(65, s.flyTimeSeconds)
+        assertTrue(s.flying)
+    }
+
+    @Test
+    fun `land stays reachable when the link is lost in flight`() {
+        val s = state(link = LinkState.RECONNECTING, knownFlying = true)
+        assertTrue("last known flying state is kept", s.flying)
+        assertNull("stale telemetry is hidden", s.batteryPercent)
+        assertTrue(state(wifi = false, telemetry = Telemetry(), knownFlying = true).flying)
+    }
+
+    @Test
+    fun `live telemetry wins over the remembered state`() {
+        assertFalse(state(telemetry = Telemetry(flight = flight(flying = false)), knownFlying = true).flying)
+    }
+
+    @Test
+    fun `battery warnings are prioritised`() {
+        assertEquals(Warning.BATTERY_CRITICAL, state(telemetry = Telemetry(flight = flight(low = true, critical = true), tooDark = true)).warning)
+        assertEquals(Warning.BATTERY_LOW, state(telemetry = Telemetry(flight = flight(low = true))).warning)
+        assertEquals(Warning.TOO_DARK, state(telemetry = Telemetry(flight = flight(), tooDark = true)).warning)
+        assertNull(state(link = LinkState.RECONNECTING, telemetry = Telemetry(flight = flight(critical = true))).warning)
+    }
+}
