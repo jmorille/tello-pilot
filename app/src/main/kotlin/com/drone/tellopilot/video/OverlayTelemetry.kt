@@ -197,7 +197,7 @@ class OverlayTrack(samples: List<TimedSample>) {
     }
 
     companion object {
-        /** Samples come at ~5 Hz: a wider gap is missing data, not to be bridged. */
+        /** Samples come at ~10 Hz: a wider gap is missing data, not to be bridged. */
         const val MAX_GAP_MS = 2_000L
         const val TOLERANCE_MS = 1_000L
 
@@ -245,7 +245,8 @@ class OverlayTrack(samples: List<TimedSample>) {
             flyTimeS = lerp(a.flyTimeS, b.flyTimeS, f),
             imuTempC = lerp(a.imuTempC, b.imuTempC, f),
             wifiPct = nearest(a.wifiPct, b.wifiPct, f),
-            rollDeg = lerp(a.rollDeg, b.rollDeg, f),
+            // A flip crosses ±180°: the short way round too, never back through level flight.
+            rollDeg = if (a.rollDeg != null && b.rollDeg != null) HudMath.lerpSignedAngle(a.rollDeg, b.rollDeg, f) else nearest(a.rollDeg, b.rollDeg, f),
             pitchDeg = lerp(a.pitchDeg, b.pitchDeg, f),
             // The short way round: 359° -> 1° goes through 0°.
             yawDeg = if (a.yawDeg != null && b.yawDeg != null) HudMath.lerpAngle(a.yawDeg, b.yawDeg, f) else nearest(a.yawDeg, b.yawDeg, f),
@@ -266,6 +267,8 @@ class OverlayMapTrack private constructor(
     private val ys: FloatArray,
     /** Index of the first point of the flight each point belongs to. */
     private val segmentStart: IntArray,
+    /** Wall-clock instants of the takeoffs, sorted: the track restarts at each one. */
+    private val takeoffs: LongArray,
 ) {
     /** Points `from..to` (inclusive) of the track, as shown at one instant. */
     data class Range(val from: Int, val to: Int) {
@@ -278,34 +281,47 @@ class OverlayMapTrack private constructor(
 
     fun y(i: Int): Float = ys[i]
 
-    /** Track of the current flight up to [atEpochMs], `null` before its first point. */
+    /**
+     * Track of the current flight up to [atEpochMs], `null` before its first point (the track
+     * of a previous flight is never shown after a new takeoff, as on screen).
+     */
     fun at(atEpochMs: Long): Range? {
-        // Last point at or before the instant.
-        var lo = 0
-        var hi = epochMs.size
-        while (lo < hi) {
-            val mid = (lo + hi) ushr 1
-            if (epochMs[mid] <= atEpochMs) lo = mid + 1 else hi = mid
-        }
-        val to = lo - 1
+        val to = lastAtOrBefore(epochMs.size, atEpochMs) { epochMs[it] } - 1
         if (to < 0) return null
+        val takeoff = lastAtOrBefore(takeoffs.size, atEpochMs) { takeoffs[it] } - 1
+        if (takeoff >= 0 && epochMs[to] < takeoffs[takeoff]) return null
         return Range(maxOf(segmentStart[to], to - TrackMapMath.MAX_POINTS + 1), to)
     }
 
+    /** Number of sorted values at or before [t] (binary search). */
+    private inline fun lastAtOrBefore(size: Int, t: Long, value: (Int) -> Long): Int {
+        var lo = 0
+        var hi = size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (value(mid) <= t) lo = mid + 1 else hi = mid
+        }
+        return lo
+    }
+
     companion object {
-        val EMPTY = OverlayMapTrack(LongArray(0), FloatArray(0), FloatArray(0), IntArray(0))
+        val EMPTY = OverlayMapTrack(LongArray(0), FloatArray(0), FloatArray(0), IntArray(0), LongArray(0))
 
         fun of(logs: List<FlightLog>): OverlayMapTrack {
             val times = ArrayList<Long>()
             val xs = ArrayList<Float>()
             val ys = ArrayList<Float>()
             val starts = ArrayList<Int>()
+            val takeoffs = ArrayList<Long>()
             for (log in logs.sortedBy { it.startEpochMs }) {
                 var start = times.size
                 var wasFlying = false
                 for (s in log.samples.sortedBy { it.tMs }) {
                     // A takeoff restarts the track (the flight screen clears it).
-                    if (s.flying && !wasFlying) start = times.size
+                    if (s.flying && !wasFlying) {
+                        start = times.size
+                        takeoffs += log.startEpochMs + s.tMs
+                    }
                     wasFlying = s.flying
                     val x = s.odoX ?: continue
                     val y = s.odoY ?: continue
@@ -321,7 +337,9 @@ class OverlayMapTrack private constructor(
                     starts += start
                 }
             }
-            return OverlayMapTrack(times.toLongArray(), xs.toFloatArray(), ys.toFloatArray(), starts.toIntArray())
+            return OverlayMapTrack(
+                times.toLongArray(), xs.toFloatArray(), ys.toFloatArray(), starts.toIntArray(), takeoffs.sorted().toLongArray(),
+            )
         }
     }
 }

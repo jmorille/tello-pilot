@@ -1,5 +1,6 @@
 package com.drone.tellopilot.video
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -14,13 +15,12 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.StaticOverlaySettings
 import androidx.media3.effect.TextureOverlay
-import android.content.Context
 import com.drone.tello.control.OverlayStyle
 import com.drone.tello.control.PilotSettings
 import com.drone.tello.control.Units
-import dagger.hilt.android.qualifiers.ApplicationContext
 import com.drone.tellopilot.flightlog.FlightLogStore
 import com.drone.tellopilot.flightlog.FlightSampler
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import java.time.ZoneId
 import java.util.Locale
@@ -87,10 +87,17 @@ class TelemetryOverlayFactory @Inject constructor(
         val status = if (covered == 0) OverlayStatus.TIME_ONLY else OverlayStatus.ACTIVE
         val pilotView = pilot.overlayStyle == OverlayStyle.PILOT && status == OverlayStatus.ACTIVE
         Log.i(TAG, "${video.name}: overlay ON, $status, ${if (pilotView) "pilot view, hidden=${pilot.hiddenHud}" else "compact"}")
+        val compact = { listOf(TelemetryBitmapOverlay(track, start.epochMs, pilot.units, zone, Locale.getDefault())) }
         val overlays = if (pilotView) {
-            PilotHudOverlays.create(track, OverlayMapTrack.of(logs), start.epochMs, pilot, PilotHudOverlays.texts(context.resources))
+            try {
+                PilotHudOverlays.create(track, OverlayMapTrack.of(logs), start.epochMs, pilot, PilotHudOverlays.texts(context.resources))
+            } catch (e: Exception) {
+                // Still an overlay: the compact box rather than none.
+                Log.w(TAG, "${video.name}: pilot view unavailable, compact overlay", e)
+                compact()
+            }
         } else {
-            listOf(TelemetryBitmapOverlay(track, start.epochMs, pilot.units, zone, Locale.getDefault()))
+            compact()
         }
         return Built(overlays, status)
     }
@@ -164,6 +171,9 @@ class TelemetryBitmapOverlay(
         } catch (e: Exception) {
             failed(e)
             return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).also { bitmap = it }
+        } catch (e: OutOfMemoryError) {
+            failed(e)
+            return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).also { bitmap = it }
         }
         if (failed) return current
         // A drawing error never breaks the export: the box is left out for the rest of the video.
@@ -183,7 +193,7 @@ class TelemetryBitmapOverlay(
 
     private var failed = false
 
-    private fun failed(e: Exception) {
+    private fun failed(e: Throwable) {
         if (!failed) Log.w(OVERLAY_TAG, "overlay drawing failed, box left out", e)
         failed = true
     }

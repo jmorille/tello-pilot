@@ -159,6 +159,19 @@ class OverlayTelemetryTest {
     }
 
     @Test
+    fun `roll crossing 180 degrees (flip) is interpolated the short way, never through level`() {
+        val a = values(1f).copy(rollDeg = 170f)
+        val b = values(1f).copy(rollDeg = -170f)
+        val track = OverlayTrack(listOf(TimedSample(0, a), TimedSample(100, b)))
+        assertEquals(-180f, track.at(50)!!.rollDeg!!, 1e-3f)
+        assertEquals(175f, track.at(25)!!.rollDeg!!, 1e-3f)
+        assertEquals(-175f, track.at(75)!!.rollDeg!!, 1e-3f)
+        val level = OverlayTrack(listOf(TimedSample(0, a.copy(rollDeg = -10f)), TimedSample(100, a.copy(rollDeg = 10f))))
+        assertEquals(0f, level.at(50)!!.rollDeg!!, 1e-3f)
+        assertEquals(-5f, level.at(25)!!.rollDeg!!, 1e-3f)
+    }
+
+    @Test
     fun `a value known on one side only is taken from the nearest sample`() {
         val a = values(1f).copy(rollDeg = null, wifiPct = null)
         val b = values(1f).copy(rollDeg = 4f, wifiPct = 70)

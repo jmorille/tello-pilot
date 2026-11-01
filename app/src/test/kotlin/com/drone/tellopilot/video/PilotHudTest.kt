@@ -153,6 +153,27 @@ class PilotHudTest {
     }
 
     @Test
+    fun `after a new takeoff the previous flight's track is gone until the first new point`() {
+        val track = OverlayMapTrack.of(
+            listOf(
+                log(
+                    0,
+                    sample(0, 0f, 0f),
+                    sample(100, 1f, 0f),
+                    sample(200, 1f, 0f, flying = false),
+                    sample(300, null, null), // takeoff, odometry not valid yet
+                    sample(400, 5f, 5f, valid = false),
+                    sample(500, 3f, 3f),
+                ),
+            ),
+        )
+        assertEquals(OverlayMapTrack.Range(0, 1), track.at(250))
+        assertNull(track.at(300))
+        assertNull(track.at(450))
+        assertEquals(OverlayMapTrack.Range(2, 2), track.at(500))
+    }
+
+    @Test
     fun `map track is bounded like the screen's`() {
         val samples = (0 until 2_100).map { sample(it * 100L, it * 0.2f, 0f) }.toTypedArray()
         val track = OverlayMapTrack.of(listOf(log(0, *samples)))

@@ -81,6 +81,12 @@ object HudMath {
         return heading(a + d * f)
     }
 
+    /** [lerpAngle] for angles in `[-180, 180)` (roll): 170° -> -170° goes through 180°. */
+    fun lerpSignedAngle(a: Float, b: Float, f: Float): Float {
+        val h = lerpAngle(a, b, f)
+        return if (h >= 180f) h - 360f else h
+    }
+
     /** [value] rounded to a multiple of [step] (limits the redraws of a moving instrument). */
     fun quantize(value: Float, step: Float): Float = Math.round(value / step) * step
 }

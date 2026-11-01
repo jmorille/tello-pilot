@@ -147,9 +147,10 @@ class FlightSampler(
 
     companion object {
         /**
-         * 10 Hz: the rate of the drone's flight data and log stream, so the attitude replayed in
-         * the video overlay is as smooth as it was live (a 5 Hz track interpolated linearly
-         * cuts the corners of quick rolls and flips). About 85 bytes a row, i.e. ~50 KB a
+         * 10 Hz, about the rate of the drone's flight data and log stream (the tick is not
+         * synchronised with them, so a row may repeat a reading): the attitude replayed in the
+         * video overlay follows quick rolls and flips much better than at 5 Hz, where linear
+         * interpolation cuts their corners. About 85 bytes a row, i.e. ~50 KB a
          * minute: ~0.65 MB for a full 13-minute battery. [FlightRetention.MAX_BYTES] still
          * holds 75 such flights, or the [FlightRetention.MAX_FLIGHTS] of 5 minutes.
          */

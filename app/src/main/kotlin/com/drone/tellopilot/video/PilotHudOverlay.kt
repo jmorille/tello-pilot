@@ -145,6 +145,9 @@ internal abstract class SafeHudOverlay(private val name: String) : BitmapOverlay
         } catch (e: Exception) {
             fail(e)
             return blank().also { bitmap = it }
+        } catch (e: OutOfMemoryError) {
+            fail(e)
+            return blank().also { bitmap = it }
         }
         if (failed) return current
         try {
@@ -154,6 +157,9 @@ internal abstract class SafeHudOverlay(private val name: String) : BitmapOverlay
                 drawNs += SystemClock.elapsedRealtimeNanos() - start
             }
         } catch (e: Exception) {
+            fail(e)
+            current.eraseColor(Color.TRANSPARENT)
+        } catch (e: OutOfMemoryError) {
             fail(e)
             current.eraseColor(Color.TRANSPARENT)
         }
@@ -169,7 +175,7 @@ internal abstract class SafeHudOverlay(private val name: String) : BitmapOverlay
         }
     }
 
-    private fun fail(e: Exception) {
+    private fun fail(e: Throwable) {
         if (!failed) Log.w(TAG, "$name: drawing failed, overlay part left out", e)
         failed = true
     }
@@ -224,7 +230,7 @@ internal abstract class SafeHudOverlay(private val name: String) : BitmapOverlay
 
     /** Small rounded label under an instrument (flight screen `HudLabel`), centred on [centerX]. */
     protected fun drawLabel(canvas: Canvas, text: String, centerX: Float, top: Float, paint: TextPaint, bg: Paint, rect: RectF) {
-        val h = labelHeight(paint)
+        val h = labelHeight()
         val w = paint.measureText(text) + 2 * scale.dp(6f)
         val y = top + scale.dp(2f)
         rect.set(centerX - w / 2, y, centerX + w / 2, y + h - scale.dp(2f))
@@ -235,10 +241,13 @@ internal abstract class SafeHudOverlay(private val name: String) : BitmapOverlay
     }
 
     /** Height of [drawLabel] (with its top gap). */
-    protected fun labelHeight(paint: Paint): Float = scale.dp(2f) + paint.fontSpacing + 2 * scale.dp(1f)
+    protected fun labelHeight(): Float =
+        scale.dp(2f) + scale.dp(TEXT_LINE_DP) + 2 * scale.dp(1f)
 
     companion object {
         const val TAG = "TelemetryOverlay"
+        /** Line height of the screen's `Text` without a style (bodyLarge: 24 sp, kept with a smaller font). */
+        const val TEXT_LINE_DP = 24f
         const val DEFAULT_WIDTH = 960
         const val DEFAULT_HEIGHT = 720
         val TEXT_SHADOW = Color.argb(150, 0, 0, 0)
@@ -268,9 +277,15 @@ internal class TopLeftHudOverlay(private val source: PilotHudSource, private val
     private lateinit var arrowPaint: Paint
     private val rect = RectF()
     private val path = Path()
+    /** Alert banners: a handful of distinct texts per video, laid out once. */
+    private val layouts = HashMap<Pair<String, Int>, StaticLayout>()
+    /** Map path built for this range and box (rebuilt only when the track grows). */
+    private var pathKey: Any? = null
 
     override fun onConfigure() {
         lastKey = UNSET
+        layouts.clear()
+        pathKey = null
         // labelLarge, SemiBold (panel); bodyLarge (alerts); 12 sp (instrument labels).
         panelText = textPaint(14f, 600)
         warningText = textPaint(16f, 400)
@@ -358,11 +373,16 @@ internal class TopLeftHudOverlay(private val source: PilotHudSource, private val
         val padH = scale.dp(12f)
         val padV = scale.dp(4f)
         val textWidth = (min(maxWidth, scale.dp(WARNING_MAX_DP)) - 2 * padH).toInt().coerceAtLeast(1)
-        val layout = StaticLayout.Builder.obtain(w.text, 0, w.text.length, warningText, textWidth)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setMaxLines(MAX_WARNING_LINES)
-            .setEllipsize(android.text.TextUtils.TruncateAt.END)
-            .build()
+        val layout = layouts.getOrPut(w.text to textWidth) {
+            // bodyLarge: 24 sp per line, as on screen.
+            val extra = scale.dp(TEXT_LINE_DP) - warningText.fontSpacing
+            StaticLayout.Builder.obtain(w.text, 0, w.text.length, warningText, textWidth)
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                .setLineSpacing(extra, 1f)
+                .setMaxLines(MAX_WARNING_LINES)
+                .setEllipsize(android.text.TextUtils.TruncateAt.END)
+                .build()
+        }
         var lineWidth = 0f
         for (i in 0 until layout.lineCount) lineWidth = max(lineWidth, layout.getLineWidth(i))
         rect.set(0f, top, lineWidth + 2 * padH, top + layout.height + 2 * padV)
@@ -374,7 +394,7 @@ internal class TopLeftHudOverlay(private val source: PilotHudSource, private val
     /** Screen `TrackMap`: 110 dp box, 8 dp inner padding, the track, takeoff point, drone, arrow home. */
     private fun drawMap(canvas: Canvas, m: MapFrame, top: Float, maxBottom: Float) {
         val box = scale.dp(110f)
-        if (top + box + labelHeight(labelText) > maxBottom) return
+        if (top + box + labelHeight() > maxBottom) return
         rect.set(0f, top, box, top + box)
         canvas.drawRoundRect(rect, scale.dp(8f), scale.dp(8f), mapBg)
         val inner = box - 2 * scale.dp(8f)
@@ -387,9 +407,13 @@ internal class TopLeftHudOverlay(private val source: PilotHudSource, private val
         val k = TrackMapMath.scale(inner / 2, span)
         fun sx(i: Int) = TrackMapMath.screenX(map.x(i), homeX, cx, k)
         fun sy(i: Int) = TrackMapMath.screenY(map.y(i), homeY, cy, k)
-        path.rewind()
-        path.moveTo(sx(r.from), sy(r.from))
-        for (i in r.from + 1..r.to) path.lineTo(sx(i), sy(i))
+        val key = Triple(r, top, inner)
+        if (key != pathKey) {
+            path.rewind()
+            path.moveTo(sx(r.from), sy(r.from))
+            for (i in r.from + 1..r.to) path.lineTo(sx(i), sy(i))
+            pathKey = key
+        }
         canvas.drawPath(path, trackPaint)
         val dotR = scale.dp(4f)
         canvas.drawCircle(cx, cy, dotR, home)
@@ -441,7 +465,7 @@ internal class HorizonHudOverlay(private val source: PilotHudSource) : SafeHudOv
 
     override fun createBitmap(): Bitmap {
         val width = scale.dp(WIDTH_DP)
-        val height = scale.dp(DISC_DP) + labelHeight(labelText)
+        val height = scale.dp(DISC_DP) + labelHeight()
         return Bitmap.createBitmap(ceil(width).toInt(), ceil(height).toInt(), Bitmap.Config.ARGB_8888)
     }
 
