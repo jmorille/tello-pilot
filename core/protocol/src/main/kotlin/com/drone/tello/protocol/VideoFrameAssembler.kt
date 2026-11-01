@@ -99,6 +99,8 @@ class VideoFrameAssembler(maxFrameSize: Int = 512 * 1024) {
 
 /** Helpers on Annex-B H.264 byte streams. */
 object H264 {
+    /** Non-IDR picture slice. */
+    const val NAL_SLICE = 1
     const val NAL_IDR = 5
     const val NAL_SPS = 7
     const val NAL_PPS = 8

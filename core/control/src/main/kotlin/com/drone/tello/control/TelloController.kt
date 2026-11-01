@@ -152,6 +152,16 @@ class TelloController(
     private var lastActivationAt = Long.MIN_VALUE / 2 // control thread only
 
     private val photoDownload = PhotoDownload()
+
+    /** Optional diagnostic sink (photo transfer milestones); the core has no logger of its own. */
+    @Volatile var diagnostics: ((String) -> Unit)? = null
+    private var photoDataPackets = 0
+
+    /** A failing diagnostic sink must never break the control loop. */
+    private fun diag(message: String) {
+        val sink = diagnostics ?: return
+        runCatching { sink(message) }
+    }
     private var photoStartedAt = 0L
     private var photoLastData = 0L
     private val _photo = MutableStateFlow<Float?>(null)
@@ -463,6 +473,7 @@ class TelloController(
         photoStartedAt = clock()
         _photo.value = 0f
         val sent = command(Command.TAKE_PICTURE)
+        diag("photo requested, sent=$sent")
         if (!sent) _photo.value = null
         return sent
     }
@@ -561,9 +572,11 @@ class TelloController(
         _maneuvers.update { it.copy(smartVideo = null) }
         _link.value = LinkState.CONNECTED
         lastKeyFrameRequest.set(Long.MIN_VALUE / 2)
-        // Same baseline as the reference apps: camera in video mode, no electronic stabilisation
-        // (adds latency), then ask for a key frame so the picture starts immediately.
-        command(Command.SET_VIDEO_MODE, Payloads.singleByte(1))
+        // Camera in photo mode (49 = 0): the drone silently ignores TAKE_PICTURE in video mode
+        // (the official app only offers the photo button in that mode), and the stream stays
+        // 960x720 either way, so recording is unaffected. No electronic stabilisation (adds
+        // latency), then ask for a key frame so the picture starts immediately.
+        command(Command.SET_VIDEO_MODE, Payloads.singleByte(0))
         command(Command.SET_EIS, Payloads.singleByte(0))
         command(Command.QUERY_ACTIVATION_STATE)
         command(Command.QUERY_FIRMWARE)
@@ -576,6 +589,7 @@ class TelloController(
         if (_photo.value == null) return
         val last = maxOf(photoStartedAt, photoLastData)
         if (clock() - last > config.photoTimeoutMs) {
+            diag("photo timeout (progress ${_photo.value}, $photoDataPackets data packets)")
             photoDownload.reset()
             _photo.value = null
         }
@@ -586,6 +600,7 @@ class TelloController(
             PhotoDownload.Event.None -> Unit
             is PhotoDownload.Event.Reply -> sendFileAcks(event.commands)
             is PhotoDownload.Event.Completed -> {
+                diag("photo complete: ${event.jpeg.size} B in $photoDataPackets data packets")
                 sendFileAcks(event.commands)
                 _photo.value = null
                 _photos.tryEmit(event.jpeg)
@@ -682,11 +697,14 @@ class TelloController(
                 MessageId.ACTIVATION_TIMESTAMP -> command(Command.QUERY_ACTIVATION_STATE)
                 // Reply to 48: a non-zero status means the drone refused (busy, camera error).
                 MessageId.TAKE_PICTURE -> if (packet.payload.isNotEmpty() && packet.payload[0].toInt() != 0) {
+                    diag("photo refused by the drone: status ${packet.payload[0]}")
                     photoDownload.reset()
                     _photo.value = null
                 }
                 MessageId.FILE_SIZE -> {
                     val event = photoDownload.onFileSize(packet)
+                    photoDataPackets = 0
+                    diag("photo file size: type ${packet.packetType}, ${packet.payload.size} B payload, accepted=${event != PhotoDownload.Event.None}")
                     if (event != PhotoDownload.Event.None) {
                         photoLastData = clock()
                         if (_photo.value == null) _photo.value = 0f // photo triggered from the drone itself
@@ -694,6 +712,7 @@ class TelloController(
                     onPhotoEvent(event)
                 }
                 MessageId.FILE_DATA -> {
+                    if (photoDataPackets++ == 0) diag("photo first data packet (${packet.payload.size} B)")
                     photoLastData = clock()
                     onPhotoEvent(photoDownload.onFileData(packet))
                 }

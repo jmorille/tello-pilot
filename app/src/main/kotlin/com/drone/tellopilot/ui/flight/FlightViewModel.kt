@@ -38,7 +38,6 @@ import javax.inject.Inject
 
 /** One-shot messages shown in a snackbar. */
 sealed interface UserMessage {
-    data object PhotoSaved : UserMessage
     data object PhotoFailed : UserMessage
     data object VideoSaved : UserMessage
     data object VideoFailed : UserMessage
@@ -59,6 +58,7 @@ class FlightViewModel @Inject constructor(
     private val recorder: VideoRecorder,
     private val gamepad: GamepadInput,
     private val haptics: Haptics,
+    private val shutter: com.drone.tellopilot.data.ShutterSound,
     private val transcodeQueue: com.drone.tellopilot.video.TranscodeQueue,
     private val autopilot: com.drone.tellopilot.tracking.Autopilot,
     phoneThermal: PhoneThermal,
@@ -128,7 +128,15 @@ class FlightViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            session.photoSaved.collect { _messages.trySend(if (it.isSuccess) UserMessage.PhotoSaved else UserMessage.PhotoFailed) }
+            // Success: a shutter sound only, nothing over the video; a failure is still shown.
+            session.photoSaved.collect {
+                if (it.isSuccess) {
+                    shutter.play()
+                    haptics.confirm() // the shutter is silent when the phone is
+                } else {
+                    _messages.trySend(UserMessage.PhotoFailed)
+                }
+            }
         }
         viewModelScope.launch {
             // drop(1): the recorder is a singleton, its current state is not a new event.
@@ -287,6 +295,8 @@ class FlightViewModel @Inject constructor(
     fun connectToDrone() = session.connectToDrone()
 
     fun onForeground() = session.onForeground()
+
+    fun onBackground() = session.onBackground()
 
     /** A touch on a hidden screen stick: show them again (that touch sends nothing). */
     fun revealSticks() {

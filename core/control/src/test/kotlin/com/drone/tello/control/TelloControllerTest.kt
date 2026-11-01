@@ -85,7 +85,7 @@ class TelloControllerTest {
         fun `conn_ack connects, sets video mode, disables EIS and requests a key frame`() = session {
             connect()
             assertEquals(LinkState.CONNECTED, controller.link.value)
-            assertArrayEquals(byteArrayOf(1), transport.all(Command.SET_VIDEO_MODE).first().packet!!.payload)
+            assertArrayEquals(byteArrayOf(0), transport.all(Command.SET_VIDEO_MODE).first().packet!!.payload)
             assertArrayEquals(byteArrayOf(0), transport.all(Command.SET_EIS).first().packet!!.payload)
             assertEquals(1, transport.count(Command.REQUEST_KEY_FRAME))
         }

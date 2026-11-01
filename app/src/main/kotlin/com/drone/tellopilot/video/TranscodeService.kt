@@ -44,15 +44,22 @@ class TranscodeService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         lastStartId = startId
         // Always honour startForegroundService, even if the queue is already empty.
-        val started = runCatching {
-            ServiceCompat.startForeground(
-                this, NOTIFICATION_ID, notification(),
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
-                } else {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                },
-            )
+        // mediaProcessing first (the right type since Android 15); some releases refuse it
+        // ("type none"), dataSync is then the fallback, also declared in the manifest.
+        val types = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                add(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING)
+            }
+            add(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        }
+        var started: Result<Unit> = Result.failure(IllegalStateException("no foreground type"))
+        for (type in types) {
+            started = runCatching { ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(), type) }
+            if (started.isSuccess) {
+                Log.i(TAG, "foreground service started, type $type")
+                break
+            }
+            Log.w(TAG, "foreground type $type refused: ${started.exceptionOrNull()?.message}")
         }
         if (started.isFailure) {
             Log.w(TAG, "foreground refused, the queue goes on while the process lives", started.exceptionOrNull())

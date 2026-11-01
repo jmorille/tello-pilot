@@ -16,9 +16,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -74,7 +73,6 @@ fun FlightRoute(onOpenSettings: () -> Unit, onOpenGallery: () -> Unit = {}, view
                 is UserMessage.AutopilotEnded -> autopilotEndText(message.end)
                 UserMessage.AutopilotUnavailable -> R.string.autopilot_unavailable
                 UserMessage.SmartVideoInterrupted -> R.string.message_smart_video_interrupted
-                UserMessage.PhotoSaved -> R.string.message_photo_saved
                 UserMessage.PhotoFailed -> R.string.message_photo_failed
                 UserMessage.VideoSaved -> R.string.message_video_saved
                 UserMessage.VideoFailed -> R.string.message_video_failed
@@ -89,6 +87,7 @@ fun FlightRoute(onOpenSettings: () -> Unit, onOpenGallery: () -> Unit = {}, view
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) {
         viewModel.setGamepadActive(false)
         viewModel.onAction(FlightAction.ReleaseSticks)
+        viewModel.onBackground()
     }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         viewModel.setGamepadActive(true)
@@ -140,9 +139,15 @@ fun FlightScreen(
         label = "sticksAlpha",
     )
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        VideoView(attachVideo, detachVideo, Modifier.align(Alignment.Center), sharpen = state.pilot.videoSharpen)
-        (state.autopilot as? com.drone.tellopilot.tracking.AutopilotState.Tracking)?.let {
-            TrackingOverlay(it, Modifier.align(Alignment.Center))
+        androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+            val videoSize = videoSize(state.pilot.videoFit, maxWidth, maxHeight)
+            // requiredSize: in the cropped modes the 4:3 surface is taller than the screen and
+            // overflows it evenly at the top and bottom (cut by the display itself).
+            val videoModifier = Modifier.align(Alignment.Center).requiredSize(videoSize.first, videoSize.second)
+            VideoView(attachVideo, detachVideo, videoModifier, sharpen = state.pilot.videoSharpen)
+            (state.autopilot as? com.drone.tellopilot.tracking.AutopilotState.Tracking)?.let {
+                TrackingOverlay(it, videoModifier)
+            }
         }
         if (state.autopilotActive) {
             AutopilotBanner(
@@ -532,11 +537,32 @@ private fun trackingModeLabel(mode: com.drone.tello.control.TrackingMode) = when
     com.drone.tello.control.TrackingMode.ORBIT -> R.string.tracking_orbit
 }
 
-/** Frame around the followed target, drawn over the 4:3 video. */
+/**
+ * Size of the 4:3 video for [fit]: the visible window is the largest rectangle of the chosen
+ * aspect inside the screen, and the video takes its width (its height may exceed the screen).
+ */
+private fun videoSize(
+    fit: com.drone.tello.control.VideoFit,
+    maxWidth: androidx.compose.ui.unit.Dp,
+    maxHeight: androidx.compose.ui.unit.Dp,
+): Pair<androidx.compose.ui.unit.Dp, androidx.compose.ui.unit.Dp> {
+    val screenAspect = if (maxHeight.value > 0f) maxWidth.value / maxHeight.value else VIDEO_ASPECT
+    val visibleAspect = when (fit) {
+        com.drone.tello.control.VideoFit.FIT -> VIDEO_ASPECT
+        com.drone.tello.control.VideoFit.WIDE -> 16f / 9f
+        com.drone.tello.control.VideoFit.FILL -> screenAspect
+    }.coerceAtLeast(VIDEO_ASPECT) // never narrower than the full picture
+    val width = minOf(maxWidth.value, maxHeight.value * visibleAspect)
+    return width.dp to (width / VIDEO_ASPECT).dp
+}
+
+private const val VIDEO_ASPECT = 4f / 3f
+
+/** Frame around the followed target, drawn over the 4:3 video (same size and place). */
 @Composable
 private fun TrackingOverlay(tracking: com.drone.tellopilot.tracking.AutopilotState.Tracking, modifier: Modifier) {
     val box = tracking.target ?: return
-    androidx.compose.foundation.Canvas(modifier.then(Modifier.fillMaxHeight().aspectRatio(4f / 3f))) {
+    androidx.compose.foundation.Canvas(modifier) {
         drawRect(
             color = Color(0xFF4FC3F7),
             topLeft = androidx.compose.ui.geometry.Offset(box.left * size.width, box.top * size.height),

@@ -51,7 +51,6 @@
     <string name="warning_imu_preheating">Préchauffage de l\'IMU…</string>
     <string name="warning_calibration">Calibration requise</string>
 
-    <string name="message_photo_saved">Photo enregistrée dans Images/TelloPilot</string>
     <string name="message_photo_failed">Échec de l\'enregistrement de la photo</string>
     <string name="message_video_saved">Vidéo enregistrée dans Films/TelloPilot</string>
     <string name="message_video_failed">Échec de l\'enregistrement vidéo</string>
@@ -181,6 +180,11 @@
     <string name="pad_action_flip">Flip %1$s</string>
     <string name="warning_phone_overheating">Téléphone en surchauffe : vidéo et commandes ralenties, atterrissez</string>
     <string name="warning_phone_hot">Téléphone chaud : mettez-le à l\'ombre</string>
+    <string name="settings_video_fit">Cadrage de la vidéo</string>
+    <string name="settings_video_fit_fill">Plein écran</string>
+    <string name="settings_video_fit_wide">16:9</string>
+    <string name="settings_video_fit_fit">Image entière</string>
+    <string name="settings_video_fit_help">La caméra filme en 4:3. Plein écran utilise toute la largeur mais coupe le haut et le bas de l\'image ; 16:9 coupe moins ; Image entière garde tout avec des bandes noires. Photos et vidéos enregistrées restent complètes.</string>
     <string name="settings_video_sharpen">Image agrandie et affinée par la puce graphique</string>
     <string name="settings_video_sharpen_help">Agrandit la vidéo 960 × 720 du drone à la taille de l\'écran avec un filtre de netteté. Ajoute environ 1 ms de délai.</string>
     <string name="settings_hide_sticks">Masquer les manches de l\'écran quand la manette pilote</string>

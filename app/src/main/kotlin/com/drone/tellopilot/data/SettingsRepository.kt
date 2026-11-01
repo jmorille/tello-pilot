@@ -67,6 +67,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
             autoRecord = p[AUTO_RECORD] ?: d.autoRecord,
             padBindings = GamepadBindings.decode(p[PAD_BINDINGS]),
             videoSharpen = p[VIDEO_SHARPEN] ?: d.videoSharpen,
+            videoFit = p[VIDEO_FIT].toEnum(d.videoFit),
             hideSticksWithPad = p[HIDE_STICKS_WITH_PAD] ?: d.hideSticksWithPad,
             autoTranscode = p[AUTO_TRANSCODE] ?: d.autoTranscode,
             transcodeCodec = p[TRANSCODE_CODEC].toEnum(d.transcodeCodec),
@@ -86,6 +87,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         p[AUTO_RECORD] = s.autoRecord
         p[PAD_BINDINGS] = s.padBindings.encode()
         p[VIDEO_SHARPEN] = s.videoSharpen
+        p[VIDEO_FIT] = s.videoFit.name
         p[HIDE_STICKS_WITH_PAD] = s.hideSticksWithPad
         p[AUTO_TRANSCODE] = s.autoTranscode
         p[TRANSCODE_CODEC] = s.transcodeCodec.name
@@ -124,6 +126,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         val AUTO_RECORD = booleanPreferencesKey("auto_record")
         val PAD_BINDINGS = stringPreferencesKey("pad_bindings")
         val VIDEO_SHARPEN = booleanPreferencesKey("video_sharpen")
+        val VIDEO_FIT = stringPreferencesKey("video_fit")
         val HIDE_STICKS_WITH_PAD = booleanPreferencesKey("hide_sticks_with_pad")
         val AUTO_TRANSCODE = booleanPreferencesKey("auto_transcode")
         val TRANSCODE_CODEC = stringPreferencesKey("transcode_codec")

@@ -223,6 +223,23 @@ private fun DisplaySettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
             )
         }
     }
+    Label(R.string.settings_video_fit)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        com.drone.tello.control.VideoFit.entries.forEach { f ->
+            FilterChip(
+                selected = pilot.videoFit == f,
+                onClick = { updatePilot { it.copy(videoFit = f) } },
+                label = {
+                    Text(stringResource(when (f) {
+                        com.drone.tello.control.VideoFit.FILL -> R.string.settings_video_fit_fill
+                        com.drone.tello.control.VideoFit.WIDE -> R.string.settings_video_fit_wide
+                        com.drone.tello.control.VideoFit.FIT -> R.string.settings_video_fit_fit
+                    }))
+                },
+            )
+        }
+    }
+    Text(stringResource(R.string.settings_video_fit_help), style = MaterialTheme.typography.bodySmall)
     SwitchSetting(R.string.settings_video_sharpen, pilot.videoSharpen) { v -> updatePilot { it.copy(videoSharpen = v) } }
     Text(stringResource(R.string.settings_video_sharpen_help), style = MaterialTheme.typography.bodySmall)
 }

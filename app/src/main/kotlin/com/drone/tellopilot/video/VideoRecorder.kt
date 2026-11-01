@@ -45,7 +45,8 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
     val state: StateFlow<RecordingState> = _state.asStateFlow()
 
     /** Frame and its arrival time (timestamps must not depend on when the disk writes them). */
-    private class Frame(val bytes: ByteArray, val arrivalNs: Long)
+    /** [gapBefore]: frames were dropped (queue full) just before this one. */
+    private class Frame(val bytes: ByteArray, val arrivalNs: Long, val gapBefore: Boolean)
 
     /**
      * One recording = one writer thread with its own queue: a stop followed by an immediate
@@ -53,7 +54,8 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
      */
     private inner class Session : Thread("tello-recorder") {
         val queue = ArrayBlockingQueue<Frame>(QUEUE_CAPACITY)
-        @Volatile var droppedSinceKeyFrame = false
+        /** Video thread only: a frame was dropped, flagged on the next accepted one. */
+        var pendingGap = false
         @Volatile var stopped = false
 
         override fun run() = writeLoop(this)
@@ -71,9 +73,8 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
     /** Called from the video thread for every frame that reaches the decoder. Never blocks. */
     fun onFrame(frame: ByteArray) {
         val session = current ?: return
-        if (!session.queue.offer(Frame(frame, System.nanoTime()))) {
-            session.droppedSinceKeyFrame = true // writer will skip until the next key frame
-        }
+        // The gap travels with the frames, so the writer knows exactly where it is.
+        session.pendingGap = !session.queue.offer(Frame(frame, System.nanoTime(), session.pendingGap))
     }
 
     @Synchronized
@@ -119,6 +120,12 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
         var firstPtsNs = 0L
         var written = 0
         var waitingKey = false
+        var sps: ByteArray? = null
+        var pps: ByteArray? = null
+        var afterConfig = false
+        var csd: Pair<ByteArray, ByteArray>? = null
+        var pendingConfig: ByteArray? = null
+        var waitLogged = 0
         var failure: String? = null
         val info = MediaCodec.BufferInfo()
         try {
@@ -126,23 +133,59 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
             while (!session.stopped) {
                 val frame = session.queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
                 val types = H264.nalTypes(frame.bytes)
-                val key = H264.NAL_IDR in types || H264.NAL_SPS in types
+                if (frame.gapBefore) {
+                    // Frames were lost (writer late): skip to the next key frame, and a picture
+                    // following parameter sets seen before the gap is not a key frame.
+                    waitingKey = true
+                    afterConfig = false
+                }
+                if (track < 0 && waitLogged++ < WAIT_LOG_FRAMES) Log.d(TAG, "waiting for key frame, NAL types $types")
+                // The Tello sends SPS, PPS and the picture in separate packets: remember the
+                // parameter sets as they come, the picture right after them is the key frame.
+                if (H264.NAL_SPS in types) {
+                    H264.extractNal(frame.bytes, H264.NAL_SPS)?.let { sps = it }
+                    afterConfig = true
+                }
+                if (H264.NAL_PPS in types) H264.extractNal(frame.bytes, H264.NAL_PPS)?.let { pps = it }
+                val hasPicture = types.any { it == H264.NAL_IDR || it == H264.NAL_SLICE }
+                // Parameter sets alone are not a sample: they go to the track format (csd).
+                if (!hasPicture) continue
+                val key = H264.NAL_IDR in types || afterConfig
+                afterConfig = false
+                // Parameter sets changed during the recording (bitrate change, drone encoder
+                // restart): the track keeps its first csd, the new ones go in-band before the
+                // next key frame.
+                val current = csd
+                val s0 = sps
+                val p0 = pps
+                if (current != null && s0 != null && p0 != null &&
+                    !(s0.contentEquals(current.first) && p0.contentEquals(current.second))
+                ) {
+                    pendingConfig = s0 + p0
+                    csd = s0 to p0
+                }
                 if (track < 0) {
-                    val format = formatFrom(frame.bytes) ?: continue // wait for SPS + PPS
-                    track = muxer.addTrack(format)
+                    val s = sps
+                    val p = pps
+                    if (s == null || p == null || !key) continue // wait for SPS + PPS, then a key frame
+                    track = muxer.addTrack(formatOf(s, p))
+                    csd = s to p
                     muxer.start()
                     firstPtsNs = frame.arrivalNs
+                    Log.i(TAG, "recording started (sps ${s.size} B, pps ${p.size} B)")
                     session.publish(RecordingState.Recording(System.currentTimeMillis()))
-                }
-                if (session.droppedSinceKeyFrame) {
-                    waitingKey = true
-                    session.droppedSinceKeyFrame = false
                 }
                 if (waitingKey && !key) continue
                 waitingKey = false
                 val ptsUs = (frame.arrivalNs - firstPtsNs) / 1_000
-                info.set(0, frame.bytes.size, ptsUs, if (key) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
-                muxer.writeSampleData(track, ByteBuffer.wrap(frame.bytes), info)
+                val config = if (key) pendingConfig else null
+                if (config != null) {
+                    pendingConfig = null
+                    Log.i(TAG, "parameter sets changed: written in-band")
+                }
+                val sample = if (config != null) config + frame.bytes else frame.bytes
+                info.set(0, sample.size, ptsUs, if (key) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+                muxer.writeSampleData(track, ByteBuffer.wrap(sample), info)
                 written++
             }
         } catch (_: InterruptedException) {
@@ -152,6 +195,7 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
             failure = e.message ?: "erreur d'enregistrement"
         }
         // Finalisation: every step guarded, nothing may escape this thread.
+        Log.i(TAG, "recording finished: $written frames, failure=$failure")
         val ok = failure == null && written > 0 && runCatching { muxer?.stop() }.isSuccess
         runCatching { muxer?.release() }
         runCatching { pfd.close() }
@@ -187,20 +231,18 @@ class VideoRecorder @Inject constructor(@ApplicationContext private val context:
         return uri to pfd
     }
 
-    /** MP4 track format with SPS/PPS as codec-specific data, or `null` if [frame] lacks them. */
-    private fun formatFrom(frame: ByteArray): MediaFormat? {
-        val sps = H264.extractNal(frame, H264.NAL_SPS) ?: return null
-        val pps = H264.extractNal(frame, H264.NAL_PPS) ?: return null
-        return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, WIDTH, HEIGHT).apply {
+    /** MP4 track format with SPS/PPS (with start codes) as codec-specific data. */
+    private fun formatOf(sps: ByteArray, pps: ByteArray): MediaFormat =
+        MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, WIDTH, HEIGHT).apply {
             setByteBuffer("csd-0", ByteBuffer.wrap(sps))
             setByteBuffer("csd-1", ByteBuffer.wrap(pps))
         }
-    }
 
     private companion object {
         const val TAG = "VideoRecorder"
         const val WIDTH = 960
         const val HEIGHT = 720
         const val QUEUE_CAPACITY = 90 // ~3 s at 30 fps
+        const val WAIT_LOG_FRAMES = 40
     }
 }

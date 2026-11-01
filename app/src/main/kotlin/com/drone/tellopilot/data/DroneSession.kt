@@ -72,12 +72,28 @@ class DroneSession @Inject constructor(
     /** The drone's Wi-Fi was lost during this session (and not found again yet). */
     @Volatile private var droneWifiLost = false
 
+    /** The foreground request for the current loss was already made (no dialog loop). */
+    @Volatile private var foregroundRetried = false
+
+    /** The flight screen is visible (a request made now shows Android's dialog). */
+    @Volatile private var inForeground = false
+
+    fun onBackground() {
+        inForeground = false
+    }
+
     /**
      * The app comes back to the foreground: Android only grants a drone network request to a
      * foreground app, so the one made while in the background was refused — ask again once.
      */
     fun onForeground() {
-        if (droneWifiLost && _wifiState.value !is WifiState.Drone) {
+        inForeground = true
+        // Once per loss: Android's dialog itself pauses and resumes the activity, and a
+        // cancelled or failed request must not reopen it (the "connect" button stays there).
+        if (droneWifiLost && !foregroundRetried && !wifi.requesting.value &&
+            _wifiState.value !is WifiState.Drone
+        ) {
+            foregroundRetried = true
             Log.i(TAG, "back in the foreground without the drone Wi-Fi: requesting it")
             wifi.requestDroneNetwork()
         }
@@ -171,6 +187,9 @@ class DroneSession @Inject constructor(
                     if (onDrone) {
                         onDrone = false
                         droneWifiLost = true
+                        // Lost in the foreground: the request below already shows the dialog,
+                        // coming back from it must not open a second one.
+                        foregroundRetried = inForeground
                         Log.i(TAG, "drone Wi-Fi lost, requesting it back")
                         wifi.requestDroneNetwork()
                     }
@@ -191,6 +210,7 @@ class DroneSession @Inject constructor(
                 Log.i(TAG, "sockets open: ${sockets.stats}")
                 try {
                     val controller = TelloController(sockets)
+                    controller.diagnostics = { Log.i(TAG, it) }
                     _controller.value = controller
                     coroutineScope {
                         // Diagnostics: link state changes; traffic counters every 5 s with `setprop log.tag.DroneSession DEBUG`.

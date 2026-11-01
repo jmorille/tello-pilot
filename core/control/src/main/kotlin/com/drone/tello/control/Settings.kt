@@ -15,6 +15,12 @@ enum class Units { METRIC, IMPERIAL }
 /** What target tracking looks for in the video. */
 enum class TrackingTarget { PERSON, FACE }
 
+/**
+ * How the 4:3 drone video fills a wide phone screen: the whole picture (black side bars),
+ * cropped to 16:9, or cropped to the full screen width (top and bottom cut).
+ */
+enum class VideoFit { FIT, WIDE, FILL }
+
 /** Target format of the post-flight re-encoding of recorded videos. */
 enum class TranscodeCodec(val suffix: String) { HEVC("hevc"), AV1("av1") }
 
@@ -33,6 +39,7 @@ data class PilotSettings(
     val hideSticksWithPad: Boolean = true,
     /** GPU upscaling + sharpening of the 960x720 video (about 1 ms more). */
     val videoSharpen: Boolean = true,
+    val videoFit: VideoFit = VideoFit.FILL,
     /** Re-encode each recorded video once landed (H.264 from the drone is large). */
     val autoTranscode: Boolean = true,
     val transcodeCodec: TranscodeCodec = TranscodeCodec.HEVC,
