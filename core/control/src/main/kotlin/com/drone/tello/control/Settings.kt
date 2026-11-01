@@ -12,6 +12,9 @@ enum class VideoBitrate(val code: Int, val label: String) {
 
 enum class Units { METRIC, IMPERIAL }
 
+/** Target format of the post-flight re-encoding of recorded videos. */
+enum class TranscodeCodec(val suffix: String) { HEVC("hevc"), AV1("av1") }
+
 /** Settings that only affect the app (how the pilot's input is interpreted and shown). */
 data class PilotSettings(
     val stickMode: StickMode = StickMode.MODE_2,
@@ -27,6 +30,11 @@ data class PilotSettings(
     val hideSticksWithPad: Boolean = true,
     /** GPU upscaling + sharpening of the 960x720 video (about 1 ms more). */
     val videoSharpen: Boolean = true,
+    /** Re-encode each recorded video once landed (H.264 from the drone is large). */
+    val autoTranscode: Boolean = true,
+    val transcodeCodec: TranscodeCodec = TranscodeCodec.HEVC,
+    /** Keep the original H.264 file next to the re-encoded one. */
+    val keepOriginal: Boolean = false,
     /** Gamepad button assignment. */
     val padBindings: GamepadBindings = GamepadBindings.Default,
 ) {

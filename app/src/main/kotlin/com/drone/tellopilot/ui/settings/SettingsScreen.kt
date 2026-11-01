@@ -85,7 +85,10 @@ fun SettingsRoute(
     LaunchedEffect(flying) { if (flying) onBack() }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         settings?.let {
-            SettingsScreen(it, onBack, viewModel::updatePilot, viewModel::updateDrone, onOpenGamepad) {
+            SettingsScreen(
+                it, onBack, viewModel::updatePilot, viewModel::updateDrone, onOpenGamepad,
+                videos = { pilot -> VideoSection(pilot, viewModel::updatePilot) },
+            ) {
                 MaintenanceSection(onOpenImuCalibration)
             }
         }
@@ -99,6 +102,7 @@ fun SettingsScreen(
     updatePilot: ((PilotSettings) -> PilotSettings) -> Unit,
     updateDrone: ((DroneSettings) -> DroneSettings) -> Unit,
     onOpenGamepad: () -> Unit = {},
+    videos: @Composable (PilotSettings) -> Unit = {},
     maintenance: @Composable () -> Unit = {},
 ) {
     val pilot = settings.pilot
@@ -156,6 +160,8 @@ fun SettingsScreen(
         SwitchSetting(R.string.settings_video_sharpen, pilot.videoSharpen) { v -> updatePilot { it.copy(videoSharpen = v) } }
         Text(stringResource(R.string.settings_video_sharpen_help), style = MaterialTheme.typography.bodySmall)
 
+        videos(pilot)
+
         Section(R.string.settings_section_drone)
         Text(stringResource(R.string.settings_drone_hint), style = MaterialTheme.typography.bodySmall)
         SliderSetting(
@@ -200,7 +206,7 @@ private fun stickModeHelp(mode: StickMode) = when (mode) {
 }
 
 @Composable
-private fun Section(title: Int) {
+internal fun Section(title: Int) {
     HorizontalDivider()
     Text(stringResource(title), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
 }
@@ -231,7 +237,7 @@ private fun SliderSetting(
 }
 
 @Composable
-private fun SwitchSetting(label: Int, checked: Boolean, onChange: (Boolean) -> Unit) {
+internal fun SwitchSetting(label: Int, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(stringResource(label), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
         Switch(checked = checked, onCheckedChange = onChange)

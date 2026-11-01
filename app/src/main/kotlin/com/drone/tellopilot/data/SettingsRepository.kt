@@ -68,6 +68,9 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
             padBindings = GamepadBindings.decode(p[PAD_BINDINGS]),
             videoSharpen = p[VIDEO_SHARPEN] ?: d.videoSharpen,
             hideSticksWithPad = p[HIDE_STICKS_WITH_PAD] ?: d.hideSticksWithPad,
+            autoTranscode = p[AUTO_TRANSCODE] ?: d.autoTranscode,
+            transcodeCodec = p[TRANSCODE_CODEC].toEnum(d.transcodeCodec),
+            keepOriginal = p[KEEP_ORIGINAL] ?: d.keepOriginal,
         )
     }
 
@@ -82,6 +85,9 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         p[PAD_BINDINGS] = s.padBindings.encode()
         p[VIDEO_SHARPEN] = s.videoSharpen
         p[HIDE_STICKS_WITH_PAD] = s.hideSticksWithPad
+        p[AUTO_TRANSCODE] = s.autoTranscode
+        p[TRANSCODE_CODEC] = s.transcodeCodec.name
+        p[KEEP_ORIGINAL] = s.keepOriginal
     }
 
     private fun readDrone(p: Preferences): DroneSettings {
@@ -115,6 +121,9 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         val PAD_BINDINGS = stringPreferencesKey("pad_bindings")
         val VIDEO_SHARPEN = booleanPreferencesKey("video_sharpen")
         val HIDE_STICKS_WITH_PAD = booleanPreferencesKey("hide_sticks_with_pad")
+        val AUTO_TRANSCODE = booleanPreferencesKey("auto_transcode")
+        val TRANSCODE_CODEC = stringPreferencesKey("transcode_codec")
+        val KEEP_ORIGINAL = booleanPreferencesKey("keep_original")
         val MAX_ALTITUDE = intPreferencesKey("max_altitude_m")
         val LOW_BATTERY = intPreferencesKey("low_battery_percent")
         val EXPOSURE = intPreferencesKey("exposure_steps")

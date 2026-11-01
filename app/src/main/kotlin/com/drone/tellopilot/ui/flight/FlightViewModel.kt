@@ -54,6 +54,7 @@ class FlightViewModel @Inject constructor(
     private val recorder: VideoRecorder,
     private val gamepad: GamepadInput,
     private val haptics: Haptics,
+    private val transcodeQueue: com.drone.tellopilot.video.TranscodeQueue,
     phoneThermal: PhoneThermal,
     settings: SettingsRepository,
 ) : ViewModel(), GamepadInput.Listener {
@@ -135,6 +136,8 @@ class FlightViewModel @Inject constructor(
             session.events.collect { if (it is DroneEvent.ManeuverRefused) _messages.trySend(UserMessage.DroneRefused) }
         }
         viewModelScope.launch { vibrateOnAlerts() }
+        // Post-flight re-encoding never competes with the live view in flight.
+        viewModelScope.launch { knownFlying.collect { transcodeQueue.setFlying(this@FlightViewModel, it) } }
         // Pad gone or not centred: the screen sticks come back, and stay until the pad drives again.
         viewModelScope.launch {
             gamepad.status.collect { if (it != com.drone.tellopilot.input.GamepadStatus.READY) padDriving.value = false }
@@ -334,6 +337,7 @@ class FlightViewModel @Inject constructor(
         if (gamepad.isAttached(this)) gamepad.attach(null)
         session.controller.value?.releaseSticks()
         recorder.stop()
+        transcodeQueue.setFlying(this, false)
     }
 }
 

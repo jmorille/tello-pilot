@@ -68,6 +68,8 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.serialization.core)
+    implementation(libs.androidx.media3.transformer)
+    implementation(libs.androidx.media3.common)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

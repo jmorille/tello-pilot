@@ -185,5 +185,24 @@
     <string name="settings_video_sharpen_help">Agrandit la vidéo 960 × 720 du drone à la taille de l\'écran avec un filtre de netteté. Ajoute environ 1 ms de délai.</string>
     <string name="settings_hide_sticks">Masquer les manches de l\'écran quand la manette pilote</string>
     <string name="settings_hide_sticks_help">Un toucher sur un côté de l\'écran fait réapparaître les manches (ce toucher n\'envoie rien au drone), le geste suivant pilote. Ils réapparaissent aussi si la manette se déconnecte.</string>
+    <string name="settings_section_videos">Vidéos de vol</string>
+    <string name="settings_transcode_codec">Format de réencodage</string>
+    <string name="settings_codec_hevc">HEVC (H.265)</string>
+    <string name="settings_codec_av1">AV1</string>
+    <string name="settings_codec_hardware">matériel, rapide</string>
+    <string name="settings_codec_software">logiciel, lent</string>
+    <string name="settings_auto_transcode">Réencoder chaque vidéo après l\'atterrissage</string>
+    <string name="settings_keep_original">Conserver l\'original H.264</string>
+    <string name="settings_transcode_help">Le drone enregistre en H.264. Le réencodage divise la taille par 2 environ à qualité visuelle proche. Il ne tourne jamais en vol ni si le téléphone chauffe : il reprend après l\'atterrissage.</string>
+    <string name="settings_transcode_existing">Réencoder les vidéos existantes</string>
+    <string name="transcode_running">Réencodage %1$d/%2$d : %3$s (%4$d %%)</string>
+    <string name="transcode_paused">%1$d/%2$d : %3$s, en pause (vol ou téléphone chaud)</string>
+    <string name="transcode_done">%1$d vidéo(s) réencodée(s), %2$s libérés</string>
+    <string name="transcode_done_failed">%1$d vidéo(s) réencodée(s), %2$d échec(s), %3$s libérés</string>
+    <string name="transcode_nothing">Aucune vidéo H.264 à réencoder</string>
+    <string name="transcode_channel">Réencodage des vidéos</string>
+    <string name="transcode_notification_title">Réencodage des vidéos de vol</string>
+    <string name="transcode_notification_text">Compression des vidéos en cours, en pause pendant les vols.</string>
+    <string name="transcode_kept">%1$d vidéo(s) gardée(s) en H.264 : le réencodage ne les réduisait pas</string>
 </resources>
 
