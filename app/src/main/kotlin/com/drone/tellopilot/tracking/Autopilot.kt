@@ -268,7 +268,7 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
                     is TrackerTick.Tracking -> {
                         if (tick.target == null) box = null
                         publish(token, AutopilotState.Tracking(mode, box))
-                        apply(token, limitHeight(tick.sticks, controller?.telemetry?.value?.flight?.heightMeters))
+                        apply(token, limitTrackingHeight(tick.sticks, controller?.telemetry?.value?.flight?.heightMeters))
                     }
                 }
                 delay(TICK_MS)
@@ -280,20 +280,6 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
             // decoder; closing waits a little, so it runs off the control loop.
             Thread({ detector.close(); decoder.close() }, "tello-analysis-close").start()
         }
-    }
-
-    /**
-     * The tracker centres the target vertically: a person sitting down or a child must not
-     * bring the drone down to the ground, a target up high must not take it up forever.
-     */
-    private fun limitHeight(sticks: StickInput, height: Float?): StickInput {
-        if (height == null) return sticks.copy(throttle = 0f)
-        val throttle = when {
-            sticks.throttle < 0 && height <= MIN_TRACKING_HEIGHT -> 0f
-            sticks.throttle > 0 && height >= MAX_TRACKING_HEIGHT -> 0f
-            else -> sticks.throttle
-        }
-        return sticks.copy(throttle = throttle)
     }
 
     /**
@@ -313,7 +299,23 @@ class Autopilot @Inject constructor(private val session: DroneSession) {
         /** Flight data arrives at ~10 Hz: 700 ms without any is a frozen link. */
         const val STALE_MS = 700L
         const val KEY_FRAME_INTERVAL_MS = 1_000L
-        const val MIN_TRACKING_HEIGHT = 1.0f
-        const val MAX_TRACKING_HEIGHT = 5.0f
     }
+}
+
+private const val MIN_TRACKING_HEIGHT = 1.0f
+private const val MAX_TRACKING_HEIGHT = 5.0f
+
+/**
+ * The tracker centres the target vertically: a person sitting down or a child must not
+ * bring the drone down to the ground, a target up high must not take it up forever.
+ * Unknown height: no vertical movement at all.
+ */
+internal fun limitTrackingHeight(sticks: StickInput, height: Float?): StickInput {
+    if (height == null) return sticks.copy(throttle = 0f)
+    val throttle = when {
+        sticks.throttle < 0 && height <= MIN_TRACKING_HEIGHT -> 0f
+        sticks.throttle > 0 && height >= MAX_TRACKING_HEIGHT -> 0f
+        else -> sticks.throttle
+    }
+    return sticks.copy(throttle = throttle)
 }

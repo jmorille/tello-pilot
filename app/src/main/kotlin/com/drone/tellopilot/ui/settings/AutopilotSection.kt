@@ -94,7 +94,7 @@ fun AutopilotSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) -> Pil
 }
 
 /** Step kinds offered in the editor, with the unit of their value. */
-private enum class StepKind(val label: Int, val unit: Int, val default: Float) {
+internal enum class StepKind(val label: Int, val unit: Int, val default: Float) {
     UP(R.string.step_up, R.string.unit_m, 1f),
     DOWN(R.string.step_down, R.string.unit_m, 1f),
     FORWARD(R.string.step_forward, R.string.unit_m, 2f),
@@ -117,6 +117,9 @@ private enum class StepKind(val label: Int, val unit: Int, val default: Float) {
         TURN_LEFT -> MissionStep.Rotate(-v)
         HOVER -> MissionStep.Hover(v)
     }
+
+    /** The step typed in the editor (a decimal comma is accepted), null if not a number. */
+    fun parse(text: String): MissionStep? = text.replace(',', '.').toFloatOrNull()?.let { build(it) }
 }
 
 @Composable
@@ -144,7 +147,7 @@ private fun MissionEditor(initial: Mission?, onDismiss: () -> Unit, onSave: (Mis
     var kind by remember { mutableStateOf(StepKind.FORWARD) }
     var value by remember { mutableStateOf(StepKind.FORWARD.default.toString()) }
     var kindMenu by remember { mutableStateOf(false) }
-    val candidate = value.replace(',', '.').toFloatOrNull()?.let { kind.build(it) }
+    val candidate = kind.parse(value)
     val canAdd = candidate?.isValid() == true && steps.size < MAX_STEPS
     val cleanName = Mission.cleanName(name)
 
