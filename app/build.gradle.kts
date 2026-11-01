@@ -58,6 +58,11 @@ android {
 
 dependencies {
     implementation(project(":core:control"))
+    constraints {
+        // Pulled by Media3; CVE-2026-102554 (the app never deserializes Guava collections,
+        // but there is no reason to ship the vulnerable version).
+        implementation("com.google.guava:guava:33.7.2-android") { because("CVE-2026-102554") }
+    }
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
