@@ -121,7 +121,8 @@ class TranscodeQueue internal constructor(
      * WARM would heat it up again straight away). Cold: only watched while the queue works.
      */
     private fun pauseFlow(): Flow<Boolean> {
-        val thermalHold = thermal.heat.runningFold(false) { hold, heat -> thermalHold(hold, heat) }
+        // drop(1): the fold's seed is not a reading (a hot phone must not look cool for an instant).
+        val thermalHold = thermal.heat.runningFold(false) { hold, heat -> thermalHold(hold, heat) }.drop(1)
         return combine(flyingOwners, thermalHold) { owners, hold -> owners.isNotEmpty() || hold }.distinctUntilChanged()
     }
 

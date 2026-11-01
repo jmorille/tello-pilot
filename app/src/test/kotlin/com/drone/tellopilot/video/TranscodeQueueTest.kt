@@ -26,7 +26,6 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -348,7 +347,7 @@ class TranscodeQueueTest {
         coVerify(exactly = 2) { transcoder.verify(any(), TranscodeCodec.HEVC, 10_000) }
     }
 
-    // ------------------------------------------------------- known bugs
+    // ------------------------------------------- fixed bugs (see the commits)
 
     @Test
     fun `the worker ends with the queue - not busy any more, a later video is processed`() = test {
@@ -363,7 +362,6 @@ class TranscodeQueueTest {
         assertFalse(q.busy.value)
     }
 
-    @Ignore("Bug: the thermal hold starts from false, so a queue started on a hot phone begins an export")
     @Test
     fun `a queue started on a hot phone waits without starting an export`() = test {
         val q = queue()
