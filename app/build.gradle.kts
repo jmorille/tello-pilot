@@ -64,6 +64,11 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // JVM unit tests: android.util.Log & co. return defaults instead of throwing (no Robolectric).
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

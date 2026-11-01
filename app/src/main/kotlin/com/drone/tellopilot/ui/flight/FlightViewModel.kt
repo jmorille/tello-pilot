@@ -323,28 +323,28 @@ class FlightViewModel @Inject constructor(
 
     private fun pushSticks() {
         // Any stick moved while the takeoff adjustment waits: the pilot flies, no adjustment.
-        if (takeoffAdjust?.isActive == true && !takeoffAdjustRunning && pilotDeflection() > TAKEOFF_STICK_IDLE) {
+        if (takeoffAdjust?.isActive == true && !takeoffAdjustRunning && TakeoffHeight.cancelledBySticks(pilotDeflection())) {
             takeoffAdjust?.cancel()
         }
         // Automatic flight: the pilot's sticks are ignored until one is clearly moved, which
         // takes control back at once (the autopilot never locks the pilot out).
         if (autopilot.active) {
-            if (pilotDeflection() < AUTOPILOT_OVERRIDE) return
+            if (belowAutopilotOverride(pilotDeflection())) return
             autopilot.stop(com.drone.tellopilot.tracking.AutopilotEnd.PilotTookOver)
         }
         // Smart videos (360, circle, up & away) are flown by the drone, which ignores the sticks
         // meanwhile: a clear stick movement cancels the manoeuvre so that the pilot's
         // correction is applied at once (same rule as the automatic flights).
         if (session.controller.value?.maneuvers?.value?.smartVideoActive == true) {
-            val deflected = pilotDeflection() >= AUTOPILOT_OVERRIDE
+            val deflected = overridesAutopilot(pilotDeflection())
             // Armed only once the sticks were centred after the start: a stick already held
             // when the manoeuvre was launched does not cancel it.
             if (!deflected) smartVideoArmed = true
             if (deflected && smartVideoArmed) cancelSmartVideo()
         }
         val fast = fastMode.value
-        mixer.setLeft(merge(touch[0], pad.leftX), merge(touch[1], pad.leftY), fast)
-        session.controller.value?.setSticks(mixer.setRight(merge(touch[2], pad.rightX), merge(touch[3], pad.rightY), fast))
+        mixer.setLeft(mergeAxis(touch[0], pad.leftX), mergeAxis(touch[1], pad.leftY), fast)
+        session.controller.value?.setSticks(mixer.setRight(mergeAxis(touch[2], pad.rightX), mergeAxis(touch[3], pad.rightY), fast))
     }
 
     private fun touchIdle() = touch.all { it == 0f }
@@ -397,8 +397,6 @@ class FlightViewModel @Inject constructor(
         padDriving.value = false
     }
 
-    private fun merge(a: Float, b: Float) = if (kotlin.math.abs(a) >= kotlin.math.abs(b)) a else b
-
     /** Last takeoff/land from the pad combo (anti double-press). */
     private var lastPadCombo = Long.MIN_VALUE / 2
 
@@ -424,11 +422,8 @@ class FlightViewModel @Inject constructor(
         val now = android.os.SystemClock.uptimeMillis()
         if (now - lastPadCombo < PAD_COMBO_COOLDOWN_MS) return
         lastPadCombo = now
-        val controller = session.controller.value
-        val flight = session.lastFlight
-        val onGround = flight != null && !flight.flying && !flight.motorsOn && !knownFlying.value &&
-            controller?.isLanding != true
-        onAction(if (onGround) FlightAction.Takeoff else FlightAction.Land)
+        val landing = session.controller.value?.isLanding == true
+        onAction(padComboAction(session.lastFlight, knownFlying.value, landing))
     }
 
     fun onAction(action: FlightAction) {
@@ -449,7 +444,7 @@ class FlightViewModel @Inject constructor(
             is FlightAction.Flip -> modeCommand { flip(action.direction) }
             is FlightAction.SetBounce -> modeCommand { setBounce(action.enabled) }
             is FlightAction.StartSmartVideo -> {
-                smartVideoArmed = pilotDeflection() < AUTOPILOT_OVERRIDE
+                smartVideoArmed = belowAutopilotOverride(pilotDeflection())
                 modeCommand { startSmartVideo(action.mode) }
             }
             FlightAction.StopSmartVideo -> command { stopSmartVideo() }
@@ -486,17 +481,6 @@ class FlightViewModel @Inject constructor(
         }
     }
 
-    private fun FlightAction.endsAutopilot() = when (this) {
-        FlightAction.Takeoff, FlightAction.Land, FlightAction.ThrowTakeoff, FlightAction.PalmLand,
-        is FlightAction.Flip, is FlightAction.SetBounce, is FlightAction.StartSmartVideo,
-        FlightAction.StopAutopilot, FlightAction.ReleaseSticks,
-        is FlightAction.StartMission, is FlightAction.StartTracking,
-        // Speed changes are the pilot's call: they end the (always slow) automatic flight.
-        FlightAction.ToggleFastMode, FlightAction.ToggleTripod,
-        -> true
-        else -> false
-    }
-
     /** Automatic flights start in flight only, with a live link (and the video for tracking). */
     private fun startAutopilot(tracking: Boolean, start: () -> Unit) {
         val state = uiState.value
@@ -520,28 +504,25 @@ class FlightViewModel @Inject constructor(
      */
     private fun scheduleTakeoffHeight() {
         val target = pilot.value.takeoffHeight
-        if (target <= 0f) return
         // Only right after the app's own takeoff: never after an app restart in flight (a
         // "flying" edge with no takeoff), a throw takeoff (height from the hand) or a bounce.
-        if (android.os.SystemClock.elapsedRealtime() - takeoffRequestedAt > TAKEOFF_ARM_MS) return
+        if (!TakeoffHeight.armed(target, android.os.SystemClock.elapsedRealtime(), takeoffRequestedAt)) return
         takeoffRequestedAt = Long.MIN_VALUE / 2
         takeoffAdjust?.cancel()
         takeoffAdjust = viewModelScope.launch {
-            kotlinx.coroutines.delay(TAKEOFF_SETTLE_MS)
+            kotlinx.coroutines.delay(TakeoffHeight.SETTLE_MS)
             val flight = session.lastFlight ?: return@launch
             val state = uiState.value
-            if (!flight.flying || flight.isLanding || session.controller.value?.isLanding == true ||
-                flight.batteryLow || flight.batteryCritical || state.status != ConnectionStatus.CONNECTED ||
-                autopilot.active || state.smartVideoRunning || state.bounce || pilotDeflection() > TAKEOFF_STICK_IDLE
-            ) {
-                return@launch
-            }
-            val delta = target - flight.heightMeters
-            if (kotlin.math.abs(delta) < TAKEOFF_TOLERANCE_M) return@launch
-            val step = com.drone.tello.control.MissionStep.Climb(
-                delta.coerceIn(com.drone.tello.control.MissionStep.CLIMB_RANGE),
-            )
-            if (!step.isValid()) return@launch
+            val step = TakeoffHeight.step(
+                target = target,
+                flight = flight,
+                landingRequested = session.controller.value?.isLanding == true,
+                connected = state.status == ConnectionStatus.CONNECTED,
+                autopilotActive = autopilot.active,
+                smartVideoRunning = state.smartVideoRunning,
+                bounce = state.bounce,
+                pilotDeflection = pilotDeflection(),
+            ) ?: return@launch
             takeoffAdjustRunning = true
             autopilot.startMission(
                 com.drone.tello.control.Mission(appContext.getString(com.drone.tellopilot.R.string.takeoff_height_mission), listOf(step)),
@@ -600,18 +581,10 @@ class FlightViewModel @Inject constructor(
 
 private const val PAD_COMBO_COOLDOWN_MS = 2_000L
 private const val ALERT_REPEAT_MS = 30_000L
-/** Stick deflection (touch or pad) that ends an automatic flight. */
-private const val AUTOPILOT_OVERRIDE = 0.25f
 private const val SMART_VIDEO_OVERRIDE_COOLDOWN_MS = 1_000L
 private const val SMART_VIDEO_STOP_RETRIES = 4
 private const val GROUND_HEAT_MS = 3 * 60_000L
 private const val TRACK_STEP_M = 0.1f
-private const val TAKEOFF_SETTLE_MS = 2_000L
-private const val TAKEOFF_TOLERANCE_M = 0.15f
-/** The "flying" edge must follow the takeoff command within this delay. */
-private const val TAKEOFF_ARM_MS = 10_000L
-/** Any stick moved by the pilot after takeoff: no automatic adjustment. */
-private const val TAKEOFF_STICK_IDLE = 0.05f
 private const val TRACK_MAX_POINTS = 2_000
 private const val GROUND_CHECK_MS = 5_000L
 /** Pad deflection that counts as "the pilot flies with the pad" (hides the screen sticks). */

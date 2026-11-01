@@ -2,6 +2,7 @@ package com.drone.tello.control
 
 import com.drone.tello.protocol.StickInput
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.EnumSource
@@ -70,5 +71,51 @@ class StickMixerTest {
         assertEquals(0.3f, input.pitch, 1e-6f)
         mixer.scale = 0f // clamped: never a dead stick
         assertEquals(0.05f, mixer.mix(false).pitch, 1e-6f)
+    }
+
+    @ParameterizedTest
+    @EnumSource(StickMode::class)
+    fun `tripod scales every axis of every mode and keeps the fast flag`(mode: StickMode) {
+        val shaping = StickShaping() // default dead zone + expo
+        val full = StickMixer(mode, shaping).apply { setLeft(0.7f, -0.4f, true) }.setRight(-0.9f, 0.6f, true)
+        val tripod = StickMixer(mode, shaping).apply { scale = 0.3f; setLeft(0.7f, -0.4f, true) }.setRight(-0.9f, 0.6f, true)
+        assertEquals(full.roll * 0.3f, tripod.roll, 1e-6f)
+        assertEquals(full.pitch * 0.3f, tripod.pitch, 1e-6f)
+        assertEquals(full.throttle * 0.3f, tripod.throttle, 1e-6f)
+        assertEquals(full.yaw * 0.3f, tripod.yaw, 1e-6f)
+        assertEquals(true, tripod.fastMode)
+        // The flag follows each call (fast mode toggled while the sticks are held).
+        assertEquals(false, StickMixer(mode, shaping).apply { setLeft(1f, 1f, true) }.mix(false).fastMode)
+    }
+
+    @ParameterizedTest
+    @EnumSource(StickMode::class)
+    fun `output stays within -1 to 1 whatever the input`(mode: StickMode) {
+        val mixer = StickMixer(mode, linear)
+        val inputs = listOf(5f, -7f, Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, 1f, -1f)
+        for (a in inputs) for (b in inputs) {
+            mixer.setLeft(a, b, false)
+            val i = mixer.setRight(b, a, false)
+            listOf(i.roll, i.pitch, i.throttle, i.yaw).forEach {
+                assertTrue(!it.isNaN() && it in -1f..1f, "$mode ($a, $b) -> $i")
+            }
+        }
+    }
+
+    @Test
+    fun `one stick update keeps the other stick where it is`() {
+        val mixer = StickMixer(StickMode.MODE_2, linear)
+        mixer.setRight(0.5f, 0.5f, false)
+        val input = mixer.setLeft(0f, 0.8f, false)
+        assertEquals(0.5f, input.roll)
+        assertEquals(0.5f, input.pitch)
+        assertEquals(0.8f, input.throttle)
+    }
+
+    @Test
+    fun `scale above one is clamped to full range`() {
+        val mixer = StickMixer(StickMode.MODE_2, linear)
+        mixer.scale = 3f
+        assertEquals(1f, mixer.setLeft(0f, 1f, false).throttle, 1e-6f)
     }
 }
