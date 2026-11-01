@@ -31,6 +31,8 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -61,6 +63,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.drone.tellopilot.R
 import com.drone.tellopilot.data.DroneSession
+import com.drone.tellopilot.data.SettingsRepository
 import com.drone.tellopilot.video.TranscodeQueue
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -95,7 +98,12 @@ class GalleryViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val transcodeQueue: TranscodeQueue,
     session: DroneSession,
+    settings: SettingsRepository,
 ) : ViewModel() {
+
+    /** Default of the "with overlay" choice of a re-encoding (Settings > Videos). */
+    val overlayDefault: StateFlow<Boolean> = settings.settings.map { it.pilot.overlayOnTranscode }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val _items = MutableStateFlow<List<GalleryItem>?>(null)
     val items: StateFlow<List<GalleryItem>?> = _items.asStateFlow()
@@ -112,7 +120,7 @@ class GalleryViewModel @Inject constructor(
         viewModelScope.launch { _items.value = withContext(Dispatchers.IO) { query() } }
     }
 
-    fun reencode(item: GalleryItem) = transcodeQueue.enqueueVideo(item.uri)
+    fun reencode(item: GalleryItem, overlay: Boolean) = transcodeQueue.enqueueVideo(item.uri, overlay)
 
     suspend fun thumbnail(uri: Uri): Bitmap? = thumbnails.get(uri) ?: withContext(Dispatchers.IO) {
         runCatching { context.contentResolver.loadThumbnail(uri, Size(THUMB_W, THUMB_H), null) }.getOrNull()
@@ -184,6 +192,7 @@ class GalleryViewModel @Inject constructor(
 fun GalleryRoute(onBack: () -> Unit, onOpenFlights: () -> Unit, viewModel: GalleryViewModel = hiltViewModel()) {
     val items by viewModel.items.collectAsStateWithLifecycle()
     val flying by viewModel.flying.collectAsStateWithLifecycle()
+    val overlayDefault by viewModel.overlayDefault.collectAsStateWithLifecycle()
     LaunchedEffect(flying) { if (flying) onBack() }
     // Back from the viewer / a deletion: the list may have changed.
     LifecycleResumeEffect(Unit) {
@@ -192,8 +201,8 @@ fun GalleryRoute(onBack: () -> Unit, onOpenFlights: () -> Unit, viewModel: Galle
     }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         val context = LocalContext.current
-        GalleryScreen(items, onBack, viewModel::thumbnail, reencode = {
-            viewModel.reencode(it)
+        GalleryScreen(items, onBack, viewModel::thumbnail, overlayDefault, reencode = { item, overlay ->
+            viewModel.reencode(item, overlay)
             android.widget.Toast.makeText(context, R.string.gallery_reencode_started, android.widget.Toast.LENGTH_SHORT).show()
         }, refresh = viewModel::refresh, onOpenFlights = onOpenFlights)
     }
@@ -204,12 +213,15 @@ private fun GalleryScreen(
     items: List<GalleryItem>?,
     onBack: () -> Unit,
     thumbnail: suspend (Uri) -> Bitmap?,
-    reencode: (GalleryItem) -> Unit,
+    overlayDefault: Boolean,
+    reencode: (GalleryItem, overlay: Boolean) -> Unit,
     refresh: () -> Unit,
     onOpenFlights: () -> Unit,
 ) {
     val context = LocalContext.current
     var filter by remember { mutableStateOf(GalleryFilter.ALL) }
+    var reencoding by remember { mutableStateOf<GalleryItem?>(null) }
+    reencoding?.let { item -> ReencodeDialog(overlayDefault, onConfirm = { reencode(item, it) }, onDismiss = { reencoding = null }) }
     // Deletion goes through Android's own confirmation dialog.
     val deleteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { refresh() }
     val shown = items.orEmpty().filter {
@@ -262,7 +274,7 @@ private fun GalleryScreen(
                         item, thumbnail,
                         onOpen = { open(context, item) },
                         onShare = { share(context, item) },
-                        onReencode = { reencode(item) },
+                        onReencode = { reencoding = item },
                         onDelete = {
                             val request = MediaStore.createDeleteRequest(context.contentResolver, listOf(item.uri))
                             deleteLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
@@ -272,6 +284,32 @@ private fun GalleryScreen(
             }
         }
     }
+}
+
+/** Re-encoding of one video: with or without the telemetry overlay (default: the setting). */
+@Composable
+private fun ReencodeDialog(overlayDefault: Boolean, onConfirm: (overlay: Boolean) -> Unit, onDismiss: () -> Unit) {
+    var overlay by remember { mutableStateOf(overlayDefault) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.gallery_reencode_title)) },
+        text = {
+            Row(
+                Modifier.fillMaxWidth().clickable { overlay = !overlay },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(checked = overlay, onCheckedChange = { overlay = it })
+                Text(stringResource(R.string.gallery_reencode_overlay))
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onDismiss()
+                onConfirm(overlay)
+            }) { Text(stringResource(R.string.gallery_reencode)) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
+    )
 }
 
 @Composable

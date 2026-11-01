@@ -60,6 +60,8 @@ data class PilotSettings(
     val transcodeCodec: TranscodeCodec = TranscodeCodec.HEVC,
     /** Keep the original H.264 file next to the re-encoded one. */
     val keepOriginal: Boolean = false,
+    /** Burn a telemetry overlay (time, height, speed, climb, battery) into the re-encoded copy. */
+    val overlayOnTranscode: Boolean = false,
     /** Missions created by the pilot (the presets come in addition). */
     val customMissions: List<Mission> = emptyList(),
     val trackingTarget: TrackingTarget = TrackingTarget.PERSON,

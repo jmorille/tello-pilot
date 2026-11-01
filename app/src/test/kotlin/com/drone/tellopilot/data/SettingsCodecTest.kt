@@ -51,6 +51,7 @@ class SettingsCodecTest {
             autoTranscode = false,
             transcodeCodec = TranscodeCodec.AV1,
             keepOriginal = true,
+            overlayOnTranscode = true,
             customMissions = listOf(
                 Mission("Un", listOf(MissionStep.Climb(1.5f), MissionStep.Move(MoveDirection.LEFT, 2f))),
                 Mission("Deux", listOf(MissionStep.Rotate(-90f), MissionStep.Hover(3f))),
