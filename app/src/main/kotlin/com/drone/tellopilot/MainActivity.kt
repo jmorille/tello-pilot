@@ -24,6 +24,7 @@ import androidx.navigation.compose.rememberNavController
 import com.drone.tellopilot.ui.flight.FlightRoute
 import com.drone.tellopilot.ui.settings.SettingsRoute
 import com.drone.tellopilot.ui.settings.ImuCalibrationRoute
+import com.drone.tellopilot.ui.settings.GamepadRoute
 import com.drone.tellopilot.input.GamepadInput
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -96,8 +97,10 @@ class MainActivity : ComponentActivity() {
                         SettingsRoute(
                             onBack = { nav.popBackStack() },
                             onOpenImuCalibration = { nav.navigate(ImuCalibration) { launchSingleTop = true } },
+                            onOpenGamepad = { nav.navigate(GamepadConfig) { launchSingleTop = true } },
                         )
                     }
+                    composable<GamepadConfig> { GamepadRoute(onBack = { nav.popBackStack() }) }
                     composable<ImuCalibration> { ImuCalibrationRoute(onBack = { nav.popBackStack() }) }
                 }
             }
@@ -113,6 +116,9 @@ private data object Settings
 
 @Serializable
 private data object ImuCalibration
+
+@Serializable
+private data object GamepadConfig
 
 /** First release enforcing the local network permission (Android 17). */
 private const val LOCAL_NETWORK_API = 37

@@ -15,6 +15,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.drone.tello.control.DroneSettings
+import com.drone.tello.control.GamepadBindings
 import com.drone.tello.control.PilotSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -64,6 +65,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
             units = p[UNITS].toEnum(d.units),
             confirmTakeoff = p[CONFIRM_TAKEOFF] ?: d.confirmTakeoff,
             autoRecord = p[AUTO_RECORD] ?: d.autoRecord,
+            padBindings = GamepadBindings.decode(p[PAD_BINDINGS]),
         )
     }
 
@@ -75,6 +77,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         p[UNITS] = s.units.name
         p[CONFIRM_TAKEOFF] = s.confirmTakeoff
         p[AUTO_RECORD] = s.autoRecord
+        p[PAD_BINDINGS] = s.padBindings.encode()
     }
 
     private fun readDrone(p: Preferences): DroneSettings {
@@ -105,6 +108,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         val UNITS = stringPreferencesKey("units")
         val CONFIRM_TAKEOFF = booleanPreferencesKey("confirm_takeoff")
         val AUTO_RECORD = booleanPreferencesKey("auto_record")
+        val PAD_BINDINGS = stringPreferencesKey("pad_bindings")
         val MAX_ALTITUDE = intPreferencesKey("max_altitude_m")
         val LOW_BATTERY = intPreferencesKey("low_battery_percent")
         val EXPOSURE = intPreferencesKey("exposure_steps")

@@ -5,6 +5,7 @@ import android.hardware.input.InputManager
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import com.drone.tello.control.GamepadBindings
 import com.drone.tello.control.GamepadMapper
 import com.drone.tello.control.PadAction
 import com.drone.tello.control.PadButton
@@ -31,7 +32,8 @@ enum class GamepadStatus {
  * [Listener] without any flow in between, like the on-screen joysticks (lowest latency).
  *
  * Safety:
- * - events are only consumed while a listener is attached (the flight screen is resumed);
+ * - events are only consumed while a listener is attached (the flight screen is resumed) or the
+ *   configuration screen monitors them; only the listener reaches the drone;
  * - a pad is ignored until all its stick axes have been seen centred (a trigger mapped as a
  *   stick, or a stick held at connection, must not fly the drone);
  * - one pad owns the sticks; its disconnection, a window focus loss or detaching the listener
@@ -45,13 +47,30 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
         fun onPadAction(action: PadAction)
     }
 
+    /**
+     * Gamepad configuration screen: sees sticks, buttons and the resulting actions while the
+     * flight screen is not listening (nothing reaches the drone from it).
+     */
+    interface Monitor {
+        fun onPadSticks(sticks: PadSticks)
+        /** [action]: what this press triggers with the current layout (only on a press). */
+        fun onPadButton(button: PadButton, down: Boolean, action: PadAction?)
+        /** Every button forgotten (focus loss, disconnection): no button is held any more. */
+        fun onPadReleased()
+    }
+
     private var listener: Listener? = null
+    private var monitor: Monitor? = null
 
     private val mapper = GamepadMapper()
     private val inputManager = context.getSystemService(InputManager::class.java)
 
     private val _status = MutableStateFlow(GamepadStatus.NONE)
     val status: StateFlow<GamepadStatus> = _status.asStateFlow()
+
+    private val _padName = MutableStateFlow<String?>(null)
+    /** Name of the (first) connected pad, for display. */
+    val padName: StateFlow<String?> = _padName.asStateFlow()
 
     /** Per-device axis layout and centring state. */
     private class Pad(val rightX: Int, val rightY: Int, val flat: Float) {
@@ -62,9 +81,14 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
     /** Device currently driving the sticks (-1 = none). */
     private var owner = -1
     private var lastSticks = PadSticks.Neutral
-    private var l2Down = false
-    private var r2Down = false
-    private val hatState = BooleanArray(PadButton.entries.size)
+
+    // A button can be reported both as a key and as an axis (GameSir: BTN_TL2 and BRAKE, D-pad
+    // keys and HAT): it is down while either source is down, and only edges reach the mapper.
+    private val keyDown = BooleanArray(PadButton.entries.size)
+    private val axisDown = BooleanArray(PadButton.entries.size)
+    private val effective = BooleanArray(PadButton.entries.size)
+    /** Held through a [release]: ignored until seen released (no action without a new press). */
+    private val blocked = BooleanArray(PadButton.entries.size)
 
     init {
         inputManager.registerInputDeviceListener(
@@ -90,10 +114,27 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
 
     fun isAttached(l: Listener) = listener === l
 
+    /** Attaches / detaches the configuration screen; detaching re-centres. */
+    fun attachMonitor(newMonitor: Monitor?) {
+        if (newMonitor == null) release()
+        monitor = newMonitor
+    }
+
+    fun isMonitoring(m: Monitor) = monitor === m
+
+    /** Button assignment from the pilot settings (main thread). */
+    fun setBindings(bindings: GamepadBindings) {
+        if (mapper.bindings != bindings) {
+            mapper.bindings = bindings
+            mapper.reset() // a half-pressed combo must not complete with the new layout
+        }
+    }
+
     private fun refresh() {
         val present = InputDevice.getDeviceIds().asSequence().mapNotNull(InputDevice::getDevice).filter(::isGamepad).toList()
         present.forEach { pads.getOrPut(it.id) { layoutOf(it) } }
         pads.keys.retainAll(present.map { it.id }.toSet())
+        _padName.value = present.firstOrNull()?.name?.trim()?.removeSuffix("Keyboard")?.trim()
         _status.value = when {
             pads.isEmpty() -> GamepadStatus.NONE
             pads.values.any { it.armed } -> GamepadStatus.READY
@@ -104,32 +145,56 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
     /** Neutral sticks, no held buttons (focus loss, disconnection, screen left). */
     fun release() {
         mapper.reset()
-        l2Down = false
-        r2Down = false
-        hatState.fill(false)
+        // Key-ups are lost while the window has no focus: forget the keys. Axes (triggers, hat)
+        // are reported continuously: one still held must be released before it counts again,
+        // otherwise the next motion event would re-press it (e.g. L2 + D-pad = flip).
+        keyDown.fill(false)
+        for (i in effective.indices) {
+            blocked[i] = axisDown[i]
+            effective[i] = false
+        }
         owner = -1
         if (lastSticks != PadSticks.Neutral) {
             lastSticks = PadSticks.Neutral
             listener?.onPadSticks(PadSticks.Neutral)
+            monitor?.onPadSticks(PadSticks.Neutral)
         }
+        monitor?.onPadReleased()
     }
 
-    /** Returns `true` if the event was consumed (only while the flight screen listens). */
+    /** Returns `true` if the event was consumed (only while the flight or configuration screen listens). */
     fun onKeyEvent(event: KeyEvent): Boolean {
-        val l = listener ?: return false
+        if (listener == null && monitor == null) return false
         if (!event.isFromGamepad()) return false
         val button = buttonOf(event.keyCode) ?: return false
         if (pads[event.deviceId]?.armed == false) return true // not centred yet: swallow
         when (event.action) {
-            KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) mapper.onButtonDown(button)?.let(l::onPadAction)
-            KeyEvent.ACTION_UP -> mapper.onButtonUp(button)
+            KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) update(button, key = true, down = true)
+            KeyEvent.ACTION_UP -> update(button, key = true, down = false)
         }
         return true
     }
 
-    /** Returns `true` if the event was consumed (only while the flight screen listens). */
+    /** Merges the key and axis sources of [button]; only a change of the combined state counts. */
+    private fun update(button: PadButton, key: Boolean, down: Boolean) {
+        val i = button.ordinal
+        if (key) keyDown[i] = down else axisDown[i] = down
+        val now = keyDown[i] || axisDown[i]
+        if (!now) blocked[i] = false
+        if (blocked[i] || now == effective[i]) return
+        effective[i] = now
+        press(button, now)
+    }
+
+    private fun press(button: PadButton, down: Boolean) {
+        val action = if (down) mapper.onButtonDown(button) else null.also { mapper.onButtonUp(button) }
+        monitor?.onPadButton(button, down, action)
+        action?.let { listener?.onPadAction(it) }
+    }
+
+    /** Returns `true` if the event was consumed (only while the flight or configuration screen listens). */
     fun onMotionEvent(event: MotionEvent): Boolean {
-        val l = listener ?: return false
+        if (listener == null && monitor == null) return false
         if (event.source and InputDevice.SOURCE_JOYSTICK != InputDevice.SOURCE_JOYSTICK ||
             event.action != MotionEvent.ACTION_MOVE
         ) {
@@ -154,35 +219,30 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
         if (sticks != PadSticks.Neutral) owner = event.deviceId
         if (sticks != lastSticks) {
             lastSticks = sticks
-            l.onPadSticks(sticks)
+            listener?.onPadSticks(sticks)
+            monitor?.onPadSticks(sticks)
         }
         if (sticks == PadSticks.Neutral) owner = -1
 
         // Analog triggers (many pads report L2/R2 only as axes) and the D-pad as a hat.
         val l2 = maxOf(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), event.getAxisValue(MotionEvent.AXIS_BRAKE))
         val r2 = maxOf(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), event.getAxisValue(MotionEvent.AXIS_GAS))
-        l2Down = trigger(l, PadButton.L2, l2, l2Down)
-        r2Down = trigger(l, PadButton.R2, r2, r2Down)
+        trigger(PadButton.L2, l2)
+        trigger(PadButton.R2, r2)
         val hx = event.getAxisValue(MotionEvent.AXIS_HAT_X)
         val hy = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
-        setHeld(l, PadButton.DPAD_LEFT, hx < -0.5f)
-        setHeld(l, PadButton.DPAD_RIGHT, hx > 0.5f)
-        setHeld(l, PadButton.DPAD_UP, hy < -0.5f)
-        setHeld(l, PadButton.DPAD_DOWN, hy > 0.5f)
+        update(PadButton.DPAD_LEFT, key = false, down = hx < -0.5f)
+        update(PadButton.DPAD_RIGHT, key = false, down = hx > 0.5f)
+        update(PadButton.DPAD_UP, key = false, down = hy < -0.5f)
+        update(PadButton.DPAD_DOWN, key = false, down = hy > 0.5f)
         return true
     }
 
-    private fun setHeld(l: Listener, button: PadButton, down: Boolean) {
-        if (hatState[button.ordinal] == down) return
-        hatState[button.ordinal] = down
-        if (down) mapper.onButtonDown(button)?.let(l::onPadAction) else mapper.onButtonUp(button)
-    }
-
-    private fun trigger(l: Listener, button: PadButton, value: Float, wasDown: Boolean): Boolean {
-        val down = value > GamepadMapper.TRIGGER_THRESHOLD
-        if (down && !wasDown) mapper.onButtonDown(button)?.let(l::onPadAction)
-        if (!down && wasDown) mapper.onButtonUp(button)
-        return down
+    /** Hysteresis: a trigger resting near the threshold must not press / release repeatedly. */
+    private fun trigger(button: PadButton, value: Float) {
+        val wasDown = axisDown[button.ordinal]
+        val down = if (wasDown) value > TRIGGER_RELEASE else value > GamepadMapper.TRIGGER_THRESHOLD
+        if (down != wasDown) update(button, key = false, down = down)
     }
 
     private fun isGamepad(d: InputDevice) =
@@ -235,5 +295,7 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
         const val MIN_FLAT = 0.08f
         /** All stick axes must be seen below this once before the pad is used. */
         const val ARM_THRESHOLD = 0.2f
+        /** A pressed trigger counts as released below this travel (press: TRIGGER_THRESHOLD). */
+        const val TRIGGER_RELEASE = 0.3f
     }
 }

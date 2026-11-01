@@ -98,6 +98,7 @@ class FlightViewModel @Inject constructor(
             pilot.collect {
                 mixer.mode = it.stickMode
                 mixer.shaping = it.shaping
+                gamepad.setBindings(it.padBindings)
             }
         }
         viewModelScope.launch {

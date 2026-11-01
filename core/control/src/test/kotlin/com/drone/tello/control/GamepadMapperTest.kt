@@ -3,6 +3,7 @@ package com.drone.tello.control
 import com.drone.tello.protocol.FlipDirection
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class GamepadMapperTest {
@@ -55,5 +56,70 @@ class GamepadMapperTest {
         assertEquals(-0.5f, s.rightY, 1e-6f)
         assertEquals(0f, GamepadMapper.axis(Float.NaN, 0.1f))
         assertEquals(-1f, GamepadMapper.axis(-3f, 0.1f), "clamped")
+    }
+
+    @Test
+    fun `custom bindings drive the mapper`() {
+        val custom = (GamepadBindings.Default.assign(PadCommand.PHOTO, PadBinding(PadButton.A)) as BindingResult.Ok).bindings
+        val m = GamepadMapper(custom)
+        assertEquals(PadAction.Photo, m.onButtonDown(PadButton.A))
+        assertNull(m.onButtonDown(PadButton.R1), "R1 is free now")
+    }
+
+    @Test
+    fun `assigning a used button swaps the two commands`() {
+        val r = GamepadBindings.Default.assign(PadCommand.PHOTO, PadBinding(PadButton.X))
+        r as BindingResult.Ok
+        assertEquals(PadCommand.FAST_MODE, r.swappedWith)
+        assertEquals(PadBinding(PadButton.X), r.bindings[PadCommand.PHOTO])
+        assertEquals(PadBinding(PadButton.R1), r.bindings[PadCommand.FAST_MODE])
+    }
+
+    @Test
+    fun `unsafe bindings are refused`() {
+        val d = GamepadBindings.Default
+        assertEquals(BindingResult.Refused(BindingProblem.COMBO_REQUIRED), d.assign(PadCommand.TAKEOFF_LAND, PadBinding(PadButton.A)))
+        assertEquals(BindingResult.Refused(BindingProblem.DPAD_RESERVED), d.assign(PadCommand.PHOTO, PadBinding(PadButton.DPAD_UP)))
+        assertEquals(
+            BindingResult.Refused(BindingProblem.FLIP_SINGLE_BUTTON),
+            d.assign(PadCommand.FLIP, PadBinding(PadButton.A, PadButton.L1)),
+        )
+        assertEquals(
+            BindingResult.Refused(BindingProblem.SAME_BUTTON_TWICE),
+            d.assign(PadCommand.TAKEOFF_LAND, PadBinding(PadButton.A, PadButton.A)),
+        )
+        // Y is held for the R2+Y combo: as a single button it would fire on the first half of the combo.
+        val r = d.assign(PadCommand.PHOTO, PadBinding(PadButton.Y))
+        assertTrue(r is BindingResult.Refused && r.other == PadCommand.TAKEOFF_LAND)
+    }
+
+    @Test
+    fun `bindings survive storage and corrupt text falls back to the defaults`() {
+        val custom = (GamepadBindings.Default.assign(PadCommand.TAKEOFF_LAND, PadBinding(PadButton.START, PadButton.SELECT)) as BindingResult.Ok).bindings
+        assertEquals(custom, GamepadBindings.decode(custom.encode()))
+        assertEquals(GamepadBindings.Default, GamepadBindings.decode(null))
+        assertEquals(GamepadBindings.Default, GamepadBindings.decode("garbage;;="))
+        assertEquals(GamepadBindings.Default, GamepadBindings.decode("TAKEOFF_LAND=A"), "a single-button takeoff is never loaded")
+        assertEquals(GamepadBindings.Default, GamepadBindings.decode("PHOTO=Y"), "conflicting layout rejected")
+    }
+
+    @Test
+    fun `a custom combo fires in either order, and flips follow the flip button`() {
+        val b = (GamepadBindings.Default.assign(PadCommand.FLIP, PadBinding(PadButton.L1)) as BindingResult.Ok).bindings
+        val m = GamepadMapper(b)
+        m.onButtonDown(PadButton.L1)
+        assertEquals(PadAction.Flip(FlipDirection.RIGHT), m.onButtonDown(PadButton.DPAD_RIGHT))
+        m.reset()
+        assertNull(m.onButtonDown(PadButton.Y))
+        assertEquals(PadAction.TakeoffOrLand, m.onButtonDown(PadButton.R2))
+    }
+
+    @Test
+    fun `takeoff buttons are used by nothing else`() {
+        val d = GamepadBindings.Default
+        val photoCombo = d.assign(PadCommand.PHOTO, PadBinding(PadButton.A, PadButton.Y))
+        assertTrue(photoCombo is BindingResult.Refused && photoCombo.other == PadCommand.TAKEOFF_LAND, "Y+A would half-press R2+Y")
+        val flip = d.assign(PadCommand.FLIP, PadBinding(PadButton.R2))
+        assertTrue(flip is BindingResult.Refused && flip.other == PadCommand.TAKEOFF_LAND)
     }
 }

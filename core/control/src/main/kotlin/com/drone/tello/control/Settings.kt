@@ -23,6 +23,8 @@ data class PilotSettings(
     val confirmTakeoff: Boolean = true,
     /** Start recording on the phone automatically at takeoff. */
     val autoRecord: Boolean = false,
+    /** Gamepad button assignment. */
+    val padBindings: GamepadBindings = GamepadBindings.Default,
 ) {
     val shaping: StickShaping get() = StickShaping(deadZone.coerceIn(0f, 0.5f), expo.coerceIn(0f, 1f))
 

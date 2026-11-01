@@ -37,6 +37,9 @@ object Payloads {
     private const val AXIS_CENTER = 1024
     private const val AXIS_RANGE = 660
 
+    /** Axis value sent to the drone (364..1684, centre 1024): for display. */
+    fun axisValue(value: Float): Int = axis(value).toInt()
+
     /** 11-bit axis value as expected by the firmware (364..1684, centre 1024). */
     internal fun axis(value: Float): Long {
         val v = if (value.isNaN()) 0f else value.coerceIn(-1f, 1f)

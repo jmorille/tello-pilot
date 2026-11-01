@@ -74,13 +74,18 @@ class SettingsViewModel @Inject constructor(
 }
 
 @Composable
-fun SettingsRoute(onBack: () -> Unit, onOpenImuCalibration: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
+fun SettingsRoute(
+    onBack: () -> Unit,
+    onOpenImuCalibration: () -> Unit,
+    onOpenGamepad: () -> Unit,
+    viewModel: SettingsViewModel = hiltViewModel(),
+) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val flying by viewModel.flying.collectAsStateWithLifecycle()
     LaunchedEffect(flying) { if (flying) onBack() }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         settings?.let {
-            SettingsScreen(it, onBack, viewModel::updatePilot, viewModel::updateDrone) {
+            SettingsScreen(it, onBack, viewModel::updatePilot, viewModel::updateDrone, onOpenGamepad) {
                 MaintenanceSection(onOpenImuCalibration)
             }
         }
@@ -93,6 +98,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     updatePilot: ((PilotSettings) -> PilotSettings) -> Unit,
     updateDrone: ((DroneSettings) -> DroneSettings) -> Unit,
+    onOpenGamepad: () -> Unit = {},
     maintenance: @Composable () -> Unit = {},
 ) {
     val pilot = settings.pilot
@@ -132,6 +138,7 @@ fun SettingsScreen(
             range = PilotSettings.JOYSTICK_SIZE_RANGE.first.toFloat()..PilotSettings.JOYSTICK_SIZE_RANGE.last.toFloat(),
         ) { v -> updatePilot { it.copy(joystickSizeDp = v.roundToInt()) } }
         SwitchSetting(R.string.settings_confirm_takeoff, pilot.confirmTakeoff) { v -> updatePilot { it.copy(confirmTakeoff = v) } }
+        androidx.compose.material3.OutlinedButton(onClick = onOpenGamepad) { Text(stringResource(R.string.settings_gamepad)) }
 
         Section(R.string.settings_section_display)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
