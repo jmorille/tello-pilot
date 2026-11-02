@@ -75,7 +75,7 @@ internal object SettingsCodec {
             units = p[UNITS].toEnum(d.units),
             confirmTakeoff = p[CONFIRM_TAKEOFF] ?: d.confirmTakeoff,
             autoRecord = p[AUTO_RECORD] ?: d.autoRecord,
-            padBindings = GamepadBindings.decode(p[PAD_BINDINGS]),
+            padBindings = GamepadBindings.decode(p[PAD_BINDINGS], p[PAD_SHORTCUTS]),
             videoSharpen = p[VIDEO_SHARPEN] ?: d.videoSharpen,
             videoFit = p[VIDEO_FIT].toEnum(d.videoFit),
             hiddenHud = p[HIDDEN_HUD].orEmpty()
@@ -115,6 +115,7 @@ internal object SettingsCodec {
         p[CONFIRM_TAKEOFF] = s.confirmTakeoff
         p[AUTO_RECORD] = s.autoRecord
         p[PAD_BINDINGS] = s.padBindings.encode()
+        p[PAD_SHORTCUTS] = s.padBindings.encodeShortcuts()
         p[VIDEO_SHARPEN] = s.videoSharpen
         p[VIDEO_FIT] = s.videoFit.name
         p[HIDDEN_HUD] = s.hiddenHud.mapTo(mutableSetOf()) { it.name }
@@ -185,6 +186,8 @@ internal object SettingsCodec {
     private val CONFIRM_TAKEOFF = booleanPreferencesKey("confirm_takeoff")
     private val AUTO_RECORD = booleanPreferencesKey("auto_record")
     private val PAD_BINDINGS = stringPreferencesKey("pad_bindings")
+    // Separate key: older versions keep reading pad_bindings unchanged.
+    private val PAD_SHORTCUTS = stringPreferencesKey("pad_shortcuts")
     private val VIDEO_SHARPEN = booleanPreferencesKey("video_sharpen")
     private val VIDEO_FIT = stringPreferencesKey("video_fit_v2") // v2: the old key held FILL for everyone who saved any setting
     private val HIDDEN_HUD = androidx.datastore.preferences.core.stringSetPreferencesKey("hidden_hud")

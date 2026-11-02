@@ -18,6 +18,9 @@ import com.drone.tello.control.OverlayStyle
 import com.drone.tello.control.PadBinding
 import com.drone.tello.control.PadButton
 import com.drone.tello.control.PadCommand
+import com.drone.tello.control.PadFunction
+import com.drone.tello.control.PadShortcut
+import com.drone.tello.protocol.SmartVideoMode
 import com.drone.tello.control.BindingResult
 import com.drone.tello.control.PilotSettings
 import com.drone.tello.control.StickMode
@@ -67,6 +70,36 @@ class SettingsCodecTest {
         val prefs = mutablePreferencesOf()
         SettingsCodec.writePilot(prefs, custom)
         assertEquals(custom, SettingsCodec.readPilot(prefs))
+    }
+
+    @Test
+    fun `pad shortcuts survive a write and read back, next to the old key`() {
+        val bindings = (GamepadBindings.Default.assign(PadCommand.PHOTO, PadBinding(PadButton.A)) as BindingResult.Ok).bindings
+            .let { (it.addShortcut(PadShortcut(PadBinding(PadButton.X, PadButton.L2), PadFunction.SmartVideo(SmartVideoMode.ROTATE_360))) as BindingResult.Ok).bindings }
+            .let { (it.addShortcut(PadShortcut(PadBinding(PadButton.START, PadButton.L2), PadFunction.RunMission("Carré 2 m"))) as BindingResult.Ok).bindings }
+        val prefs = mutablePreferencesOf()
+        SettingsCodec.writePilot(prefs, PilotSettings(padBindings = bindings))
+        val read = SettingsCodec.readPilot(prefs).padBindings
+        assertEquals(bindings, read)
+        assertEquals(2, read.shortcuts.size)
+        // The fixed commands stay in the old key, in the old format (older versions read it).
+        assertEquals("TAKEOFF_LAND=R2+Y;FLIP=L2;PHOTO=A;RECORD=L1;FAST_MODE=X;STOP_SMART_VIDEO=B", prefs[stringPreferencesKey("pad_bindings")])
+    }
+
+    @Test
+    fun `a store from before the shortcuts keeps its button assignment`() {
+        val prefs = mutablePreferencesOf(
+            stringPreferencesKey("pad_bindings") to "TAKEOFF_LAND=START+SELECT;FLIP=L2;PHOTO=A;RECORD=L1;FAST_MODE=X;STOP_SMART_VIDEO=B",
+        )
+        val read = SettingsCodec.readPilot(prefs).padBindings
+        assertEquals(PadBinding(PadButton.SELECT, PadButton.START), read[PadCommand.TAKEOFF_LAND])
+        assertEquals(PadBinding(PadButton.A), read[PadCommand.PHOTO])
+        assertEquals(emptyList<PadShortcut>(), read.shortcuts)
+        // A corrupt shortcut line never costs the fixed layout.
+        prefs[stringPreferencesKey("pad_shortcuts")] = "???\nL2+X=SMART:CIRCLE"
+        val withShortcuts = SettingsCodec.readPilot(prefs).padBindings
+        assertEquals(PadBinding(PadButton.A), withShortcuts[PadCommand.PHOTO])
+        assertEquals(listOf(PadShortcut(PadBinding(PadButton.X, PadButton.L2), PadFunction.SmartVideo(SmartVideoMode.CIRCLE))), withShortcuts.shortcuts)
     }
 
     @Test

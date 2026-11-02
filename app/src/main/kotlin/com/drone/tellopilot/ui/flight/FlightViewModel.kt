@@ -56,6 +56,8 @@ sealed interface UserMessage {
     /** Centre of gravity calibration reported by the drone: running / done. */
     data object GravityCalibrating : UserMessage
     data object GravityCalibrated : UserMessage
+    /** A pad shortcut names a mission that no longer exists: nothing was done. */
+    data class ShortcutMissionMissing(val name: String) : UserMessage
 }
 
 @HiltViewModel
@@ -469,12 +471,64 @@ class FlightViewModel internal constructor(
         when (action) {
             // The R2+Y combo is the gamepad's takeoff guard (slide-to-confirm is touch only).
             PadAction.TakeoffOrLand -> padTakeoffOrLand()
-            PadAction.StopSmartVideo -> onAction(FlightAction.StopSmartVideo)
-            PadAction.Photo -> onAction(FlightAction.TakePhoto)
-            PadAction.ToggleRecording -> onAction(FlightAction.ToggleRecording)
-            PadAction.ToggleFastMode -> onAction(FlightAction.ToggleFastMode)
-            is PadAction.Flip -> onAction(FlightAction.Flip(action.direction))
+            PadAction.StopSmartVideo -> padStopAll()
+            PadAction.Photo -> perform(FlightAction.TakePhoto, fromPad = true)
+            PadAction.ToggleRecording -> perform(FlightAction.ToggleRecording, fromPad = true)
+            PadAction.ToggleFastMode -> perform(FlightAction.ToggleFastMode, fromPad = true)
+            is PadAction.Flip -> perform(FlightAction.Flip(action.direction), fromPad = true)
+            is PadAction.Shortcut -> padShortcut(action.function)
         }
+    }
+
+    /** Last pad shortcut that makes the drone move (anti double-press). */
+    private var lastPadManeuver = Long.MIN_VALUE / 2
+
+    /**
+     * Pilot shortcut: the same path as the screen buttons (same checks and messages), refused
+     * while a manoeuvre runs (see [shortcutDecision]); a refusal also vibrates, the pilot may
+     * not be looking at the screen.
+     */
+    private fun padShortcut(function: com.drone.tello.control.PadFunction) {
+        if (function.moves) {
+            val now = clock.uptimeMillis()
+            if (now - lastPadManeuver < PAD_MANEUVER_COOLDOWN_MS) return
+            lastPadManeuver = now
+        }
+        val controller = session.controller.value
+        val maneuvers = controller?.maneuvers?.value
+        // The automatic climb right after takeoff is not the pilot's manoeuvre: a shortcut ends
+        // it, as the screen buttons do.
+        val running = maneuvers?.smartVideoActive == true || controller?.isLanding == true ||
+            (autopilot.active && !takeoffAdjustRunning)
+        val decision = shortcutDecision(
+            function,
+            missions = com.drone.tello.control.Mission.Presets + pilot.value.customMissions,
+            flying = knownFlying.value || session.lastFlight?.flying == true,
+            maneuverRunning = running,
+            bounce = maneuvers?.bounce == true,
+        )
+        when (decision) {
+            is ShortcutDecision.Run -> perform(decision.action, fromPad = true)
+            is ShortcutDecision.Refuse -> refuse(decision.message, fromPad = true)
+            ShortcutDecision.StopAll -> padStopAll()
+        }
+    }
+
+    /**
+     * The pad's stop: ends the automatic flight (and a pending takeoff climb), switches the
+     * bounce off and stops the smart video; always available, whatever runs.
+     */
+    private fun padStopAll() {
+        perform(FlightAction.StopAutopilot, fromPad = true)
+        takeoffAdjust?.cancel()
+        if (session.controller.value?.maneuvers?.value?.bounce == true) perform(FlightAction.SetBounce(false), fromPad = true)
+        // Sent even when no smart video is known to run (its state may not be reported yet).
+        perform(FlightAction.StopSmartVideo, fromPad = true)
+    }
+
+    private fun refuse(message: UserMessage, fromPad: Boolean) {
+        _messages.trySend(message)
+        if (fromPad) haptics.warning()
     }
 
     /**
@@ -490,7 +544,10 @@ class FlightViewModel internal constructor(
         onAction(padComboAction(session.lastFlight, knownFlying.value, landing))
     }
 
-    fun onAction(action: FlightAction) {
+    fun onAction(action: FlightAction) = perform(action, fromPad = false)
+
+    /** [fromPad]: a refusal also vibrates (the pilot flying with the pad may not look at the screen). */
+    private fun perform(action: FlightAction, fromPad: Boolean) {
         // Any manual flight command ends an automatic flight first.
         if (action.endsAutopilot()) {
             autopilot.stop()
@@ -516,12 +573,12 @@ class FlightViewModel internal constructor(
             is FlightAction.Flip -> {
                 // A flip turns the drone upside down: no shock detection until well after it.
                 safety.suppressImpacts(clock.elapsedRealtime(), FLIP_QUIET_MS)
-                modeCommand { flip(action.direction) }
+                modeCommand(fromPad) { flip(action.direction) }
             }
-            is FlightAction.SetBounce -> modeCommand { setBounce(action.enabled) }
+            is FlightAction.SetBounce -> modeCommand(fromPad) { setBounce(action.enabled) }
             is FlightAction.StartSmartVideo -> {
                 smartVideoArmed = belowAutopilotOverride(pilotDeflection())
-                modeCommand { startSmartVideo(action.mode) }
+                modeCommand(fromPad) { startSmartVideo(action.mode) }
             }
             FlightAction.StopSmartVideo -> command { stopSmartVideo() }
             FlightAction.TakePhoto -> command { takePicture() }
@@ -541,8 +598,8 @@ class FlightViewModel internal constructor(
                     session.controller.value?.setFastMode(false)
                 }
             }
-            is FlightAction.StartMission -> startAutopilot(tracking = false) { autopilot.startMission(action.mission) }
-            is FlightAction.StartTracking -> startAutopilot(tracking = true) {
+            is FlightAction.StartMission -> startAutopilot(tracking = false, fromPad) { autopilot.startMission(action.mission) }
+            is FlightAction.StartTracking -> startAutopilot(tracking = true, fromPad) {
                 autopilot.startTracking(action.mode, pilot.value.trackingTarget, action.orbitDirection)
             }
             FlightAction.StopAutopilot -> Unit // done above
@@ -558,12 +615,12 @@ class FlightViewModel internal constructor(
     }
 
     /** Automatic flights start in flight only, with a live link (and the video for tracking). */
-    private fun startAutopilot(tracking: Boolean, start: () -> Unit) {
+    private fun startAutopilot(tracking: Boolean, fromPad: Boolean, start: () -> Unit) {
         val state = uiState.value
         val ok = state.status == ConnectionStatus.CONNECTED && session.lastFlight?.flying == true &&
             (!tracking || state.videoActive)
         if (!ok) {
-            _messages.trySend(UserMessage.AutopilotUnavailable)
+            refuse(UserMessage.AutopilotUnavailable, fromPad)
             return
         }
         // The pilot's sticks must be centred: their last value is not applied meanwhile.
@@ -640,14 +697,14 @@ class FlightViewModel internal constructor(
     }
 
     /** Manoeuvre with preconditions: a refusal is explained to the pilot. */
-    private fun modeCommand(block: suspend TelloController.() -> ModeCheck) {
+    private fun modeCommand(fromPad: Boolean, block: suspend TelloController.() -> ModeCheck) {
         val controller = session.controller.value ?: run {
-            _messages.trySend(UserMessage.ModeRefused(ModeCheck.NOT_CONNECTED))
+            refuse(UserMessage.ModeRefused(ModeCheck.NOT_CONNECTED), fromPad)
             return
         }
         viewModelScope.launch {
             val result = withContext(controlDispatcher) { controller.block() }
-            if (result != ModeCheck.OK) _messages.trySend(UserMessage.ModeRefused(result))
+            if (result != ModeCheck.OK) refuse(UserMessage.ModeRefused(result), fromPad)
         }
     }
 
@@ -661,6 +718,8 @@ class FlightViewModel internal constructor(
 }
 
 private const val PAD_COMBO_COOLDOWN_MS = 2_000L
+/** Two presses of a moving shortcut closer than this: the second is ignored (contact bounce, double press). */
+private const val PAD_MANEUVER_COOLDOWN_MS = 1_500L
 /** Shock alert shown this long. */
 private const val IMPACT_ALERT_MS = 5_000L
 /** A flip lasts about a second, then the drone stabilises: shock detection off meanwhile, + 1 s. */

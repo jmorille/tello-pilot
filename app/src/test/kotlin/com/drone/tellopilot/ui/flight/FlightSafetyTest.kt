@@ -2,6 +2,7 @@ package com.drone.tellopilot.ui.flight
 
 import com.drone.tello.control.Mission
 import com.drone.tello.control.MissionStep
+import com.drone.tello.control.PadFunction
 import com.drone.tello.control.TrackingMode
 import com.drone.tello.protocol.FlightData
 import com.drone.tello.protocol.FlipDirection
@@ -57,6 +58,54 @@ class FlightSafetyTest {
         ending.forEach { assertTrue("$it", it.endsAutopilot()) }
         listOf(FlightAction.TakePhoto, FlightAction.ToggleRecording, FlightAction.StopSmartVideo)
             .forEach { assertFalse("$it", it.endsAutopilot()) }
+    }
+
+    // --- Pad shortcuts -------------------------------------------------------------------
+
+    private val missions = listOf(Mission("Carré", listOf(MissionStep.Hover(1f))))
+
+    private fun decide(
+        f: PadFunction,
+        flying: Boolean = true,
+        running: Boolean = false,
+        bounce: Boolean = false,
+    ) = shortcutDecision(f, missions, flying, running, bounce)
+
+    @Test
+    fun `shortcuts map to the screen actions`() {
+        assertEquals(ShortcutDecision.Run(FlightAction.StartSmartVideo(SmartVideoMode.UP_AND_AWAY)), decide(PadFunction.SmartVideo(SmartVideoMode.UP_AND_AWAY)))
+        assertEquals(ShortcutDecision.Run(FlightAction.Flip(FlipDirection.BACK_LEFT)), decide(PadFunction.Flip(FlipDirection.BACK_LEFT)))
+        assertEquals(ShortcutDecision.Run(FlightAction.SetBounce(true)), decide(PadFunction.Bounce))
+        assertEquals(ShortcutDecision.Run(FlightAction.StartMission(missions[0])), decide(PadFunction.RunMission("Carré")))
+        assertEquals(ShortcutDecision.Run(FlightAction.StartTracking(TrackingMode.ORBIT, -1)), decide(PadFunction.Tracking(TrackingMode.ORBIT, -1)))
+        assertEquals(ShortcutDecision.Run(FlightAction.StartTracking(TrackingMode.SPOTLIGHT, 1)), decide(PadFunction.Tracking(TrackingMode.SPOTLIGHT)))
+        assertEquals(ShortcutDecision.Run(FlightAction.PalmLand), decide(PadFunction.PalmLand))
+        assertEquals(ShortcutDecision.Run(FlightAction.ToggleTripod), decide(PadFunction.Tripod))
+        assertEquals(ShortcutDecision.Run(FlightAction.ToggleFastMode), decide(PadFunction.FastMode))
+        assertEquals(ShortcutDecision.Run(FlightAction.TakePhoto), decide(PadFunction.Photo))
+        assertEquals(ShortcutDecision.Run(FlightAction.ToggleRecording), decide(PadFunction.Record))
+        assertEquals(ShortcutDecision.StopAll, decide(PadFunction.Stop))
+    }
+
+    @Test
+    fun `moving shortcuts are refused while a manoeuvre runs, stops never are`() {
+        val busy = ShortcutDecision.Refuse(UserMessage.ModeRefused(com.drone.tello.control.ModeCheck.BUSY))
+        (PadFunction.Catalog.filter { it.moves } + PadFunction.RunMission("Carré")).forEach { f ->
+            assertEquals("$f", busy, decide(f, running = true))
+        }
+        assertEquals(ShortcutDecision.StopAll, decide(PadFunction.Stop, running = true))
+        assertEquals(ShortcutDecision.Run(FlightAction.SetBounce(false)), decide(PadFunction.Bounce, running = true, bounce = true))
+        assertEquals(ShortcutDecision.Run(FlightAction.TakePhoto), decide(PadFunction.Photo, running = true))
+    }
+
+    @Test
+    fun `a deleted mission or a palm landing on the ground is refused with a message`() {
+        assertEquals(ShortcutDecision.Refuse(UserMessage.ShortcutMissionMissing("Disparue")), decide(PadFunction.RunMission("Disparue")))
+        assertEquals(ShortcutDecision.Refuse(UserMessage.ShortcutMissionMissing("Disparue")), decide(PadFunction.RunMission("Disparue"), running = true))
+        assertEquals(
+            ShortcutDecision.Refuse(UserMessage.ModeRefused(com.drone.tello.control.ModeCheck.NOT_FLYING)),
+            decide(PadFunction.PalmLand, flying = false),
+        )
     }
 
     // --- Gamepad takeoff / land combo: landing has priority -------------------------------

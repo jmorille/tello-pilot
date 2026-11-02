@@ -1,5 +1,6 @@
 package com.drone.tellopilot.ui.settings
 
+import android.content.res.Resources
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -30,7 +32,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -50,10 +54,13 @@ import androidx.lifecycle.viewModelScope
 import com.drone.tello.control.BindingProblem
 import com.drone.tello.control.BindingResult
 import com.drone.tello.control.GamepadBindings
+import com.drone.tello.control.Mission
 import com.drone.tello.control.PadAction
 import com.drone.tello.control.PadBinding
 import com.drone.tello.control.PadButton
 import com.drone.tello.control.PadCommand
+import com.drone.tello.control.PadFunction
+import com.drone.tello.control.PadShortcut
 import com.drone.tello.control.PadSticks
 import com.drone.tello.control.PilotSettings
 import com.drone.tello.control.StickMixer
@@ -64,7 +71,6 @@ import com.drone.tellopilot.data.DroneSession
 import com.drone.tellopilot.data.SettingsRepository
 import com.drone.tellopilot.input.GamepadInput
 import com.drone.tellopilot.input.GamepadStatus
-import com.drone.tellopilot.ui.flight.arrow
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -93,9 +99,25 @@ data class PadLive(
 
 sealed interface PadMessage {
     data class Assigned(val command: PadCommand, val binding: PadBinding, val swappedWith: PadCommand?) : PadMessage
-    data class Refused(val problem: BindingProblem, val other: PadCommand?) : PadMessage
+    /** [forShortcut]: the refused edit was a shortcut's. */
+    data class Refused(
+        val problem: BindingProblem,
+        val other: PadCommand?,
+        val otherShortcut: PadShortcut? = null,
+        val forShortcut: Boolean = false,
+    ) : PadMessage
+    data class ShortcutSaved(val shortcut: PadShortcut) : PadMessage
+    /** Default fixed layout restored; [dropped] shortcuts no longer fitted and were removed. */
+    data class CommandsReset(val dropped: Int) : PadMessage
     /** Several buttons held while capturing: ambiguous combo. */
     data object ReleaseOthers : PadMessage
+}
+
+/** What the next button press is for. */
+sealed interface CaptureTarget {
+    data class Command(val command: PadCommand) : CaptureTarget
+    /** [index] null: a new shortcut. */
+    data class Shortcut(val index: Int?, val function: PadFunction) : CaptureTarget
 }
 
 /**
@@ -121,9 +143,9 @@ class GamepadViewModel @Inject constructor(
     private val _live = MutableStateFlow(PadLive())
     val live: StateFlow<PadLive> = _live.asStateFlow()
 
-    private val _capture = MutableStateFlow<PadCommand?>(null)
-    /** Command waiting for a button press, if any. */
-    val capture: StateFlow<PadCommand?> = _capture.asStateFlow()
+    private val _capture = MutableStateFlow<CaptureTarget?>(null)
+    /** Command or shortcut waiting for a button press, if any. */
+    val capture: StateFlow<CaptureTarget?> = _capture.asStateFlow()
 
     private val _messages = Channel<PadMessage>(Channel.BUFFERED)
     val messages: Flow<PadMessage> = _messages.receiveAsFlow()
@@ -131,28 +153,65 @@ class GamepadViewModel @Inject constructor(
     /** An assignment is being written: further presses wait for it (no lost update). */
     private var saving = false
 
+    /**
+     * Shortcut capture: a button pressed with nothing held may be a single button (taken when it
+     * is released alone) or the modifier of a combo (a second press comes first).
+     */
+    private var pendingSingle: PadButton? = null
+
     /** Monitoring only while the screen is resumed (main thread). */
     fun setActive(active: Boolean) {
         if (active) {
             gamepad.attachMonitor(this)
         } else {
-            _capture.value = null
+            setCapture(null)
             if (gamepad.isMonitoring(this)) gamepad.attachMonitor(null)
             _live.value = PadLive()
         }
     }
 
-    fun startCapture(command: PadCommand) {
-        _capture.value = command
+    private fun setCapture(target: CaptureTarget?) {
+        pendingSingle = null
+        _capture.value = target
     }
 
-    fun cancelCapture() {
-        _capture.value = null
-    }
+    fun startCapture(command: PadCommand) = setCapture(CaptureTarget.Command(command))
 
+    /** New buttons for the shortcut at [index] (null: a new shortcut for [function]). */
+    fun startShortcutCapture(index: Int?, function: PadFunction) = setCapture(CaptureTarget.Shortcut(index, function))
+
+    fun cancelCapture() = setCapture(null)
+
+    /** Default fixed layout; the shortcuts that still fit are kept. */
     fun resetDefaults() {
-        _capture.value = null
-        viewModelScope.launch { repository.updatePilot { it.copy(padBindings = GamepadBindings.Default) } }
+        setCapture(null)
+        viewModelScope.launch {
+            var dropped = 0
+            repository.updatePilot {
+                val reset = it.padBindings.withDefaultCommands()
+                dropped = it.padBindings.shortcuts.size - reset.shortcuts.size
+                it.copy(padBindings = reset)
+            }
+            _messages.trySend(PadMessage.CommandsReset(dropped))
+        }
+    }
+
+    fun setShortcutFunction(index: Int, function: PadFunction) {
+        setCapture(null)
+        write(forShortcut = true, change = { b ->
+            val old = b.shortcuts.getOrNull(index) ?: return@write null
+            b.replaceShortcut(index, old.copy(function = function))
+        }) { PadMessage.ShortcutSaved(it.bindings.shortcuts[index]) }
+    }
+
+    fun removeShortcut(index: Int) {
+        setCapture(null)
+        viewModelScope.launch { repository.updatePilot { it.copy(padBindings = it.padBindings.removeShortcut(index)) } }
+    }
+
+    fun clearShortcuts() {
+        setCapture(null)
+        viewModelScope.launch { repository.updatePilot { it.copy(padBindings = it.padBindings.withoutShortcuts()) } }
     }
 
     override fun onPadSticks(sticks: PadSticks) {
@@ -162,47 +221,92 @@ class GamepadViewModel @Inject constructor(
     override fun onPadButton(button: PadButton, down: Boolean, action: PadAction?) {
         val before = _live.value.held
         _live.update { it.copy(held = if (down) it.held + button else it.held - button) }
-        val command = _capture.value
-        if (command != null) {
+        val target = _capture.value
+        if (target != null) {
             // The press is consumed by the capture: its action under the old layout is not shown.
-            if (down && button !in before) capture(command, button, before)
+            if (down && button !in before) {
+                capture(target, button, before)
+            } else if (!down && button == pendingSingle) {
+                pendingSingle = null
+                if (target is CaptureTarget.Shortcut) saveShortcut(target, PadBinding(button))
+            }
         } else if (action != null) {
             _live.update { it.copy(lastAction = action, actionCount = it.actionCount + 1) }
         }
     }
 
     override fun onPadReleased() {
+        pendingSingle = null
         _live.update { it.copy(held = emptySet()) }
     }
 
-    private fun capture(command: PadCommand, button: PadButton, alreadyHeld: Set<PadButton>) {
+    private fun capture(target: CaptureTarget, button: PadButton, alreadyHeld: Set<PadButton>) {
         if (saving) return
         val others = alreadyHeld.filter { it != button && it !in DPAD }
         if (others.size > 1) {
+            pendingSingle = null
             _messages.trySend(PadMessage.ReleaseOthers)
             return
         }
         val modifier = others.firstOrNull()
-        // Takeoff / land is a combo: the first button is only being held, wait for the second.
-        if (command == PadCommand.TAKEOFF_LAND && modifier == null && button !in DPAD) return
-        val binding = if (command == PadCommand.FLIP) PadBinding(button) else PadBinding(button, modifier)
+        when (target) {
+            is CaptureTarget.Command -> {
+                val command = target.command
+                // Takeoff / land is a combo: the first button is only being held, wait for the second.
+                if (command == PadCommand.TAKEOFF_LAND && modifier == null && button !in DPAD) return
+                val binding = if (command == PadCommand.FLIP) PadBinding(button) else PadBinding(button, modifier)
+                write(forShortcut = false, change = { it.assign(command, binding) }) { r ->
+                    PadMessage.Assigned(command, binding, r.swappedWith)
+                }
+            }
+            is CaptureTarget.Shortcut -> when {
+                modifier != null -> {
+                    pendingSingle = null
+                    saveShortcut(target, PadBinding(button, modifier))
+                }
+                // A button alone: decided when it is released (or a second button makes a combo).
+                // A moving function is a combo anyway, unless the press is a refused D-pad.
+                button in DPAD -> saveShortcut(target, PadBinding(button))
+                target.function.moves -> Unit
+                else -> pendingSingle = button
+            }
+        }
+    }
+
+    private fun saveShortcut(target: CaptureTarget.Shortcut, binding: PadBinding) {
+        if (saving) return
+        val shortcut = PadShortcut(binding, target.function)
+        write(forShortcut = true, change = { b ->
+            val index = target.index
+            if (index == null) b.addShortcut(shortcut) else b.replaceShortcut(index, shortcut)
+        }) { PadMessage.ShortcutSaved(shortcut) }
+    }
+
+    /**
+     * Applies [change] on the stored layout, inside the write (never built on a stale copy).
+     * Done: capture over, [ok] told. Refused: the capture stays, the pilot simply tries again.
+     */
+    private fun write(
+        forShortcut: Boolean,
+        change: (GamepadBindings) -> BindingResult?,
+        ok: (BindingResult.Ok) -> PadMessage,
+    ) {
         saving = true
+        val target = _capture.value
         viewModelScope.launch {
             try {
-                // Assigned on the stored layout, inside the write: never built on a stale copy.
                 var result: BindingResult? = null
                 repository.updatePilot { pilot ->
-                    val r = pilot.padBindings.assign(command, binding)
+                    val r = change(pilot.padBindings)
                     result = r
                     if (r is BindingResult.Ok) pilot.copy(padBindings = r.bindings) else pilot
                 }
                 when (val r = result) {
                     is BindingResult.Ok -> {
-                        if (_capture.value == command) _capture.value = null
-                        _messages.trySend(PadMessage.Assigned(command, binding, r.swappedWith))
+                        if (target != null && _capture.value == target) setCapture(null)
+                        _messages.trySend(ok(r))
                     }
-                    // Stay in capture mode: the pilot simply tries another button.
-                    is BindingResult.Refused -> _messages.trySend(PadMessage.Refused(r.problem, r.other))
+                    is BindingResult.Refused -> _messages.trySend(PadMessage.Refused(r.problem, r.other, r.otherShortcut, forShortcut))
                     null -> Unit
                 }
             } finally {
@@ -219,6 +323,7 @@ class GamepadViewModel @Inject constructor(
         val DPAD = setOf(PadButton.DPAD_UP, PadButton.DPAD_DOWN, PadButton.DPAD_LEFT, PadButton.DPAD_RIGHT)
     }
 }
+
 
 @Composable
 fun GamepadRoute(onBack: () -> Unit, viewModel: GamepadViewModel = hiltViewModel()) {
@@ -237,26 +342,7 @@ fun GamepadRoute(onBack: () -> Unit, viewModel: GamepadViewModel = hiltViewModel
     val resources = LocalResources.current
     LaunchedEffect(viewModel) {
         // collectLatest: a new message replaces the one shown instead of queueing behind it.
-        viewModel.messages.collectLatest { message ->
-            val text = when (message) {
-                PadMessage.ReleaseOthers -> resources.getString(R.string.pad_release_others)
-                is PadMessage.Assigned -> {
-                    val assigned = resources.getString(R.string.pad_assigned, resources.getString(message.command.label), message.binding.label())
-                    message.swappedWith?.let { assigned + " " + resources.getString(R.string.pad_swapped, resources.getString(it.label)) } ?: assigned
-                }
-                is PadMessage.Refused -> when (message.problem) {
-                    BindingProblem.DPAD_RESERVED -> resources.getString(R.string.pad_refused_dpad)
-                    BindingProblem.COMBO_REQUIRED -> resources.getString(R.string.pad_refused_combo)
-                    BindingProblem.FLIP_SINGLE_BUTTON -> resources.getString(R.string.pad_refused_flip)
-                    BindingProblem.SAME_BUTTON_TWICE -> resources.getString(R.string.pad_refused_same)
-                    BindingProblem.CONFLICT -> resources.getString(
-                        R.string.pad_refused_conflict,
-                        message.other?.let { resources.getString(it.label) } ?: "?",
-                    )
-                }
-            }
-            snackbar.showSnackbar(text)
-        }
+        viewModel.messages.collectLatest { message -> snackbar.showSnackbar(messageText(message, resources)) }
     }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -293,15 +379,54 @@ fun GamepadRoute(onBack: () -> Unit, viewModel: GamepadViewModel = hiltViewModel
                     ) {
                         BindingsView(
                             bindings = pilot.padBindings,
-                            capture = capture,
+                            capture = (capture as? CaptureTarget.Command)?.command,
                             onEdit = viewModel::startCapture,
                             onCancel = viewModel::cancelCapture,
                             onReset = viewModel::resetDefaults,
+                        )
+                        ShortcutsView(
+                            bindings = pilot.padBindings,
+                            missions = availableMissions(pilot.customMissions),
+                            capture = capture as? CaptureTarget.Shortcut,
+                            onCapture = viewModel::startShortcutCapture,
+                            onFunction = viewModel::setShortcutFunction,
+                            onRemove = viewModel::removeShortcut,
+                            onClear = viewModel::clearShortcuts,
+                            onCancel = viewModel::cancelCapture,
                         )
                     }
                 }
             }
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).safeDrawingPadding())
+        }
+    }
+}
+
+private fun messageText(message: PadMessage, res: Resources): String = when (message) {
+    PadMessage.ReleaseOthers -> res.getString(R.string.pad_release_others)
+    is PadMessage.Assigned -> {
+        val assigned = res.getString(R.string.pad_assigned, res.getString(message.command.label), message.binding.label())
+        message.swappedWith?.let { assigned + " " + res.getString(R.string.pad_swapped, res.getString(it.label)) } ?: assigned
+    }
+    is PadMessage.ShortcutSaved -> res.getString(R.string.pad_shortcut_saved, message.shortcut.text(res))
+    is PadMessage.CommandsReset ->
+        if (message.dropped == 0) res.getString(R.string.pad_reset_done)
+        else res.getQuantityString(R.plurals.pad_reset_dropped, message.dropped, message.dropped)
+    is PadMessage.Refused -> when (message.problem) {
+        BindingProblem.DPAD_RESERVED -> res.getString(R.string.pad_refused_dpad)
+        BindingProblem.COMBO_REQUIRED -> res.getString(R.string.pad_refused_combo)
+        BindingProblem.FLIP_SINGLE_BUTTON -> res.getString(R.string.pad_refused_flip)
+        BindingProblem.SAME_BUTTON_TWICE -> res.getString(R.string.pad_refused_same)
+        BindingProblem.SHORTCUT_COMBO_REQUIRED -> res.getString(R.string.pad_refused_shortcut_combo)
+        BindingProblem.STOP_RESERVED -> res.getString(R.string.pad_refused_stop, res.getString(PadCommand.STOP_SMART_VIDEO.label))
+        BindingProblem.TOO_MANY -> res.getString(R.string.pad_refused_too_many, GamepadBindings.MAX_SHORTCUTS)
+        BindingProblem.CONFLICT -> when {
+            message.otherShortcut != null -> res.getString(R.string.pad_refused_conflict_shortcut, message.otherShortcut.text(res))
+            message.forShortcut -> res.getString(
+                R.string.pad_refused_conflict_command,
+                message.other?.let { res.getString(it.label) } ?: "?",
+            )
+            else -> res.getString(R.string.pad_refused_conflict, message.other?.let { res.getString(it.label) } ?: "?")
         }
     }
 }
@@ -330,8 +455,9 @@ private fun LiveView(live: PadLive, pilot: PilotSettings) {
             )
         }
     }
+    val resources = LocalResources.current
     Text(
-        text = live.lastAction?.let { stringResource(R.string.pad_last_action, actionText(it), live.actionCount) }
+        text = live.lastAction?.let { stringResource(R.string.pad_last_action, it.text(resources), live.actionCount) }
             ?: stringResource(R.string.pad_no_action),
         style = MaterialTheme.typography.bodyLarge,
     )
@@ -416,19 +542,161 @@ private fun BindingsView(
                 )
                 TextButton(onClick = onCancel) { Text(stringResource(R.string.pad_cancel)) }
             } else {
-                Text(
-                    text = binding.label() + if (command == PadCommand.FLIP) " + ✚" else "",
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                )
+                BindingChip(commandBindingLabel(command, binding))
                 TextButton(onClick = { onEdit(command) }) { Text(stringResource(R.string.pad_edit)) }
             }
         }
     }
     Text(stringResource(R.string.pad_rules), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     OutlinedButton(onClick = onReset) { Text(stringResource(R.string.pad_reset)) }
+}
+
+@Composable
+private fun BindingChip(text: String) {
+    Text(
+        text = text,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    )
+}
+
+/** Pilot shortcuts: add, change the function or the buttons, delete. */
+@Composable
+private fun ShortcutsView(
+    bindings: GamepadBindings,
+    missions: List<Mission>,
+    capture: CaptureTarget.Shortcut?,
+    onCapture: (Int?, PadFunction) -> Unit,
+    onFunction: (Int, PadFunction) -> Unit,
+    onRemove: (Int) -> Unit,
+    onClear: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val resources = LocalResources.current
+    // Function picker: for a new shortcut (index -1) or an existing one.
+    var picking by remember { mutableStateOf<Int?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
+    SectionTitle(R.string.pad_section_shortcuts)
+    if (bindings.shortcuts.isEmpty() && capture == null) {
+        Text(stringResource(R.string.pad_shortcuts_empty), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    bindings.shortcuts.forEachIndexed { index, shortcut ->
+        val capturing = capture?.index == index
+        Column(Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(shortcut.function.text(resources), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                if (capturing) {
+                    CaptureHint(shortcut.function)
+                    TextButton(onClick = onCancel) { Text(stringResource(R.string.pad_cancel)) }
+                } else {
+                    BindingChip(shortcut.binding.label())
+                }
+            }
+            if (shortcut.missionMissing(missions)) {
+                Text(
+                    stringResource(R.string.pad_shortcut_invalid_mission),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (!capturing) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { onCapture(index, shortcut.function) }) { Text(stringResource(R.string.pad_shortcut_buttons)) }
+                    TextButton(onClick = { picking = index }) { Text(stringResource(R.string.pad_shortcut_function)) }
+                    TextButton(onClick = { onRemove(index) }) { Text(stringResource(R.string.pad_shortcut_delete)) }
+                }
+            }
+        }
+    }
+    if (capture != null && capture.index == null) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.pad_shortcut_new, capture.function.text(resources)), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+            TextButton(onClick = onCancel) { Text(stringResource(R.string.pad_cancel)) }
+        }
+        CaptureHint(capture.function)
+    }
+    Text(stringResource(R.string.pad_shortcuts_rules), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            onClick = { picking = NEW_SHORTCUT },
+            enabled = bindings.shortcuts.size < GamepadBindings.MAX_SHORTCUTS,
+        ) { Text(stringResource(R.string.pad_shortcut_add)) }
+        if (bindings.shortcuts.isNotEmpty()) {
+            OutlinedButton(onClick = { confirmClear = true }) { Text(stringResource(R.string.pad_shortcuts_clear)) }
+        }
+    }
+
+    picking?.let { index ->
+        FunctionPicker(
+            missions = missions,
+            onPick = { function ->
+                picking = null
+                if (index == NEW_SHORTCUT) onCapture(null, function) else onFunction(index, function)
+            },
+            onDismiss = { picking = null },
+        )
+    }
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            text = { Text(stringResource(R.string.pad_shortcuts_clear_confirm)) },
+            confirmButton = {
+                TextButton(onClick = { confirmClear = false; onClear() }) { Text(stringResource(R.string.pad_shortcut_delete)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text(stringResource(R.string.pad_cancel)) } },
+        )
+    }
+}
+
+private const val NEW_SHORTCUT = -1
+
+@Composable
+private fun CaptureHint(function: PadFunction) {
+    Text(
+        stringResource(if (function.moves) R.string.pad_capture_shortcut_combo else R.string.pad_capture_shortcut),
+        color = Color(0xFFFFCA28),
+        style = MaterialTheme.typography.bodyMedium,
+    )
+}
+
+/** Every function a shortcut can trigger, missions by name. */
+@Composable
+private fun FunctionPicker(missions: List<Mission>, onPick: (PadFunction) -> Unit, onDismiss: () -> Unit) {
+    val resources = LocalResources.current
+    val groups = listOf(
+        R.string.pad_group_smart to PadFunction.Catalog.filterIsInstance<PadFunction.SmartVideo>(),
+        R.string.pad_group_flips to PadFunction.Catalog.filterIsInstance<PadFunction.Flip>(),
+        R.string.pad_group_maneuvers to listOf(PadFunction.Bounce, PadFunction.PalmLand),
+        R.string.pad_group_tracking to PadFunction.Catalog.filterIsInstance<PadFunction.Tracking>(),
+        R.string.pad_group_missions to missions.map { PadFunction.RunMission(it.name) }.distinct(),
+        R.string.pad_group_other to PadFunction.Catalog.filter { !it.moves },
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.pad_pick_function)) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                groups.forEach { (title, functions) ->
+                    if (functions.isEmpty()) return@forEach
+                    Text(
+                        stringResource(title),
+                        Modifier.padding(top = 8.dp),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    functions.forEach { function ->
+                        TextButton(onClick = { onPick(function) }, modifier = Modifier.fillMaxWidth()) {
+                            Text(function.text(resources), Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.pad_cancel)) } },
+    )
 }
 
 @Composable
@@ -439,33 +707,3 @@ private fun SectionTitle(text: Int) {
 
 private fun packetHex(input: StickInput): String =
     Payloads.stick(input).take(6).joinToString(" ") { "%02x".format(it) }
-
-private fun PadButton.label(): String = when (this) {
-    PadButton.DPAD_UP -> "✚↑"
-    PadButton.DPAD_DOWN -> "✚↓"
-    PadButton.DPAD_LEFT -> "✚←"
-    PadButton.DPAD_RIGHT -> "✚→"
-    else -> name
-}
-
-private fun PadBinding.label(): String = modifier?.let { "${it.label()} + ${button.label()}" } ?: button.label()
-
-private val PadCommand.label: Int
-    get() = when (this) {
-        PadCommand.TAKEOFF_LAND -> R.string.pad_cmd_takeoff_land
-        PadCommand.FLIP -> R.string.pad_cmd_flip
-        PadCommand.PHOTO -> R.string.pad_cmd_photo
-        PadCommand.RECORD -> R.string.pad_cmd_record
-        PadCommand.FAST_MODE -> R.string.pad_cmd_fast
-        PadCommand.STOP_SMART_VIDEO -> R.string.pad_cmd_stop_smart
-    }
-
-@Composable
-private fun actionText(action: PadAction): String = when (action) {
-    PadAction.TakeoffOrLand -> stringResource(R.string.pad_cmd_takeoff_land)
-    PadAction.Photo -> stringResource(R.string.pad_cmd_photo)
-    PadAction.ToggleRecording -> stringResource(R.string.pad_cmd_record)
-    PadAction.ToggleFastMode -> stringResource(R.string.pad_cmd_fast)
-    PadAction.StopSmartVideo -> stringResource(R.string.pad_cmd_stop_smart)
-    is PadAction.Flip -> stringResource(R.string.pad_action_flip, action.direction.arrow)
-}

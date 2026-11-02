@@ -80,7 +80,12 @@ fun FlightRoute(onOpenSettings: () -> Unit, onOpenGallery: () -> Unit = {}, view
     val resources = LocalResources.current
     LaunchedEffect(viewModel) {
         viewModel.messages.collect { message ->
+            if (message is UserMessage.ShortcutMissionMissing) {
+                snackbar.showSnackbar(resources.getString(R.string.pad_shortcut_mission_missing, message.name))
+                return@collect
+            }
             val text = when (message) {
+                is UserMessage.ShortcutMissionMissing -> return@collect // shown above
                 is UserMessage.AutopilotEnded -> autopilotEndText(message.end)
                 UserMessage.AutopilotUnavailable -> R.string.autopilot_unavailable
                 UserMessage.SmartVideoInterrupted -> R.string.message_smart_video_interrupted
@@ -345,11 +350,14 @@ private fun TopBar(state: FlightUiState) {
                 HudText(state.wifiStrength?.let { stringResource(R.string.hud_wifi, it) } ?: "Wi-Fi --")
             }
             // "Centre the sticks" stays visible: the pad does not fly until it is done.
+            // A long press on the pad indicator lists its commands and shortcuts.
             when (state.gamepad) {
                 com.drone.tellopilot.input.GamepadStatus.READY ->
-                    if (show(HudItem.GAMEPAD)) HudText(stringResource(R.string.hud_gamepad))
+                    if (show(HudItem.GAMEPAD)) {
+                        PadHudLabel(stringResource(R.string.hud_gamepad), Color.White, state.pilot.padBindings, state.missions)
+                    }
                 com.drone.tellopilot.input.GamepadStatus.CENTER_STICKS ->
-                    HudText(stringResource(R.string.hud_gamepad_center), color = Color(0xFFFFCA28))
+                    PadHudLabel(stringResource(R.string.hud_gamepad_center), Color(0xFFFFCA28), state.pilot.padBindings, state.missions)
                 com.drone.tellopilot.input.GamepadStatus.NONE -> Unit
             }
             if (show(HudItem.RECORDING)) when (state.recording) {

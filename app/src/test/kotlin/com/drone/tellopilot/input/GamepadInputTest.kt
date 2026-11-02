@@ -313,6 +313,44 @@ class GamepadInputTest {
         assertEquals(PadAction.TakeoffOrLand, listener.actions.last())
     }
 
+    @Test
+    fun `a shortcut fires with an analog trigger as modifier, the button alone keeps its command`() {
+        val input = ready()
+        val rotate = com.drone.tello.control.PadFunction.SmartVideo(com.drone.tello.protocol.SmartVideoMode.ROTATE_360)
+        val bindings = (
+            GamepadBindings.Default.addShortcut(com.drone.tello.control.PadShortcut(PadBinding(PadButton.X, PadButton.L2), rotate))
+                as com.drone.tello.control.BindingResult.Ok
+            ).bindings
+        input.setBindings(bindings)
+        input.press(1, KeyEvent.KEYCODE_BUTTON_X)
+        assertEquals(listOf<PadAction>(PadAction.ToggleFastMode), listener.actions)
+        // L2 reported as an axis only (many pads), then X.
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 1f))
+        input.press(1, KeyEvent.KEYCODE_BUTTON_X)
+        assertEquals(PadAction.Shortcut(rotate), listener.actions.last())
+        // Trigger released: X is the fast mode again.
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 0f))
+        input.press(1, KeyEvent.KEYCODE_BUTTON_X)
+        assertEquals(PadAction.ToggleFastMode, listener.actions.last())
+        assertEquals(3, listener.actions.size)
+    }
+
+    @Test
+    fun `focus loss with the modifier held - no shortcut from the stale modifier`() {
+        val input = ready()
+        val rotate = com.drone.tello.control.PadFunction.SmartVideo(com.drone.tello.protocol.SmartVideoMode.ROTATE_360)
+        input.setBindings(
+            (
+                GamepadBindings.Default.addShortcut(com.drone.tello.control.PadShortcut(PadBinding(PadButton.A, PadButton.SELECT), rotate))
+                    as com.drone.tello.control.BindingResult.Ok
+                ).bindings,
+        )
+        input.onKeyEvent(key(1, KeyEvent.KEYCODE_BUTTON_SELECT, down = true))
+        input.release() // window focus lost: the key-up of SELECT will never come
+        input.press(1, KeyEvent.KEYCODE_BUTTON_A)
+        assertTrue(listener.actions.isEmpty())
+    }
+
     // ------------------------------------------------ release, disconnection
 
     @Test

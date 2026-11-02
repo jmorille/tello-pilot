@@ -1,6 +1,9 @@
 package com.drone.tellopilot.ui.flight
 
+import com.drone.tello.control.Mission
 import com.drone.tello.control.MissionStep
+import com.drone.tello.control.ModeCheck
+import com.drone.tello.control.PadFunction
 import com.drone.tello.protocol.FlightData
 import kotlin.math.abs
 
@@ -42,6 +45,67 @@ internal fun FlightAction.endsAutopilot() = when (this) {
 internal fun padComboAction(flight: FlightData?, knownFlying: Boolean, landing: Boolean): FlightAction {
     val onGround = flight != null && !flight.flying && !flight.motorsOn && !knownFlying && !landing
     return if (onGround) FlightAction.Takeoff else FlightAction.Land
+}
+
+/** What a pad shortcut does when pressed. */
+internal sealed interface ShortcutDecision {
+    /** Through [FlightViewModel.onAction]'s path: the checks of the screen buttons apply. */
+    data class Run(val action: FlightAction) : ShortcutDecision
+    /** Nothing sent; [message] is shown and the pad vibrates. */
+    data class Refuse(val message: UserMessage) : ShortcutDecision
+    /** Stop whatever runs: smart video, automatic flight, bounce. */
+    data object StopAll : ShortcutDecision
+}
+
+/**
+ * Pad shortcut → action. A function that makes the drone move is refused while a manoeuvre
+ * runs ([maneuverRunning]: smart video, automatic flight, landing): the pilot stops it first
+ * (stop button, or a stick), so that a shortcut never silently replaces what the drone does.
+ * Switching the bounce off, stopping, photo, video and the speed modes are always allowed.
+ * A mission shortcut whose mission no longer exists ([missions]: presets and the pilot's own)
+ * does nothing but tell the pilot.
+ */
+internal fun shortcutDecision(
+    function: PadFunction,
+    missions: List<Mission>,
+    flying: Boolean,
+    maneuverRunning: Boolean,
+    bounce: Boolean,
+): ShortcutDecision {
+    val busy = ShortcutDecision.Refuse(UserMessage.ModeRefused(ModeCheck.BUSY))
+    return when (function) {
+        PadFunction.Stop -> ShortcutDecision.StopAll
+        PadFunction.Photo -> ShortcutDecision.Run(FlightAction.TakePhoto)
+        PadFunction.Record -> ShortcutDecision.Run(FlightAction.ToggleRecording)
+        PadFunction.FastMode -> ShortcutDecision.Run(FlightAction.ToggleFastMode)
+        PadFunction.Tripod -> ShortcutDecision.Run(FlightAction.ToggleTripod)
+        PadFunction.Bounce -> when {
+            bounce -> ShortcutDecision.Run(FlightAction.SetBounce(false))
+            maneuverRunning -> busy
+            else -> ShortcutDecision.Run(FlightAction.SetBounce(true))
+        }
+        is PadFunction.RunMission -> {
+            val wanted = Mission.cleanName(function.name)
+            val mission = missions.firstOrNull { Mission.cleanName(it.name) == wanted }
+            when {
+                mission == null -> ShortcutDecision.Refuse(UserMessage.ShortcutMissionMissing(function.name))
+                maneuverRunning -> busy
+                else -> ShortcutDecision.Run(FlightAction.StartMission(mission))
+            }
+        }
+        is PadFunction.SmartVideo -> if (maneuverRunning) busy else ShortcutDecision.Run(FlightAction.StartSmartVideo(function.mode))
+        is PadFunction.Flip -> if (maneuverRunning) busy else ShortcutDecision.Run(FlightAction.Flip(function.direction))
+        is PadFunction.Tracking -> if (maneuverRunning) {
+            busy
+        } else {
+            ShortcutDecision.Run(FlightAction.StartTracking(function.mode, if (function.orbitDirection < 0) -1 else 1))
+        }
+        PadFunction.PalmLand -> when {
+            !flying -> ShortcutDecision.Refuse(UserMessage.ModeRefused(ModeCheck.NOT_FLYING))
+            maneuverRunning -> busy
+            else -> ShortcutDecision.Run(FlightAction.PalmLand)
+        }
+    }
 }
 
 /**
