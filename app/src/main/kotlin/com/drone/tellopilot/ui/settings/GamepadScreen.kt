@@ -116,8 +116,8 @@ sealed interface PadMessage {
 /** What the next button press is for. */
 sealed interface CaptureTarget {
     data class Command(val command: PadCommand) : CaptureTarget
-    /** [index] null: a new shortcut. */
-    data class Shortcut(val index: Int?, val function: PadFunction) : CaptureTarget
+    /** [original]: the shortcut being edited (found again by value when saving), null for a new one. */
+    data class Shortcut(val original: PadShortcut?, val function: PadFunction) : CaptureTarget
 }
 
 /**
@@ -177,8 +177,8 @@ class GamepadViewModel @Inject constructor(
 
     fun startCapture(command: PadCommand) = setCapture(CaptureTarget.Command(command))
 
-    /** New buttons for the shortcut at [index] (null: a new shortcut for [function]). */
-    fun startShortcutCapture(index: Int?, function: PadFunction) = setCapture(CaptureTarget.Shortcut(index, function))
+    /** New buttons for [original] (null: a new shortcut for [function]). */
+    fun startShortcutCapture(original: PadShortcut?, function: PadFunction) = setCapture(CaptureTarget.Shortcut(original, function))
 
     fun cancelCapture() = setCapture(null)
 
@@ -196,17 +196,26 @@ class GamepadViewModel @Inject constructor(
         }
     }
 
-    fun setShortcutFunction(index: Int, function: PadFunction) {
+    // Shortcuts are found by value inside the write: a stale row index (double tap, concurrent
+    // edit) never touches another shortcut (two shortcuts never share their buttons).
+
+    fun setShortcutFunction(original: PadShortcut, function: PadFunction) {
         setCapture(null)
+        val updated = original.copy(function = function)
         write(forShortcut = true, change = { b ->
-            val old = b.shortcuts.getOrNull(index) ?: return@write null
-            b.replaceShortcut(index, old.copy(function = function))
-        }) { PadMessage.ShortcutSaved(it.bindings.shortcuts[index]) }
+            val index = b.shortcuts.indexOf(original).takeIf { it >= 0 } ?: return@write null
+            b.replaceShortcut(index, updated)
+        }) { PadMessage.ShortcutSaved(updated) }
     }
 
-    fun removeShortcut(index: Int) {
+    fun removeShortcut(shortcut: PadShortcut) {
         setCapture(null)
-        viewModelScope.launch { repository.updatePilot { it.copy(padBindings = it.padBindings.removeShortcut(index)) } }
+        viewModelScope.launch {
+            repository.updatePilot { pilot ->
+                val index = pilot.padBindings.shortcuts.indexOf(shortcut)
+                if (index < 0) pilot else pilot.copy(padBindings = pilot.padBindings.removeShortcut(index))
+            }
+        }
     }
 
     fun clearShortcuts() {
@@ -228,7 +237,8 @@ class GamepadViewModel @Inject constructor(
                 capture(target, button, before)
             } else if (!down && button == pendingSingle) {
                 pendingSingle = null
-                if (target is CaptureTarget.Shortcut) saveShortcut(target, PadBinding(button))
+                // Not dropped while a previous write runs: the change is applied inside the store transaction.
+                if (target is CaptureTarget.Shortcut) saveShortcut(target, PadBinding(button), evenWhileSaving = true)
             }
         } else if (action != null) {
             _live.update { it.copy(lastAction = action, actionCount = it.actionCount + 1) }
@@ -273,12 +283,18 @@ class GamepadViewModel @Inject constructor(
         }
     }
 
-    private fun saveShortcut(target: CaptureTarget.Shortcut, binding: PadBinding) {
-        if (saving) return
+    private fun saveShortcut(target: CaptureTarget.Shortcut, binding: PadBinding, evenWhileSaving: Boolean = false) {
+        if (saving && !evenWhileSaving) return
         val shortcut = PadShortcut(binding, target.function)
         write(forShortcut = true, change = { b ->
-            val index = target.index
-            if (index == null) b.addShortcut(shortcut) else b.replaceShortcut(index, shortcut)
+            val original = target.original
+            if (original == null) {
+                b.addShortcut(shortcut)
+            } else {
+                // Deleted meanwhile: nothing to edit.
+                val index = b.shortcuts.indexOf(original).takeIf { it >= 0 } ?: return@write null
+                b.replaceShortcut(index, shortcut)
+            }
         }) { PadMessage.ShortcutSaved(shortcut) }
     }
 
@@ -568,22 +584,22 @@ private fun ShortcutsView(
     bindings: GamepadBindings,
     missions: List<Mission>,
     capture: CaptureTarget.Shortcut?,
-    onCapture: (Int?, PadFunction) -> Unit,
-    onFunction: (Int, PadFunction) -> Unit,
-    onRemove: (Int) -> Unit,
+    onCapture: (PadShortcut?, PadFunction) -> Unit,
+    onFunction: (PadShortcut, PadFunction) -> Unit,
+    onRemove: (PadShortcut) -> Unit,
     onClear: () -> Unit,
     onCancel: () -> Unit,
 ) {
     val resources = LocalResources.current
-    // Function picker: for a new shortcut (index -1) or an existing one.
-    var picking by remember { mutableStateOf<Int?>(null) }
+    // Function picker: for a new shortcut or an existing one.
+    var picking by remember { mutableStateOf<PickFor?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
     SectionTitle(R.string.pad_section_shortcuts)
     if (bindings.shortcuts.isEmpty() && capture == null) {
         Text(stringResource(R.string.pad_shortcuts_empty), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    bindings.shortcuts.forEachIndexed { index, shortcut ->
-        val capturing = capture?.index == index
+    bindings.shortcuts.forEach { shortcut ->
+        val capturing = capture != null && capture.original == shortcut
         Column(Modifier.fillMaxWidth()) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(shortcut.function.text(resources), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
@@ -603,14 +619,14 @@ private fun ShortcutsView(
             }
             if (!capturing) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { onCapture(index, shortcut.function) }) { Text(stringResource(R.string.pad_shortcut_buttons)) }
-                    TextButton(onClick = { picking = index }) { Text(stringResource(R.string.pad_shortcut_function)) }
-                    TextButton(onClick = { onRemove(index) }) { Text(stringResource(R.string.pad_shortcut_delete)) }
+                    TextButton(onClick = { onCapture(shortcut, shortcut.function) }) { Text(stringResource(R.string.pad_shortcut_buttons)) }
+                    TextButton(onClick = { picking = PickFor(shortcut) }) { Text(stringResource(R.string.pad_shortcut_function)) }
+                    TextButton(onClick = { onRemove(shortcut) }) { Text(stringResource(R.string.pad_shortcut_delete)) }
                 }
             }
         }
     }
-    if (capture != null && capture.index == null) {
+    if (capture != null && capture.original == null) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(R.string.pad_shortcut_new, capture.function.text(resources)), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
             TextButton(onClick = onCancel) { Text(stringResource(R.string.pad_cancel)) }
@@ -620,7 +636,7 @@ private fun ShortcutsView(
     Text(stringResource(R.string.pad_shortcuts_rules), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedButton(
-            onClick = { picking = NEW_SHORTCUT },
+            onClick = { picking = PickFor(null) },
             enabled = bindings.shortcuts.size < GamepadBindings.MAX_SHORTCUTS,
         ) { Text(stringResource(R.string.pad_shortcut_add)) }
         if (bindings.shortcuts.isNotEmpty()) {
@@ -628,12 +644,12 @@ private fun ShortcutsView(
         }
     }
 
-    picking?.let { index ->
+    picking?.let { pick ->
         FunctionPicker(
             missions = missions,
             onPick = { function ->
                 picking = null
-                if (index == NEW_SHORTCUT) onCapture(null, function) else onFunction(index, function)
+                if (pick.shortcut == null) onCapture(null, function) else onFunction(pick.shortcut, function)
             },
             onDismiss = { picking = null },
         )
@@ -650,7 +666,8 @@ private fun ShortcutsView(
     }
 }
 
-private const val NEW_SHORTCUT = -1
+/** Function picker opened for [shortcut] (null: a new shortcut). */
+private data class PickFor(val shortcut: PadShortcut?)
 
 @Composable
 private fun CaptureHint(function: PadFunction) {

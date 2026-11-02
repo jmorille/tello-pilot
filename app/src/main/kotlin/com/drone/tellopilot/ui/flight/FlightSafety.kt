@@ -59,7 +59,7 @@ internal sealed interface ShortcutDecision {
 
 /**
  * Pad shortcut → action. A function that makes the drone move is refused while a manoeuvre
- * runs ([maneuverRunning]: smart video, automatic flight, landing): the pilot stops it first
+ * runs ([maneuverRunning]: smart video, bounce, automatic flight, landing): the pilot stops it first
  * (stop button, or a stick), so that a shortcut never silently replaces what the drone does.
  * Switching the bounce off, stopping, photo, video and the speed modes are always allowed.
  * A mission shortcut whose mission no longer exists ([missions]: presets and the pilot's own)

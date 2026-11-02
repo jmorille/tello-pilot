@@ -351,6 +351,25 @@ class GamepadInputTest {
         assertTrue(listener.actions.isEmpty())
     }
 
+    @Test
+    fun `a modifier held when the pad drops (sticks centred) is forgotten`() {
+        val input = ready()
+        val flip = com.drone.tello.control.PadFunction.Flip(FlipDirection.FORWARD)
+        input.setBindings(
+            (
+                GamepadBindings.Default.addShortcut(com.drone.tello.control.PadShortcut(PadBinding(PadButton.A, PadButton.L2), flip))
+                    as com.drone.tello.control.BindingResult.Ok
+                ).bindings,
+        )
+        // L2 held as a key; the pad drops before its key-up and comes back under a new id.
+        input.onKeyEvent(key(1, KeyEvent.KEYCODE_BUTTON_L2, down = true))
+        disconnect(1)
+        connect(2)
+        input.sticks(2)
+        input.press(2, KeyEvent.KEYCODE_BUTTON_A)
+        assertTrue(listener.actions.isEmpty())
+    }
+
     // ------------------------------------------------ release, disconnection
 
     @Test

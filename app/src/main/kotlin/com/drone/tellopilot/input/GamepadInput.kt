@@ -97,7 +97,15 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
                 override fun onInputDeviceChanged(deviceId: Int) = refresh()
                 override fun onInputDeviceRemoved(deviceId: Int) {
                     pads.remove(deviceId)
-                    if (deviceId == owner) release()
+                    // A button held when a pad drops (its key-up never comes) must not stay
+                    // "held" and complete a combo or a shortcut at the next press; the sticks of
+                    // another pad that drives are left alone.
+                    if (deviceId == owner) {
+                        release()
+                    } else {
+                        releaseButtons()
+                        monitor?.onPadReleased()
+                    }
                     refresh()
                 }
             },
@@ -144,6 +152,18 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
 
     /** Neutral sticks, no held buttons (focus loss, disconnection, screen left). */
     fun release() {
+        releaseButtons()
+        owner = -1
+        if (lastSticks != PadSticks.Neutral) {
+            lastSticks = PadSticks.Neutral
+            listener?.onPadSticks(PadSticks.Neutral)
+            monitor?.onPadSticks(PadSticks.Neutral)
+        }
+        monitor?.onPadReleased()
+    }
+
+    /** No held button any more; a trigger still pressed must be released before it counts again. */
+    private fun releaseButtons() {
         mapper.reset()
         // Key-ups are lost while the window has no focus: forget the keys. Axes (triggers, hat)
         // are reported continuously: one still held must be released before it counts again,
@@ -153,13 +173,6 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
             blocked[i] = axisDown[i]
             effective[i] = false
         }
-        owner = -1
-        if (lastSticks != PadSticks.Neutral) {
-            lastSticks = PadSticks.Neutral
-            listener?.onPadSticks(PadSticks.Neutral)
-            monitor?.onPadSticks(PadSticks.Neutral)
-        }
-        monitor?.onPadReleased()
     }
 
     /** Returns `true` if the event was consumed (only while the flight or configuration screen listens). */

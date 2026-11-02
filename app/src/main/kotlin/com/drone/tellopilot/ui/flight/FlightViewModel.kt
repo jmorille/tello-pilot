@@ -480,6 +480,9 @@ class FlightViewModel internal constructor(
         }
     }
 
+    /** Last palm landing request: no pad manoeuvre while the drone comes down on the hand. */
+    private var palmLandRequestedAt = Long.MIN_VALUE / 2
+
     /** Last pad shortcut that makes the drone move (anti double-press). */
     private var lastPadManeuver = Long.MIN_VALUE / 2
 
@@ -489,16 +492,15 @@ class FlightViewModel internal constructor(
      * not be looking at the screen.
      */
     private fun padShortcut(function: com.drone.tello.control.PadFunction) {
-        if (function.moves) {
-            val now = clock.uptimeMillis()
-            if (now - lastPadManeuver < PAD_MANEUVER_COOLDOWN_MS) return
-            lastPadManeuver = now
-        }
         val controller = session.controller.value
         val maneuvers = controller?.maneuvers?.value
-        // The automatic climb right after takeoff is not the pilot's manoeuvre: a shortcut ends
-        // it, as the screen buttons do.
-        val running = maneuvers?.smartVideoActive == true || controller?.isLanding == true ||
+        val now = clock.uptimeMillis()
+        // Landing (the app's, the drone's own or on the palm) and bounce count as running
+        // manoeuvres. The automatic climb right after takeoff does not: a shortcut ends it, as
+        // the screen buttons do.
+        val running = maneuvers?.smartVideoActive == true || maneuvers?.bounce == true ||
+            controller?.isLanding == true || session.lastFlight?.isLanding == true ||
+            now - palmLandRequestedAt < PALM_LAND_QUIET_MS ||
             (autopilot.active && !takeoffAdjustRunning)
         val decision = shortcutDecision(
             function,
@@ -508,7 +510,15 @@ class FlightViewModel internal constructor(
             bounce = maneuvers?.bounce == true,
         )
         when (decision) {
-            is ShortcutDecision.Run -> perform(decision.action, fromPad = true)
+            is ShortcutDecision.Run -> {
+                // A second press of a manoeuvre right after the first (contact bounce, double
+                // press) is ignored; switching the bounce off never is.
+                if (function.moves && decision.action != FlightAction.SetBounce(false)) {
+                    if (now - lastPadManeuver < PAD_MANEUVER_COOLDOWN_MS) return
+                    lastPadManeuver = now
+                }
+                perform(decision.action, fromPad = true)
+            }
             is ShortcutDecision.Refuse -> refuse(decision.message, fromPad = true)
             ShortcutDecision.StopAll -> padStopAll()
         }
@@ -566,6 +576,7 @@ class FlightViewModel internal constructor(
                 confirmed { throwTakeoff() }
             }
             FlightAction.PalmLand -> {
+                palmLandRequestedAt = clock.uptimeMillis()
                 // Touching the hand is not a shock.
                 safety.suppressImpacts(clock.elapsedRealtime(), PALM_LAND_QUIET_MS)
                 confirmed { palmLand() }

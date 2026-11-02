@@ -153,6 +153,33 @@ class FlightViewModelShortcutsTest {
     }
 
     @Test
+    fun `no manoeuvre over the hand after a palm landing, nor during the bounce`() = test {
+        flying()
+        shortcut(PadFunction.PalmLand)
+        coVerify { drone.controller.palmLand() }
+        scope.advanceTimeBy(2_000) // past the anti double-press delay
+        shortcut(PadFunction.Flip(FlipDirection.FORWARD))
+        coVerify(exactly = 0) { drone.controller.flip(any()) }
+        assertEquals(UserMessage.ModeRefused(ModeCheck.BUSY), messages.last())
+        scope.advanceTimeBy(16_000)
+        drone.maneuversFlow.value = ManeuverState(bounce = true)
+        shortcut(PadFunction.RunMission("Attente"))
+        assertFalse(autopilot.active)
+        assertEquals(UserMessage.ModeRefused(ModeCheck.BUSY), messages.last())
+    }
+
+    @Test
+    fun `switching the bounce off right after switching it on is never dropped`() = test {
+        flying()
+        shortcut(PadFunction.Bounce)
+        coVerify { drone.controller.setBounce(true) }
+        drone.maneuversFlow.value = ManeuverState(bounce = true)
+        scope.advanceTimeBy(300)
+        shortcut(PadFunction.Bounce)
+        coVerify { drone.controller.setBounce(false) }
+    }
+
+    @Test
     fun `the pad stop ends the mission, the bounce and the smart video`() = test {
         flying()
         shortcut(PadFunction.RunMission("Attente"))
