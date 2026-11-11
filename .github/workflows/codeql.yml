@@ -1,8 +1,7 @@
 name: CodeQL
 
 on:
-  push:
-    branches: [main]
+  # No run on every push to main (CI minutes): PRs are gated, and main is analysed weekly.
   pull_request:
     branches: [main]
   schedule:
