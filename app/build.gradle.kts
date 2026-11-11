@@ -76,7 +76,7 @@ dependencies {
     constraints {
         // Pulled by Media3; CVE-2026-102554 (the app never deserializes Guava collections,
         // but there is no reason to ship the vulnerable version).
-        implementation("com.google.guava:guava:33.7.2-android") { because("CVE-2026-102554") }
+        implementation("com.google.guava:guava:33.8.0-android") { because("CVE-2026-102554") }
         // Pulled by ML Kit pose detection (3.0.0, only for remote model downloads, unused with
         // the bundled model): certificate validation flaws fixed in 4.9.2 (API-compatible).
         implementation("com.squareup.okhttp3:okhttp:4.12.0") { because("GHSA-3cqm-mf7h-prrj, GHSA-4hc2-jh7r-wrc3") }
