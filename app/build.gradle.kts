@@ -79,7 +79,7 @@ dependencies {
         implementation("com.google.guava:guava:33.8.0-android") { because("CVE-2026-102554") }
         // Pulled by ML Kit pose detection (3.0.0, only for remote model downloads, unused with
         // the bundled model): certificate validation flaws fixed in 4.9.2 (API-compatible).
-        implementation("com.squareup.okhttp3:okhttp:4.12.0") { because("GHSA-3cqm-mf7h-prrj, GHSA-4hc2-jh7r-wrc3") }
+        implementation("com.squareup.okhttp3:okhttp:5.5.1") { because("GHSA-3cqm-mf7h-prrj, GHSA-4hc2-jh7r-wrc3") }
         // ML Kit (pose / acceleration) pulls WorkManager 2.7.0 with Room 2.2.5, whose WorkDatabase
         // can no longer be created once minified (release crash at startup): current versions.
         listOf("work-runtime", "work-runtime-ktx", "work-multiprocess").forEach {
