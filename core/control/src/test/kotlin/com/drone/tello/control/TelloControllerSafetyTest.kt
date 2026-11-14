@@ -149,7 +149,7 @@ class TelloControllerSafetyTest {
     }
 
     @Test
-    fun `the drone low-battery threshold gates bounce and smart video, flips keep 50 percent`() = session {
+    fun `the drone low-battery threshold gates bounce and smart video, flips keep their own 55 percent`() = session {
         ready(battery = 35)
         controller.applyDroneSettings(DroneSettings(lowBatteryPercent = 40))
         assertEquals(ModeCheck.LOW_BATTERY, controller.setBounce(true))

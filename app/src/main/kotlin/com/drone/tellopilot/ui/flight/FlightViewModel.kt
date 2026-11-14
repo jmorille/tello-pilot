@@ -624,8 +624,51 @@ class FlightViewModel internal constructor(
 
     fun onAction(action: FlightAction) = perform(action, fromPad = false)
 
+    private val _flipWarning = MutableStateFlow(false)
+
+    /**
+     * The first-flip safety notice is shown (until the pilot confirms or dismisses it). Nothing
+     * is flown meanwhile; once confirmed (remembered), the pilot launches the flip again.
+     */
+    val flipWarning: StateFlow<Boolean> = _flipWarning
+
+    /** The pilot read the first-flip notice: remembered, never shown again. */
+    fun acceptFlipWarning() {
+        _flipWarning.value = false
+        viewModelScope.launch { settings.updatePilot { it.copy(flipWarningAccepted = true) } }
+    }
+
+    fun dismissFlipWarning() {
+        _flipWarning.value = false
+    }
+
+    /**
+     * Flip (screen or pad): never ends what runs — an automatic flight, the takeoff height
+     * adjustment, a landing or a manoeuvre make the controller refuse it (BUSY), together with
+     * its height / battery / positioning / one-at-a-time rules. Shock detection is only
+     * suspended once the flip was actually sent.
+     */
+    private fun performFlip(direction: FlipDirection, fromPad: Boolean) {
+        if (!pilot.value.flipWarningAccepted) {
+            _flipWarning.value = true
+            if (fromPad) haptics.warning()
+            return
+        }
+        val now = clock.uptimeMillis()
+        val appBusy = autopilot.active || takeoffAdjust?.isActive == true ||
+            now - palmLandRequestedAt < PALM_LAND_QUIET_MS
+        modeCommand(fromPad, onOk = {
+            // A flip turns the drone upside down: no shock detection until well after it.
+            safety.suppressImpacts(clock.elapsedRealtime(), FLIP_QUIET_MS)
+        }) { flip(direction, appBusy) }
+    }
+
     /** [fromPad]: a refusal also vibrates (the pilot flying with the pad may not look at the screen). */
     private fun perform(action: FlightAction, fromPad: Boolean) {
+        if (action is FlightAction.Flip) {
+            performFlip(action.direction, fromPad)
+            return
+        }
         // Any manual flight command ends an automatic flight first.
         if (action.endsAutopilot()) {
             autopilot.stop()
@@ -649,11 +692,7 @@ class FlightViewModel internal constructor(
                 safety.suppressImpacts(clock.elapsedRealtime(), PALM_LAND_QUIET_MS)
                 confirmed { palmLand() }
             }
-            is FlightAction.Flip -> {
-                // A flip turns the drone upside down: no shock detection until well after it.
-                safety.suppressImpacts(clock.elapsedRealtime(), FLIP_QUIET_MS)
-                modeCommand(fromPad) { flip(action.direction) }
-            }
+            is FlightAction.Flip -> Unit // performFlip, above
             is FlightAction.SetBounce -> modeCommand(fromPad) { setBounce(action.enabled) }
             is FlightAction.StartSmartVideo -> {
                 smartVideoArmed = belowAutopilotOverride(pilotDeflection())
@@ -789,14 +828,18 @@ class FlightViewModel internal constructor(
     }
 
     /** Manoeuvre with preconditions: a refusal is explained to the pilot. */
-    private fun modeCommand(fromPad: Boolean, block: suspend TelloController.() -> ModeCheck) {
+    private fun modeCommand(
+        fromPad: Boolean,
+        onOk: () -> Unit = {},
+        block: suspend TelloController.() -> ModeCheck,
+    ) {
         val controller = session.controller.value ?: run {
             refuse(UserMessage.ModeRefused(ModeCheck.NOT_CONNECTED), fromPad)
             return
         }
         viewModelScope.launch {
             val result = withContext(controlDispatcher) { controller.block() }
-            if (result != ModeCheck.OK) refuse(UserMessage.ModeRefused(result), fromPad)
+            if (result != ModeCheck.OK) refuse(UserMessage.ModeRefused(result), fromPad) else onOk()
         }
     }
 

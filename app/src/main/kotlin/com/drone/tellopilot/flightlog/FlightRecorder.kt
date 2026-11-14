@@ -38,19 +38,30 @@ class FlightRecorder internal constructor(
      * Runs until cancelled. [latest] returns the live telemetry, or `null` when the link is
      * down (a reconnection within [FlightSampler.NO_DATA_TIMEOUT_MS] continues the same flight).
      * [commands] returns the stick command being sent (`null` when unknown): logged with each row.
+     * [events] returns (and forgets) what happened since the previous call: written in the next row.
      */
-    suspend fun record(commands: () -> StickInput? = { null }, latest: () -> Telemetry?) =
-        single.withLock { recordFlights(commands, latest) }
+    suspend fun record(
+        commands: () -> StickInput? = { null },
+        events: () -> List<String> = { emptyList() },
+        /** Age of the flight data [latest] returns, ms (`null`: unknown): marks stale rows. */
+        telemetryAge: () -> Long? = { null },
+        latest: () -> Telemetry?,
+    ) = single.withLock { recordFlights(commands, events, telemetryAge, latest) }
 
     /** Overlapping session runs (screen recreated) must not record the same flight twice. */
     private val single = Mutex()
 
-    private suspend fun recordFlights(commands: () -> StickInput?, latest: () -> Telemetry?) = withContext(io) {
+    private suspend fun recordFlights(
+        commands: () -> StickInput?,
+        events: () -> List<String>,
+        telemetryAge: () -> Long?,
+        latest: () -> Telemetry?,
+    ) = withContext(io) {
         val sampler = FlightSampler()
         var writer: FlightLogStore.FlightWriter? = null
         try {
             while (isActive) {
-                val tick = sampler.onTick(clock(), latest(), commands())
+                val tick = sampler.onTick(clock(), latest(), commands(), events(), telemetryAge())
                 try {
                     if (tick.start) {
                         val start = System.currentTimeMillis()

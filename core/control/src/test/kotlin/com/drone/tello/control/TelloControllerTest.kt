@@ -231,7 +231,9 @@ class TelloControllerTest {
         @Test
         fun `flight commands carry the expected ids, payloads and increasing sequence`() = session {
             connect()
-            transport.flight()
+            transport.flight(heightDm = 20)
+            advance(FlightModeRules.FLIP_MIN_FLYING_MS)
+            transport.flight(heightDm = 20) // fresh flight data (flips need it < 500 ms old)
             scope.runCurrent()
             assertTrue(controller.takeoff())
             assertEquals(ModeCheck.OK, controller.flip(FlipDirection.BACK_RIGHT))
@@ -276,7 +278,9 @@ class TelloControllerTest {
         @Test
         fun `flips are not retransmitted`() = session {
             connect()
-            transport.flight()
+            transport.flight(heightDm = 20)
+            advance(FlightModeRules.FLIP_MIN_FLYING_MS)
+            transport.flight(heightDm = 20) // fresh flight data (flips need it < 500 ms old)
             scope.runCurrent()
             controller.flip(FlipDirection.FORWARD)
             advance(500)
@@ -657,17 +661,22 @@ class TelloControllerTest {
         }
 
         @Test
-        fun `flips follow the official preconditions`() = session {
-            ready(battery = 49)
+        fun `flips follow the official preconditions, with the app margins`() = session {
+            ready(battery = 54, heightDm = 20)
             assertEquals(ModeCheck.LOW_BATTERY, controller.flip(FlipDirection.FORWARD))
-            transport.flight(battery = 50, heightDm = 41); scope.runCurrent()
+            transport.flight(battery = 55, heightDm = 41); scope.runCurrent()
             assertEquals(ModeCheck.TOO_HIGH, controller.flip(FlipDirection.FORWARD))
+            transport.flight(battery = 55, heightDm = 19); scope.runCurrent()
+            assertEquals(ModeCheck.TOO_LOW, controller.flip(FlipDirection.FORWARD))
             transport.flight(flying = false); scope.runCurrent()
             assertEquals(ModeCheck.NOT_FLYING, controller.flip(FlipDirection.FORWARD))
             transport.flight(wind = true); scope.runCurrent()
             assertEquals(ModeCheck.WIND, controller.flip(FlipDirection.FORWARD))
+            transport.flight(battery = 55, heightDm = 40); scope.runCurrent()
+            assertEquals(ModeCheck.NOT_STABILISED, controller.flip(FlipDirection.FORWARD), "flying again since 0 s")
             assertEquals(0, transport.count(Command.FLIP), "nothing sent when refused")
-            transport.flight(battery = 50, heightDm = 40); scope.runCurrent()
+            advance(FlightModeRules.FLIP_MIN_FLYING_MS)
+            transport.flight(battery = 55, heightDm = 40); scope.runCurrent()
             assertEquals(ModeCheck.OK, controller.flip(FlipDirection.FORWARD_RIGHT))
             assertArrayEquals(byteArrayOf(7), transport.all(Command.FLIP).single().packet!!.payload)
         }

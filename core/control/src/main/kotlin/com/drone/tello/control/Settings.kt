@@ -133,6 +133,8 @@ data class PilotSettings(
     val geofenceRadius: Float = GEOFENCE_RADIUS_DEFAULT,
     /** Manual flight: alert (never blocks the sticks) beyond [geofenceRadius] from the takeoff point. */
     val geofenceManualAlert: Boolean = false,
+    /** The pilot confirmed the first-flip safety notice (shown before the first flip only). */
+    val flipWarningAccepted: Boolean = false,
     /** Shock / crash detection: aborts an automatic flight, alerts in manual flight. */
     val impactDetection: Boolean = true,
     /** Missions turn toward each horizontal move first, so that the camera sees where it goes. */

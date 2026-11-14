@@ -269,18 +269,21 @@ class GamepadInputTest {
     }
 
     @Test
-    fun `flip - L2 held (analog) plus the D-pad hat, with trigger hysteresis`() {
+    fun `flip - L2 held (analog) plus the D-pad hat, fired on the D-pad release`() {
         val input = ready()
         input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 0.8f))
         // The trigger eases off but stays above the release travel: still held.
         input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 0.4f, MotionEvent.AXIS_HAT_X to -1f))
-        assertEquals(listOf<PadAction>(PadAction.Flip(FlipDirection.LEFT)), listener.actions)
+        assertTrue("nothing on the press", listener.actions.isEmpty())
         input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 0.4f))
+        assertEquals(listOf<PadAction>(PadAction.Flip(FlipDirection.LEFT)), listener.actions)
         input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 0.4f, MotionEvent.AXIS_HAT_Y to 1f))
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 0.4f))
         assertEquals(PadAction.Flip(FlipDirection.BACK), listener.actions.last())
         // Released: the D-pad alone does nothing.
         input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 0.2f))
         input.onMotionEvent(motion(1, MotionEvent.AXIS_HAT_Y to -1f))
+        input.onMotionEvent(motion(1))
         assertEquals(2, listener.actions.size)
     }
 
@@ -291,6 +294,8 @@ class GamepadInputTest {
         input.onMotionEvent(motion(1, MotionEvent.AXIS_BRAKE to 1f))
         input.onKeyEvent(key(1, KeyEvent.KEYCODE_DPAD_UP, down = true))
         input.onMotionEvent(motion(1, MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_HAT_Y to -1f))
+        input.onKeyEvent(key(1, KeyEvent.KEYCODE_DPAD_UP, down = false))
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_BRAKE to 1f))
         assertEquals(listOf<PadAction>(PadAction.Flip(FlipDirection.FORWARD)), listener.actions)
     }
 
@@ -405,7 +410,111 @@ class GamepadInputTest {
         input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 0f))
         input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 1f))
         input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 1f, MotionEvent.AXIS_HAT_X to 1f))
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 1f))
         assertEquals(listOf<PadAction>(PadAction.Flip(FlipDirection.RIGHT)), listener.actions)
+    }
+
+    // ------------------------------------------------- flip safety (incident 14 Nov. 2026)
+
+    private fun GamepadInput.l2Hat(l2: Float = 1f, hx: Float = 0f, hy: Float = 0f, vararg more: Pair<Int, Float>) =
+        onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to l2, MotionEvent.AXIS_HAT_X to hx, MotionEvent.AXIS_HAT_Y to hy, *more))
+
+    @Test
+    fun `flip safety - a bouncing hat around the threshold gives one flip, on the release`() {
+        val input = ready()
+        input.l2Hat()
+        input.l2Hat(hy = -1f)
+        input.l2Hat(hy = -0.45f) // contact bounce: above the 0.4 release, still held
+        input.l2Hat(hy = -1f)
+        input.l2Hat(hy = -0.55f) // below the 0.6 press: no new press
+        assertTrue(listener.actions.isEmpty())
+        input.l2Hat(hy = 0f)
+        assertEquals(listOf<PadAction>(PadAction.Flip(FlipDirection.FORWARD)), listener.actions)
+        assertTrue("the combo never moved a stick", listener.sticks.none { it != PadSticks.Neutral })
+    }
+
+    @Test
+    fun `flip safety - a rolled press up then right gives no flip at all`() {
+        val input = ready()
+        input.l2Hat()
+        input.l2Hat(hy = -1f)
+        input.l2Hat(hx = 1f, hy = -1f)
+        input.l2Hat(hx = 1f)
+        input.l2Hat()
+        assertTrue(listener.actions.isEmpty())
+        // The next clean press works again.
+        input.l2Hat(hy = -1f)
+        input.l2Hat()
+        assertEquals(listOf<PadAction>(PadAction.Flip(FlipDirection.FORWARD)), listener.actions)
+    }
+
+    @Test
+    fun `flip safety - a diagonal hat in one event gives no flip`() {
+        val input = ready()
+        input.l2Hat()
+        input.l2Hat(hx = 0.7f, hy = -0.7f)
+        input.l2Hat()
+        assertTrue(listener.actions.isEmpty())
+    }
+
+    @Test
+    fun `flip safety - L2 released before the D-pad cancels the flip`() {
+        val input = ready()
+        input.l2Hat()
+        input.l2Hat(hy = -1f)
+        input.l2Hat(l2 = 0f, hy = -1f)
+        input.l2Hat(l2 = 0f)
+        assertTrue(listener.actions.isEmpty())
+    }
+
+    @Test
+    fun `flip safety - L2 also reported on AXIS_Z (right stick X) never reaches a flight axis`() {
+        // Pad declaring LTRIGGER (so the right stick is read on Z / RZ) whose L2 also moves Z.
+        val input = ready()
+        for (t in listOf(0.1f, 0.3f, 0.5f, 0.7f, 1f)) input.l2Hat(l2 = t, more = arrayOf(MotionEvent.AXIS_Z to t))
+        input.l2Hat(l2 = 1f, hy = -1f, more = arrayOf(MotionEvent.AXIS_Z to 1f))
+        input.l2Hat(l2 = 1f, more = arrayOf(MotionEvent.AXIS_Z to 1f))
+        for (t in listOf(0.8f, 0.6f, 0.4f, 0.2f, 0f)) input.l2Hat(l2 = t, more = arrayOf(MotionEvent.AXIS_Z to t))
+        assertEquals(listOf<PadAction>(PadAction.Flip(FlipDirection.FORWARD)), listener.actions)
+        assertTrue("sticks sent: ${listener.sticks}", listener.sticks.none { it != PadSticks.Neutral })
+        // Proven coupled: Z is now ignored even with L2 alone at full travel, the left stick still flies.
+        input.l2Hat(l2 = 1f, more = arrayOf(MotionEvent.AXIS_Z to 1f))
+        input.l2Hat(l2 = 0f)
+        input.sticks(1, ly = -1f)
+        assertSticks(PadSticks(0f, 1f, 0f, 0f), listener.last)
+    }
+
+    @Test
+    fun `flip safety - R2 also reported on AXIS_RZ never moves the right stick Y`() {
+        val input = ready()
+        for (t in listOf(0.2f, 0.4f, 0.6f, 0.4f, 0f)) {
+            input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to t, MotionEvent.AXIS_RZ to t))
+        }
+        assertTrue("sticks sent: ${listener.sticks}", listener.sticks.none { it != PadSticks.Neutral })
+    }
+
+    @Test
+    fun `flip safety - a real right stick still flies while R2 is pressed`() {
+        val input = ready()
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 0.3f, MotionEvent.AXIS_Z to 0.8f))
+        assertEquals((0.8f - 0.08f) / 0.92f, listener.last.rightX, 1e-5f)
+    }
+
+    @Test
+    fun `flip safety - sticks fly nothing while L2 is held, then wait to be centred`() {
+        val input = ready()
+        input.sticks(1, rx = 1f) // thumb on the right stick
+        assertEquals(1f, listener.last.rightX, 1e-6f)
+        input.onKeyEvent(key(1, KeyEvent.KEYCODE_BUTTON_L2, down = true))
+        assertSticks(PadSticks.Neutral, listener.last)
+        input.sticks(1, rx = 1f, ly = -1f)
+        assertSticks(PadSticks.Neutral, listener.last)
+        input.onKeyEvent(key(1, KeyEvent.KEYCODE_BUTTON_L2, down = false))
+        input.sticks(1, rx = 1f) // still deflected after the combo: not re-armed
+        assertSticks(PadSticks.Neutral, listener.last)
+        input.sticks(1) // centred: re-armed
+        input.sticks(1, rx = 0.5f)
+        assertEquals((0.5f - 0.08f) / 0.92f, listener.last.rightX, 1e-5f)
     }
 
     @Test

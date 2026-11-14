@@ -478,7 +478,7 @@ class FlightViewModelSticksTest {
         scope.runCurrent()
         coVerify { drone.controller.takePicture() }
         verify { drone.controller.setFastMode(true) }
-        coVerify { drone.controller.flip(com.drone.tello.protocol.FlipDirection.BACK) }
+        coVerify { drone.controller.flip(com.drone.tello.protocol.FlipDirection.BACK, any()) }
         verify { recorder.start() }
         coVerify { drone.controller.stopSmartVideo() }
     }

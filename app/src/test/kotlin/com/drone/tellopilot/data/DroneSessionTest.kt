@@ -59,7 +59,7 @@ class DroneSessionTest {
             every { requestStale() } answers { stale }
             every { createLowLatencyLock() } returns lock
         }
-        private val flightRecorder: FlightRecorder = mockk { coEvery { record(any(), any()) } coAnswers { awaitCancellation() } }
+        private val flightRecorder: FlightRecorder = mockk { coEvery { record(any(), any(), any(), any()) } coAnswers { awaitCancellation() } }
         private val settings: SettingsRepository = mockk { every { settings } returns MutableStateFlow(AppSettings()) }
         private val recorder: VideoRecorder = mockk(relaxed = true)
         val session = DroneSession(

@@ -188,6 +188,10 @@ class DroneSession internal constructor(
                     flightRecorder.record(
                         // The sticks actually sent (the controller only sends them while connected).
                         commands = { _controller.value?.takeIf { it.isConnected }?.currentSticks },
+                        // Flip sent / refused / answered (also logged with Log.i by the controller).
+                        events = { _controller.value?.drainLogEvents().orEmpty() },
+                        // Repeated (stale) rows are visible: the flight data age goes with each row.
+                        telemetryAge = { _controller.value?.takeIf { it.isConnected }?.flightDataAgeMs() },
                     ) {
                         _controller.value?.takeIf { it.isConnected }?.telemetry?.value
                     }

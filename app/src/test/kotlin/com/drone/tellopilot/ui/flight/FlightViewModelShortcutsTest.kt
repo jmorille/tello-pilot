@@ -74,7 +74,7 @@ class FlightViewModelShortcutsTest {
     @Test
     fun `a refusal of the drone checks shows the screen message and vibrates`() = test {
         flying()
-        coEvery { drone.controller.flip(any()) } returns ModeCheck.LOW_BATTERY
+        coEvery { drone.controller.flip(any(), any()) } returns ModeCheck.LOW_BATTERY
         shortcut(PadFunction.Flip(FlipDirection.BACK))
         assertEquals(UserMessage.ModeRefused(ModeCheck.LOW_BATTERY), messages.last())
         verify { haptics.warning() }
@@ -83,7 +83,7 @@ class FlightViewModelShortcutsTest {
     @Test
     fun `a touch refusal does not vibrate (unchanged screen behaviour)`() = test {
         flying()
-        coEvery { drone.controller.flip(any()) } returns ModeCheck.TOO_HIGH
+        coEvery { drone.controller.flip(any(), any()) } returns ModeCheck.TOO_HIGH
         vm.onAction(FlightAction.Flip(FlipDirection.BACK))
         scope.runCurrent()
         assertEquals(UserMessage.ModeRefused(ModeCheck.TOO_HIGH), messages.last())
@@ -132,7 +132,7 @@ class FlightViewModelShortcutsTest {
         flying()
         drone.maneuversFlow.value = ManeuverState(requestedSmartVideo = SmartVideoMode.CIRCLE)
         shortcut(PadFunction.Flip(FlipDirection.FORWARD))
-        coVerify(exactly = 0) { drone.controller.flip(any()) }
+        coVerify(exactly = 0) { drone.controller.flip(any(), any()) }
         assertEquals(UserMessage.ModeRefused(ModeCheck.BUSY), messages.last())
         verify { haptics.warning() }
         // Photo, video and the stop stay available.
@@ -159,7 +159,7 @@ class FlightViewModelShortcutsTest {
         coVerify { drone.controller.palmLand() }
         scope.advanceTimeBy(2_000) // past the anti double-press delay
         shortcut(PadFunction.Flip(FlipDirection.FORWARD))
-        coVerify(exactly = 0) { drone.controller.flip(any()) }
+        coVerify(exactly = 0) { drone.controller.flip(any(), any()) }
         assertEquals(UserMessage.ModeRefused(ModeCheck.BUSY), messages.last())
         scope.advanceTimeBy(16_000)
         drone.maneuversFlow.value = ManeuverState(bounce = true)
@@ -222,10 +222,10 @@ class FlightViewModelShortcutsTest {
         shortcut(PadFunction.Flip(FlipDirection.LEFT))
         scope.advanceTimeBy(500)
         shortcut(PadFunction.Flip(FlipDirection.LEFT))
-        coVerify(exactly = 1) { drone.controller.flip(FlipDirection.LEFT) }
+        coVerify(exactly = 1) { drone.controller.flip(FlipDirection.LEFT, any()) }
         scope.advanceTimeBy(1_500)
         shortcut(PadFunction.Flip(FlipDirection.LEFT))
-        coVerify(exactly = 2) { drone.controller.flip(FlipDirection.LEFT) }
+        coVerify(exactly = 2) { drone.controller.flip(FlipDirection.LEFT, any()) }
     }
 
     @Test

@@ -131,6 +131,7 @@ class FlightLogTest {
         imuTempC = 40.2f, wifiPct = 88, batteryLow = true, batteryCritical = false, overheating = true,
         flyTimeS = 95.3f, alerts = listOf("OVERHEATING", "MOTOR_ERROR:231", "BATTERY_LOW"),
         cmdRoll = -0.25f, cmdPitch = 1f, cmdThrottle = 0f, cmdYaw = 0.5f, fastMode = true,
+        flyMode = 6, motorError = 0, telemetryAgeMs = 120, events = listOf("flip:forward", "flip_reply:ok"),
     )
     private val bare = FlightSample(tMs = 0, heightM = 0f, northMps = 0f, eastMps = 0f, climbMps = 0f, batteryPct = 80, flying = true)
 
@@ -141,10 +142,10 @@ class FlightLogTest {
             java.util.Locale.setDefault(java.util.Locale.FRANCE) // decimal comma must not leak in
             assertEquals(
                 "400,1.23,-0.50,0.25,0.10,77,1,1.5,-3.3,179.9,0.12,-1.50,0.80,1,40.2,88,1,0,1,95.3,OVERHEATING;MOTOR_ERROR:231;BATTERY_LOW," +
-                    "-0.250,1.000,0.000,0.500,1\n",
+                    "-0.250,1.000,0.000,0.500,1,6,0,120,flip:forward;flip_reply:ok\n",
                 FlightLogCsv.row(full),
             )
-            assertEquals("0,0.00,0.00,0.00,0.00,80,1,,,,,,,,,,0,0,0,,,,,,,\n", FlightLogCsv.row(bare))
+            assertEquals("0,0.00,0.00,0.00,0.00,80,1,,,,,,,,,,0,0,0,,,,,,,,,,,\n", FlightLogCsv.row(bare))
         } finally {
             java.util.Locale.setDefault(default)
         }

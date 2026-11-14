@@ -20,13 +20,41 @@ class GamepadMapperTest {
     }
 
     @Test
-    fun `flips need L2 held`() {
+    fun `flips need L2 held, and fire on the D-pad release`() {
         val m = GamepadMapper()
         assertNull(m.onButtonDown(PadButton.DPAD_LEFT))
-        m.onButtonUp(PadButton.DPAD_LEFT)
+        assertNull(m.onButtonUp(PadButton.DPAD_LEFT))
         m.onButtonDown(PadButton.L2)
-        assertEquals(PadAction.Flip(FlipDirection.LEFT), m.onButtonDown(PadButton.DPAD_LEFT))
-        assertEquals(PadAction.Flip(FlipDirection.FORWARD), m.onButtonDown(PadButton.DPAD_UP))
+        assertNull(m.onButtonDown(PadButton.DPAD_LEFT), "nothing on the press")
+        assertEquals(PadAction.Flip(FlipDirection.LEFT), m.onButtonUp(PadButton.DPAD_LEFT))
+        assertNull(m.onButtonDown(PadButton.DPAD_UP))
+        assertEquals(PadAction.Flip(FlipDirection.FORWARD), m.onButtonUp(PadButton.DPAD_UP))
+    }
+
+    @Test
+    fun `one press, one flip - bounce, rolled press, early L2 release, reset`() {
+        val m = GamepadMapper()
+        m.onButtonDown(PadButton.L2)
+        // Rolled press: up, then right while up is still down → nothing, even after the releases.
+        assertNull(m.onButtonDown(PadButton.DPAD_UP))
+        assertNull(m.onButtonDown(PadButton.DPAD_RIGHT))
+        assertNull(m.onButtonUp(PadButton.DPAD_UP))
+        assertNull(m.onButtonUp(PadButton.DPAD_RIGHT))
+        // Auto-repeat of the D-pad press does not re-arm anything; one release, one flip.
+        assertNull(m.onButtonDown(PadButton.DPAD_UP))
+        assertNull(m.onButtonDown(PadButton.DPAD_UP))
+        assertEquals(PadAction.Flip(FlipDirection.FORWARD), m.onButtonUp(PadButton.DPAD_UP))
+        assertNull(m.onButtonUp(PadButton.DPAD_UP), "a duplicate release fires nothing")
+        // L2 released before the D-pad: cancelled.
+        m.onButtonDown(PadButton.DPAD_DOWN)
+        m.onButtonUp(PadButton.L2)
+        assertNull(m.onButtonUp(PadButton.DPAD_DOWN))
+        // Disconnection in the middle: forgotten.
+        m.onButtonDown(PadButton.L2)
+        m.onButtonDown(PadButton.DPAD_LEFT)
+        m.reset()
+        m.onButtonDown(PadButton.L2)
+        assertNull(m.onButtonUp(PadButton.DPAD_LEFT))
     }
 
     @Test
@@ -108,7 +136,8 @@ class GamepadMapperTest {
         val b = (GamepadBindings.Default.assign(PadCommand.FLIP, PadBinding(PadButton.L1)) as BindingResult.Ok).bindings
         val m = GamepadMapper(b)
         m.onButtonDown(PadButton.L1)
-        assertEquals(PadAction.Flip(FlipDirection.RIGHT), m.onButtonDown(PadButton.DPAD_RIGHT))
+        assertNull(m.onButtonDown(PadButton.DPAD_RIGHT))
+        assertEquals(PadAction.Flip(FlipDirection.RIGHT), m.onButtonUp(PadButton.DPAD_RIGHT))
         m.reset()
         assertNull(m.onButtonDown(PadButton.Y))
         assertEquals(PadAction.TakeoffOrLand, m.onButtonDown(PadButton.R2))

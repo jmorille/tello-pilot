@@ -112,6 +112,7 @@ internal object SettingsCodec {
                 if (it.isFinite()) it.coerceIn(PilotSettings.GEOFENCE_RADIUS_RANGE) else d.geofenceRadius
             },
             geofenceManualAlert = p[GEOFENCE_MANUAL_ALERT] ?: d.geofenceManualAlert,
+            flipWarningAccepted = p[FLIP_WARNING_ACCEPTED] ?: d.flipWarningAccepted,
             impactDetection = p[IMPACT_DETECTION] ?: d.impactDetection,
             missionNoseFirst = p[MISSION_NOSE_FIRST] ?: d.missionNoseFirst,
             missionSpeedLimit = p[MISSION_SPEED_LIMIT] ?: d.missionSpeedLimit,
@@ -151,6 +152,7 @@ internal object SettingsCodec {
         p[GEOFENCE] = s.geofence
         p[GEOFENCE_RADIUS] = s.geofenceRadius
         p[GEOFENCE_MANUAL_ALERT] = s.geofenceManualAlert
+        p[FLIP_WARNING_ACCEPTED] = s.flipWarningAccepted
         p[IMPACT_DETECTION] = s.impactDetection
         p[MISSION_NOSE_FIRST] = s.missionNoseFirst
         p[MISSION_SPEED_LIMIT] = s.missionSpeedLimit
@@ -278,6 +280,7 @@ internal object SettingsCodec {
     private val GEOFENCE = booleanPreferencesKey("geofence")
     private val GEOFENCE_RADIUS = floatPreferencesKey("geofence_radius_m")
     private val GEOFENCE_MANUAL_ALERT = booleanPreferencesKey("geofence_manual_alert")
+    private val FLIP_WARNING_ACCEPTED = booleanPreferencesKey("flip_warning_accepted")
     private val IMPACT_DETECTION = booleanPreferencesKey("impact_detection")
     private val MISSION_NOSE_FIRST = booleanPreferencesKey("mission_nose_first")
     private val MISSION_SPEED_LIMIT = booleanPreferencesKey("mission_speed_limit")
