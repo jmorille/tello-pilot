@@ -1,10 +1,18 @@
 name: Release
 
 # Publishes a signed release for each vMAJOR.MINOR.PATCH[-suffix] tag (a suffix => prerelease).
-# workflow_dispatch runs the same pipeline as a DRY RUN: built, signed and verified with EPHEMERAL
-# keys generated on the fly (no production secret is ever used), and nothing is published.
+# Two jobs:
+#   build         no environment, no secret, read-only token: ONE Gradle run builds the UNSIGNED APK + AAB,
+#                 checked unsigned, versionCode checked (aapt2 / bundletool), handed over as an artifact
+#                 with their SHA-256 as job outputs.
+#   sign-publish  fresh runner, no Gradle: re-checks the SHA-256 of the downloaded binaries, signs the APK
+#                 with the release key (apksigner) and the AAB with the Play upload key (jarsigner),
+#                 verifies everything (pinned certificates), signs SHA256SUMS (ML-DSA-65) and publishes.
+# Nothing built by Gradle (daemon, GITHUB_ENV/GITHUB_PATH, files) can reach the signing keys.
+# workflow_dispatch runs the same pipeline as a DRY RUN: signed and verified with EPHEMERAL keys generated
+# on the fly (no production secret is ever used), and nothing is published.
 # The signing secrets live in the "release" environment, whose deployments are restricted to v* tags:
-# GitHub only hands them to tag runs. The dry run references no environment (see jobs.release.environment).
+# GitHub only hands them to tag runs. The dry run references no environment (see jobs.sign-publish.environment).
 on:
   push:
     tags: ['v*']
@@ -28,24 +36,28 @@ env:
   PQ_IMAGE: alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 jobs:
-  release:
-    name: Signed release APK
+  build:
+    name: Build unsigned APK and AAB
     runs-on: ubuntu-24.04
     timeout-minutes: 40
-    # Real release (tag push) only: the "release" environment (v* tags only) holds the signing secrets.
-    # The dry run (workflow_dispatch from any branch) gets an empty name, i.e. no environment: it is
-    # not blocked by the tag-only policy and receives no environment secret.
-    environment: ${{ github.event_name == 'push' && 'release' || '' }}
-    # Artifact attestations (actions/attest-build-provenance) are not offered here: for private
-    # repositories they require GitHub Enterprise Cloud (README of actions/attest-build-provenance).
-    # Without them, no id-token/attestations permission is granted to the build.
+    # No environment and no secret: this job runs Gradle (third-party build code) and must never see a key.
     permissions:
-      contents: write     # create the GitHub Release
+      contents: read      # checkout
       actions: read       # read the CI status of the tagged commit
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      name: ${{ steps.version.outputs.name }}
+      code: ${{ steps.version.outputs.code }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      dry_run: ${{ steps.version.outputs.dry_run }}
+      apk_sha256: ${{ steps.unsigned.outputs.apk_sha256 }}
+      aab_sha256: ${{ steps.unsigned.outputs.aab_sha256 }}
+      mapping_sha256: ${{ steps.unsigned.outputs.mapping_sha256 }}
+      changes_sha256: ${{ steps.changes.outputs.changes_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0          # tags + history: versionCode check and release notes
+          fetch-depth: 0          # tags + all branches: versionCode check, tag-on-main guard, release notes
           persist-credentials: false
 
       - name: Compute version
@@ -94,6 +106,19 @@ jobs:
           { echo "tag=$tag"; echo "name=$version"; echo "code=$code"
             echo "prerelease=$prerelease"; echo "dry_run=$dry_run"; } >> "$GITHUB_OUTPUT"
           echo "versionName=$version versionCode=$code prerelease=$prerelease dry_run=$dry_run"
+
+      - name: Check that the tagged commit is on main
+        # A tag pushed on a commit that never reached main (unreviewed branch) is refused.
+        # fetch-depth: 0 above fetched every branch, so origin/main and its history are available.
+        if: steps.version.outputs.dry_run == 'false'
+        run: |
+          set -euo pipefail
+          git rev-parse --verify -q refs/remotes/origin/main > /dev/null \
+            || { echo "::error::origin/main not fetched"; exit 1; }
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not an ancestor of origin/main: tag a commit of main"; exit 1
+          fi
+          echo "$GITHUB_REF_NAME ($GITHUB_SHA) is on origin/main"
 
       - name: Check that versionCode increases
         # Android refuses downgrades. Compared with FINAL releases only (an unreleased rc never
@@ -158,158 +183,14 @@ jobs:
             *)       run_tests "Job '$CI_JOB' of $url is '$concl'" ;;
           esac
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up Gradle
-        # Dependencies/wrapper/transforms come from the cache written by CI on main; never written here.
-        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
-        with:
-          cache-read-only: true
-
-      - name: Restore release keystore
-        if: steps.version.outputs.dry_run == 'false'
-        env:
-          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-        run: |
-          umask 077
-          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
-
-      - name: Generate ephemeral keystore (dry run)
-        # Throw-away PKCS12 key: the dry run never touches the production signing secrets.
-        if: steps.version.outputs.dry_run == 'true'
-        id: ephemeral
-        run: |
-          set -euo pipefail
-          pass=$(openssl rand -hex 24)
-          echo "::add-mask::$pass"
-          umask 077
-          keytool -genkeypair -storetype PKCS12 -keystore "$RUNNER_TEMP/release.p12" \
-            -alias dryrun -keyalg RSA -keysize 3072 -validity 2 -dname 'CN=Tello Pilot dry run' \
-            -storepass "$pass" -keypass "$pass" -noprompt
-          echo "pass=$pass" >> "$GITHUB_OUTPUT"
-
-      - name: Build signed release APK
-        # --no-build-cache: the signed APK is compiled from source, never from cached task outputs
-        # (CI only builds the debug variant, so the cache would hardly help: R8 dominates).
-        # assembleRelease always runs lintVitalRelease (fatal lint checks on the release variant),
-        # in parallel with the build. Unit tests are added only when CI is not green on this commit.
-        env:
-          TELLO_KEYSTORE_FILE: ${{ runner.temp }}/release.p12
-          TELLO_KEYSTORE_PASSWORD: ${{ steps.version.outputs.dry_run == 'false' && secrets.RELEASE_KEYSTORE_PASSWORD || steps.ephemeral.outputs.pass }}
-          TELLO_KEY_ALIAS: ${{ steps.version.outputs.dry_run == 'false' && secrets.RELEASE_KEY_ALIAS || 'dryrun' }}
-          TELLO_KEY_PASSWORD: ${{ steps.version.outputs.dry_run == 'false' && secrets.RELEASE_KEY_PASSWORD || steps.ephemeral.outputs.pass }}
-          TELLO_VERSION_CODE: ${{ steps.version.outputs.code }}
-          TELLO_VERSION_NAME: ${{ steps.version.outputs.name }}
-          RUN_TESTS: ${{ steps.ci.outputs.run_tests }}
-        run: |
-          tasks=(:app:assembleRelease)
-          [[ "$RUN_TESTS" == "true" ]] && tasks=(test "${tasks[@]}")
-          ./gradlew --no-build-cache --no-configuration-cache "${tasks[@]}" --stacktrace
-
-      - name: Remove keystore
-        if: always()
-        run: rm -f "$RUNNER_TEMP/release.p12"
-
-      - name: Collect APK, verify signature and version, compute checksums
-        id: dist
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          CODE: ${{ steps.version.outputs.code }}
-          NAME: ${{ steps.version.outputs.name }}
-          DRY_RUN: ${{ steps.version.outputs.dry_run }}
-          MAPPING_IN_RELEASE: ${{ vars.MAPPING_IN_RELEASE }}
-        run: |
-          set -euo pipefail
-          mkdir dist mapping
-          apk="tello-pilot-${TAG}.apk"
-          map="tello-pilot-${TAG}-mapping.txt"
-          src=$(ls app/build/outputs/apk/release/*.apk | grep -v unsigned | awk 'NR==1')
-          cp "$src" "dist/$apk"
-          cp app/build/outputs/mapping/release/mapping.txt "mapping/$map"
-          bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | awk 'END{print}')
-          # 1. Signature valid; in a real release, made with the expected certificate (public fingerprint).
-          "${bt}apksigner" verify --verbose --print-certs "dist/$apk" > apksigner.txt
-          cat apksigner.txt
-          actual=$(awk '/certificate SHA-256 digest/{print $NF; exit}' apksigner.txt)
-          if [[ "$DRY_RUN" == "true" ]]; then
-            echo "::notice::Dry run: APK signed with an ephemeral key ($actual), certificate pinning skipped"
-          else
-            expected=$(tr -d '[:space:]' < .github/release-signing/apk-signing-cert.sha256)
-            if [[ "$actual" != "$expected" ]]; then
-              echo "::error::APK signed with unexpected certificate ($actual, expected $expected)"; exit 1
-            fi
-          fi
-          # 2. Package and version baked into the APK match the tag.
-          "${bt}aapt2" dump badging "dist/$apk" > badging.txt
-          badging=$(awk 'NR==1' badging.txt)
-          echo "$badging"
-          want="package: name='com.drone.tellopilot' versionCode='${CODE}' versionName='${NAME}'"
-          if [[ "$badging" != "$want"* ]]; then
-            echo "::error::APK manifest does not match the tag (expected: $want)"; exit 1
-          fi
-          # 3. Checksums (signed below). The mapping is covered when it is attached to the release.
-          files=("$apk")
-          if [[ "$MAPPING_IN_RELEASE" == "true" ]]; then cp "mapping/$map" dist/; files+=("$map"); fi
-          (cd dist && sha256sum "${files[@]}" > SHA256SUMS && cat SHA256SUMS)
-          { echo "apk=$apk"; echo "mapping=$map"; echo "cert=$actual"
-            echo "mapping_in_release=${MAPPING_IN_RELEASE:-false}"; } >> "$GITHUB_OUTPUT"
-
-      - name: Post-quantum signatures (ML-DSA-65, FIPS 204)
-        # Real release: production key, checked against the committed public key.
-        # Dry run: an ephemeral ML-DSA-65 key generated in the container (no secret).
-        env:
-          PQ_SIGNING_KEY: ${{ steps.version.outputs.dry_run == 'false' && secrets.PQ_SIGNING_KEY || '' }}
-          DRY_RUN: ${{ steps.version.outputs.dry_run }}
-          APK: ${{ steps.dist.outputs.apk }}
-        run: |
-          set -euo pipefail
-          keydir=$(mktemp -d "$RUNNER_TEMP/pq.XXXXXX")
-          trap 'rm -rf "$keydir"' EXIT
-          if [[ "$DRY_RUN" == "false" ]]; then
-            (umask 077; printf '%s\n' "$PQ_SIGNING_KEY" > "$keydir/key.pem")
-          fi
-          docker run --rm \
-            -v "$PWD/dist:/dist" -v "$keydir:/key" \
-            -v "$PWD/.github/release-signing:/pub:ro" \
-            -e APK="$APK" -e DRY_RUN="$DRY_RUN" "$PQ_IMAGE" sh -euc '
-              apk add --no-cache openssl >/dev/null
-              openssl version
-              ver=$(openssl version | cut -d" " -f2)
-              major=${ver%%.*}; rest=${ver#*.}; minor=${rest%%.*}
-              if [ "$major" -lt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -lt 5 ]; }; then
-                echo "OpenSSL >= 3.5 required, got $ver" >&2; exit 1
-              fi
-              if [ "$DRY_RUN" = true ]; then
-                (umask 077; openssl genpkey -algorithm ML-DSA-65 -out /key/key.pem)
-                openssl pkey -in /key/key.pem -pubout -out /dist/ml-dsa-65.pub.pem
-              else
-                # The secret key must match the committed public key.
-                openssl pkey -in /key/key.pem -pubout -out /tmp/derived.pub.pem
-                cmp /tmp/derived.pub.pem /pub/ml-dsa-65.pub.pem
-                cp /pub/ml-dsa-65.pub.pem /dist/
-              fi
-              cd /dist
-              for f in "$APK" SHA256SUMS; do
-                openssl pkeyutl -sign -inkey /key/key.pem -rawin -in "$f" -out "$f.sig"
-                openssl pkeyutl -verify -pubin -inkey /dist/ml-dsa-65.pub.pem -rawin -in "$f" -sigfile "$f.sig"
-              done
-              chmod 644 /dist/*'
-          ls -l dist
-
-      - name: Release notes
+      - name: Release notes (changes)
         # Commits since the previous tag (previous final release for a final release, previous tag
-        # of any kind for a prerelease), grouped by kind, followed by the verification instructions.
+        # of any kind for a prerelease), grouped by kind. Written here, where the git history is;
+        # sign-publish appends the files table and the verification instructions.
+        id: changes
         env:
           TAG: ${{ steps.version.outputs.tag }}
           CODE: ${{ steps.version.outputs.code }}
-          APK: ${{ steps.dist.outputs.apk }}
-          MAPPING: ${{ steps.dist.outputs.mapping }}
-          MAPPING_IN_RELEASE: ${{ steps.dist.outputs.mapping_in_release }}
-          CERT: ${{ steps.dist.outputs.cert }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
           REPO: ${{ github.repository }}
           SERVER: ${{ github.server_url }}
@@ -330,6 +211,7 @@ jobs:
             subject=$(sed -E 's/`/'"'"'/g; s/@([A-Za-z0-9_-]+)/`@\1`/g' <<<"$subject")
             sec[$k]+="- ${subject} (${line%% *})"$'\n'
           done < <(git log --no-merges --format='%h %s' -n 300 "$range")
+          mkdir -p "$RUNNER_TEMP/unsigned"
           {
             echo "Tello Pilot ${TAG} (versionCode ${CODE})."
             echo
@@ -344,19 +226,412 @@ jobs:
               esac
               printf '%s' "${sec[$k]}"
             done
+          } > "$RUNNER_TEMP/unsigned/changes.md"
+          echo "changes_sha256=$(sha256sum "$RUNNER_TEMP/unsigned/changes.md" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        # Dependencies/wrapper/transforms come from the cache written by CI on main; never written here.
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: true
+
+      - name: Build unsigned release APK and AAB
+        # ONE Gradle invocation: -Ptello.unsignedRelease=true removes the release signingConfig (no
+        # debug-key fallback), so Gradle can only produce an UNSIGNED APK and AAB; they are signed by the
+        # sign-publish job, outside Gradle: nothing is built twice.
+        # --no-build-cache: release binaries are compiled from source, never from cached task outputs.
+        # assembleRelease/bundleRelease run lintVitalRelease (fatal lint checks on the release variant).
+        # Unit tests are added only when CI is not green on this commit. --console=plain lists every task.
+        env:
+          TELLO_VERSION_CODE: ${{ steps.version.outputs.code }}
+          TELLO_VERSION_NAME: ${{ steps.version.outputs.name }}
+          RUN_TESTS: ${{ steps.ci.outputs.run_tests }}
+        run: |
+          set -euo pipefail
+          for v in TELLO_KEYSTORE_FILE TELLO_KEYSTORE_PASSWORD TELLO_KEY_ALIAS TELLO_KEY_PASSWORD; do
+            [[ -z "${!v:-}" ]] || { echo "::error::$v must not reach Gradle"; exit 1; }
+          done
+          tasks=(:app:assembleRelease :app:bundleRelease)
+          [[ "$RUN_TESTS" == "true" ]] && tasks=(test "${tasks[@]}")
+          ./gradlew --no-build-cache --no-configuration-cache --console=plain --stacktrace \
+            -Ptello.unsignedRelease=true "${tasks[@]}"
+          ./gradlew --stop
+          apk=app/build/outputs/apk/release/app-release-unsigned.apk
+          aab=app/build/outputs/bundle/release/app-release.aab
+          [[ -f "$apk" ]] || { echo "::error::Unsigned APK not found ($apk)"; ls -R app/build/outputs; exit 1; }
+          [[ -f "$aab" ]] || { echo "::error::AAB not found ($aab)"; exit 1; }
+          mv "$apk" "$RUNNER_TEMP/unsigned/app-release-unsigned.apk"
+          mv "$aab" "$RUNNER_TEMP/unsigned/app-release-unsigned.aab"
+          cp app/build/outputs/mapping/release/mapping.txt "$RUNNER_TEMP/unsigned/mapping.txt"
+
+      - name: Set up bundletool (pinned, checksum verified)
+        # Official google/bundletool release; SHA-256 = the asset digest published by GitHub for it.
+        env:
+          BUNDLETOOL_URL: https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+          BUNDLETOOL_SHA256: a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bundletool.jar" "$BUNDLETOOL_URL"
+          echo "$BUNDLETOOL_SHA256  $RUNNER_TEMP/bundletool.jar" | sha256sum -c -
+
+      - name: Check unsigned binaries and version, compute checksums
+        id: unsigned
+        env:
+          CODE: ${{ steps.version.outputs.code }}
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/unsigned"
+          apk=app-release-unsigned.apk; aab=app-release-unsigned.aab
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | awk 'END{print}')
+          # Captured outputs, then grep on a string: no `cmd | grep -q` (SIGPIPE under pipefail).
+          # 1. The APK carries no signature: apksigner must REJECT it for that reason (a missing tool or a
+          #    corrupt APK fails differently and is refused too).
+          if out=$("${bt}apksigner" verify "$apk" 2>&1); then
+            echo "::error::The APK built without a key is signed"; exit 1
+          fi
+          echo "$out"
+          grep -q 'DOES NOT VERIFY' <<<"$out" && grep -q 'Missing META-INF/MANIFEST.MF' <<<"$out" \
+            || { echo "::error::Unexpected apksigner output on the unsigned APK"; exit 1; }
+          # 2. The AAB carries no signature either.
+          check=$(jarsigner -J-Duser.language=en -verify "$aab")
+          grep -q '^jar is unsigned' <<<"$check" || { echo "::error::The AAB built without a key is signed"; exit 1; }
+          # 3. Package and version baked into the APK (aapt2) and the AAB (bundletool) match the tag.
+          "${bt}aapt2" dump badging "$apk" > "$RUNNER_TEMP/badging.txt"
+          badging=$(awk 'NR==1' "$RUNNER_TEMP/badging.txt")
+          echo "APK: $badging"
+          want="package: name='com.drone.tellopilot' versionCode='${CODE}' versionName='${NAME}'"
+          [[ "$badging" == "$want"* ]] || { echo "::error::APK manifest does not match the tag (expected: $want)"; exit 1; }
+          bundletool() { java -jar "$RUNNER_TEMP/bundletool.jar" "$@"; }
+          aab_pkg=$(bundletool dump manifest --bundle "$aab" --xpath /manifest/@package)
+          aab_code=$(bundletool dump manifest --bundle "$aab" --xpath /manifest/@android:versionCode)
+          aab_name=$(bundletool dump manifest --bundle "$aab" --xpath /manifest/@android:versionName)
+          echo "AAB: package=$aab_pkg versionCode=$aab_code versionName=$aab_name"
+          if [[ "$aab_pkg" != "com.drone.tellopilot" || "$aab_code" != "$CODE" || "$aab_name" != "$NAME" ]]; then
+            echo "::error::AAB manifest does not match the tag (expected com.drone.tellopilot $CODE $NAME)"; exit 1
+          fi
+          # 4. Checksums, re-checked by sign-publish after download.
+          sha() { sha256sum "$1" | awk '{print $1}'; }
+          { echo "apk_sha256=$(sha "$apk")"; echo "aab_sha256=$(sha "$aab")"
+            echo "mapping_sha256=$(sha mapping.txt)"; } | tee -a "$GITHUB_OUTPUT"
+          ls -l
+
+      - name: Hand over the unsigned binaries
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-${{ steps.version.outputs.tag }}
+          path: |
+            ${{ runner.temp }}/unsigned/app-release-unsigned.apk
+            ${{ runner.temp }}/unsigned/app-release-unsigned.aab
+            ${{ runner.temp }}/unsigned/mapping.txt
+            ${{ runner.temp }}/unsigned/changes.md
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+      - name: Keep R8 mapping (private workflow artifact)
+        # mapping.txt de-obfuscates crash stack traces (retrace). It reveals the app's internal
+        # structure, so by default it is NOT a release asset: it stays a private workflow artifact
+        # (90 days, the maximum). Set repository variable MAPPING_IN_RELEASE=true to also attach it to
+        # the GitHub Release (permanent, covered by the signed SHA256SUMS, but public).
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tello-pilot-${{ steps.version.outputs.tag }}-mapping
+          path: ${{ runner.temp }}/unsigned/mapping.txt
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ steps.version.outputs.dry_run == 'true' && 3 || 90 }}
+
+  sign-publish:
+    name: Sign, verify and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Real release (tag push) only: the "release" environment (v* tags only) holds the signing secrets.
+    # The dry run (workflow_dispatch from any branch) gets an empty name, i.e. no environment: it is
+    # not blocked by the tag-only policy and receives no environment secret.
+    environment: ${{ github.event_name == 'push' && 'release' || '' }}
+    # Artifact attestations (actions/attest-build-provenance) are not offered here: for private
+    # repositories they require GitHub Enterprise Cloud (README of actions/attest-build-provenance).
+    permissions:
+      contents: write     # create the GitHub Release
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      CODE: ${{ needs.build.outputs.code }}
+      NAME: ${{ needs.build.outputs.name }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+      DRY_RUN: ${{ needs.build.outputs.dry_run }}
+    steps:
+      - name: Check signing secrets
+        # Real release: fail before touching anything if a signing secret is missing.
+        if: needs.build.outputs.dry_run == 'false'
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
+          UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          PQ_SIGNING_KEY: ${{ secrets.PQ_SIGNING_KEY }}
+        run: |
+          missing=""
+          for s in RELEASE_KEYSTORE_BASE64 RELEASE_KEYSTORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD \
+                   UPLOAD_KEYSTORE_BASE64 UPLOAD_KEYSTORE_PASSWORD UPLOAD_KEY_ALIAS PQ_SIGNING_KEY; do
+            [[ -n "${!s}" ]] || missing="$missing $s"
+          done
+          [[ -z "$missing" ]] || { echo "::error::Missing secrets in the 'release' environment:$missing"; exit 1; }
+
+      - name: Checkout pinned public keys only
+        # Sparse checkout of the tagged commit: only the committed certificate fingerprints and the
+        # ML-DSA public key. No build script, no Gradle.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/release-signing
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        # jarsigner / keytool (apksigner and aapt2 come from the runner's Android SDK).
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download the unsigned binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-${{ needs.build.outputs.tag }}
+          path: ${{ runner.temp }}/unsigned
+
+      - name: Check that they are the binaries built and checked by the build job
+        env:
+          APK_SHA256: ${{ needs.build.outputs.apk_sha256 }}
+          AAB_SHA256: ${{ needs.build.outputs.aab_sha256 }}
+          MAPPING_SHA256: ${{ needs.build.outputs.mapping_sha256 }}
+          CHANGES_SHA256: ${{ needs.build.outputs.changes_sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/unsigned"
+          for v in APK_SHA256 AAB_SHA256 MAPPING_SHA256 CHANGES_SHA256; do
+            [[ "${!v}" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::build output $v missing or invalid"; exit 1; }
+          done
+          printf '%s  %s\n' "$APK_SHA256" app-release-unsigned.apk "$AAB_SHA256" app-release-unsigned.aab \
+            "$MAPPING_SHA256" mapping.txt "$CHANGES_SHA256" changes.md | sha256sum -c -
+
+      - name: Restore signing keys
+        # Keystores and passwords go to files in a private (0700) directory, read by apksigner/jarsigner
+        # through file: options: no password on a command line (ps) nor in the signing steps' environment.
+        # The directory is removed by "Remove signing keys" (if: always()).
+        if: needs.build.outputs.dry_run == 'false'
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
+          UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          k="$RUNNER_TEMP/keys"; mkdir -p "$k"
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$k/release.p12"
+          printf '%s' "$RELEASE_KEYSTORE_PASSWORD" > "$k/release.storepass"
+          printf '%s' "$RELEASE_KEY_PASSWORD" > "$k/release.keypass"
+          printf '%s' "$RELEASE_KEY_ALIAS" > "$k/release.alias"
+          printf '%s' "$UPLOAD_KEYSTORE_BASE64" | base64 -d > "$k/upload.p12"
+          printf '%s' "$UPLOAD_KEYSTORE_PASSWORD" > "$k/upload.storepass"
+          printf '%s' "$UPLOAD_KEY_ALIAS" > "$k/upload.alias"
+
+      - name: Generate ephemeral signing keys (dry run)
+        # Throw-away keys, same layout as the real ones: the dry run never touches a production secret.
+        # Upload key: RSA 4096 like the real one (Play refuses ECDSA upload keys).
+        if: needs.build.outputs.dry_run == 'true'
+        run: |
+          set -euo pipefail
+          umask 077
+          k="$RUNNER_TEMP/keys"; mkdir -p "$k"
+          gen() {  # name keysize DN
+            openssl rand -hex 24 | tr -d '\n' > "$k/$1.storepass"
+            cp "$k/$1.storepass" "$k/$1.keypass"
+            printf 'dryrun-%s' "$1" > "$k/$1.alias"
+            keytool -J-Duser.language=en -genkeypair -storetype PKCS12 -keystore "$k/$1.p12" \
+              -alias "dryrun-$1" -keyalg RSA -keysize "$2" -validity 2 -dname "$3" \
+              -storepass:file "$k/$1.storepass" -keypass:file "$k/$1.keypass" -noprompt
+          }
+          gen release 3072 'CN=Tello Pilot dry run'
+          gen upload 4096 'CN=Tello Pilot upload dry run'
+
+      - name: Sign APK (apksigner, release key)
+        # The unsigned APK from the build job, signed with schemes v2/v3 enabled (v1 is useless with
+        # minSdk 30). With minSdk >= 28, apksigner writes only the v3 block (v3 supersedes v2 there, and
+        # allows a future key rotation through a signing lineage).
+        # Signing a misaligned APK would break it: alignment is checked before and after.
+        run: |
+          set -euo pipefail
+          k="$RUNNER_TEMP/keys"
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | awk 'END{print}')
+          in="$RUNNER_TEMP/unsigned/app-release-unsigned.apk"
+          out="$RUNNER_TEMP/signed/app-release.apk"
+          mkdir -p "$RUNNER_TEMP/signed"
+          "${bt}zipalign" -c -P 16 4 "$in" || { echo "::error::Unsigned APK is not aligned (zipalign -c)"; exit 1; }
+          "${bt}apksigner" sign \
+            --ks "$k/release.p12" --ks-type PKCS12 --ks-key-alias "$(< "$k/release.alias")" \
+            --ks-pass "file:$k/release.storepass" --key-pass "file:$k/release.keypass" \
+            --v1-signing-enabled false --v2-signing-enabled true \
+            --v3-signing-enabled true --v4-signing-enabled false \
+            --out "$out" "$in"
+          "${bt}zipalign" -c -P 16 4 "$out" || { echo "::error::Signed APK is not aligned (zipalign -c)"; exit 1; }
+
+      - name: Sign AAB (jarsigner, Play upload key)
+        # Play Store upload: the unsigned AAB from the build job, signed with the dedicated UPLOAD key
+        # (RSA 4096), distinct from the APK key. Google re-signs the app with its own key (Play App Signing).
+        run: |
+          set -euo pipefail
+          k="$RUNNER_TEMP/keys"
+          jarsigner -J-Duser.language=en -keystore "$k/upload.p12" -storetype PKCS12 \
+            -storepass:file "$k/upload.storepass" -keypass:file "$k/upload.storepass" \
+            -sigalg SHA256withRSA -digestalg SHA-256 \
+            -signedjar "$RUNNER_TEMP/signed/app-release.aab" \
+            "$RUNNER_TEMP/unsigned/app-release-unsigned.aab" "$(< "$k/upload.alias")"
+
+      - name: Remove signing keys
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/keys"
+
+      - name: Collect binaries, verify signatures and version, compute checksums
+        id: dist
+        env:
+          MAPPING_IN_RELEASE: ${{ vars.MAPPING_IN_RELEASE }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          apk="tello-pilot-${TAG}.apk"
+          apk_unsigned="tello-pilot-${TAG}-unsigned.apk"
+          aab="tello-pilot-${TAG}.aab"
+          map="tello-pilot-${TAG}-mapping.txt"
+          cp "$RUNNER_TEMP/signed/app-release.apk" "dist/$apk"
+          cp "$RUNNER_TEMP/unsigned/app-release-unsigned.apk" "dist/$apk_unsigned"
+          cp "$RUNNER_TEMP/signed/app-release.aab" "dist/$aab"
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | awk 'END{print}')
+          pin() {  # label actual-sha256 pinned-file
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "::notice::Dry run: $1 signed with an ephemeral key ($2), certificate pinning skipped"
+              return
+            fi
+            expected=$(tr -d '[:space:]' < ".github/release-signing/$3")
+            if [[ "$2" != "$expected" ]]; then
+              echo "::error::$1 signed with unexpected certificate ($2, expected $expected)"; exit 1
+            fi
+            echo "$1 certificate pinned: $2"
+          }
+          # 1. APK: valid v3 signature; in a real release, made with the expected certificate.
+          "${bt}apksigner" verify --verbose --print-certs "dist/$apk" > apksigner.txt
+          cat apksigner.txt
+          grep -qF "Verified using v3 scheme (APK Signature Scheme v3): true" apksigner.txt \
+            || { echo "::error::APK not signed with the v3 scheme"; exit 1; }
+          cert=$(awk '/certificate SHA-256 digest/{print $NF; exit}' apksigner.txt)
+          pin APK "$cert" apk-signing-cert.sha256
+          # 2. AAB: valid JAR signature by the upload key (no -strict: it rejects self-signed certificates).
+          check=$(jarsigner -J-Duser.language=en -verify "dist/$aab")
+          grep -q '^jar verified' <<<"$check" || { echo "::error::Invalid AAB signature"; echo "$check"; exit 1; }
+          certs=$(keytool -J-Duser.language=en -printcert -jarfile "dist/$aab")
+          grep -E 'Owner:|SHA256:|Signature algorithm|Subject Public Key' <<<"$certs"
+          upload_cert=$(grep -m1 'SHA256:' <<<"$certs" | awk '{print $NF}' | tr -d ':' | tr 'A-F' 'a-f')
+          pin AAB "$upload_cert" upload-cert.sha256
+          # 3. The signed APK is the checked unsigned one (same manifest; aapt2 re-check on the final file).
+          "${bt}aapt2" dump badging "dist/$apk" > badging.txt
+          badging=$(awk 'NR==1' badging.txt)
+          echo "$apk: $badging"
+          want="package: name='com.drone.tellopilot' versionCode='${CODE}' versionName='${NAME}'"
+          [[ "$badging" == "$want"* ]] || { echo "::error::$apk manifest does not match the tag (expected: $want)"; exit 1; }
+          # 4. Checksums (signed below). The mapping is covered when it is attached to the release.
+          files=("$apk" "$apk_unsigned" "$aab")
+          if [[ "$MAPPING_IN_RELEASE" == "true" ]]; then cp "$RUNNER_TEMP/unsigned/mapping.txt" "dist/$map"; files+=("$map"); fi
+          (cd dist && sha256sum "${files[@]}" > SHA256SUMS && cat SHA256SUMS)
+          { echo "apk=$apk"; echo "apk_unsigned=$apk_unsigned"; echo "aab=$aab"; echo "mapping=$map"
+            echo "cert=$cert"; echo "upload_cert=$upload_cert"
+            echo "mapping_in_release=${MAPPING_IN_RELEASE:-false}"; } >> "$GITHUB_OUTPUT"
+
+      - name: Post-quantum signatures (ML-DSA-65, FIPS 204)
+        # Real release: production key, checked against the committed public key.
+        # Dry run: an ephemeral ML-DSA-65 key generated in the container (no secret).
+        # Signed: SHA256SUMS (covers every attached file) and each binary (both APKs, AAB).
+        env:
+          PQ_SIGNING_KEY: ${{ needs.build.outputs.dry_run == 'false' && secrets.PQ_SIGNING_KEY || '' }}
+          BINARIES: ${{ steps.dist.outputs.apk }} ${{ steps.dist.outputs.apk_unsigned }} ${{ steps.dist.outputs.aab }}
+        run: |
+          set -euo pipefail
+          keydir=$(mktemp -d "$RUNNER_TEMP/pq.XXXXXX")
+          trap 'rm -rf "$keydir"' EXIT
+          if [[ "$DRY_RUN" == "false" ]]; then
+            (umask 077; printf '%s\n' "$PQ_SIGNING_KEY" > "$keydir/key.pem")
+          fi
+          docker run --rm \
+            -v "$PWD/dist:/dist" -v "$keydir:/key" \
+            -v "$PWD/.github/release-signing:/pub:ro" \
+            -e BINARIES="$BINARIES" -e DRY_RUN="$DRY_RUN" "$PQ_IMAGE" sh -euc '
+              apk add --no-cache openssl >/dev/null
+              openssl version
+              ver=$(openssl version | cut -d" " -f2)
+              major=${ver%%.*}; rest=${ver#*.}; minor=${rest%%.*}
+              if [ "$major" -lt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -lt 5 ]; }; then
+                echo "OpenSSL >= 3.5 required, got $ver" >&2; exit 1
+              fi
+              if [ "$DRY_RUN" = true ]; then
+                (umask 077; openssl genpkey -algorithm ML-DSA-65 -out /key/key.pem)
+                openssl pkey -in /key/key.pem -pubout -out /dist/ml-dsa-65.pub.pem
+              else
+                # The secret key must match the committed public key.
+                openssl pkey -in /key/key.pem -pubout -out /tmp/derived.pub.pem
+                cmp /tmp/derived.pub.pem /pub/ml-dsa-65.pub.pem
+                cp /pub/ml-dsa-65.pub.pem /dist/
+              fi
+              cd /dist
+              for f in $BINARIES SHA256SUMS; do
+                openssl pkeyutl -sign -inkey /key/key.pem -rawin -in "$f" -out "$f.sig"
+                openssl pkeyutl -verify -pubin -inkey /dist/ml-dsa-65.pub.pem -rawin -in "$f" -sigfile "$f.sig"
+              done
+              chmod 644 /dist/*'
+          ls -l dist
+
+      - name: Release notes
+        # Changes written by the build job (git history), then the files table and verification steps.
+        env:
+          APK: ${{ steps.dist.outputs.apk }}
+          APK_UNSIGNED: ${{ steps.dist.outputs.apk_unsigned }}
+          AAB: ${{ steps.dist.outputs.aab }}
+          MAPPING: ${{ steps.dist.outputs.mapping }}
+          MAPPING_IN_RELEASE: ${{ steps.dist.outputs.mapping_in_release }}
+          CERT: ${{ steps.dist.outputs.cert }}
+          UPLOAD_CERT: ${{ steps.dist.outputs.upload_cert }}
+        run: |
+          set -euo pipefail
+          {
+            cat "$RUNNER_TEMP/unsigned/changes.md"
             echo
             echo "### Fichiers"
             echo
             echo "| Fichier | Contenu |"
             echo "|---|---|"
-            echo "| \`${APK}\` | APK signé (certificat SHA-256 \`${CERT}\`) |"
+            echo "| \`${APK}\` | APK signé avec la clé release, à installer directement (certificat SHA-256 \`${CERT}\`) |"
+            echo "| \`${APK_UNSIGNED}\` | Le même APK, non signé (même build : seule la signature diffère) |"
+            echo "| \`${AAB}\` | Android App Bundle pour le Play Store, signé avec la clé d'upload (certificat SHA-256 \`${UPLOAD_CERT}\`) ; Google le re-signe (Play App Signing) |"
             if [[ "$MAPPING_IN_RELEASE" == "true" ]]; then
               echo "| \`${MAPPING}\` | Mapping R8 pour désobfusquer les stack traces (\`retrace\`) |"
-              echo "| \`SHA256SUMS\` | Empreintes SHA-256 de l'APK et du mapping |"
+              echo "| \`SHA256SUMS\` | Empreintes SHA-256 des APK, de l'AAB et du mapping |"
             else
-              echo "| \`SHA256SUMS\` | Empreinte SHA-256 de l'APK |"
+              echo "| \`SHA256SUMS\` | Empreintes SHA-256 des APK et de l'AAB |"
             fi
-            echo "| \`${APK}.sig\`, \`SHA256SUMS.sig\` | Signatures post-quantiques ML-DSA-65 (FIPS 204) |"
+            echo "| \`*.sig\` | Signatures post-quantiques ML-DSA-65 (FIPS 204) de chaque APK, de l'AAB et de \`SHA256SUMS\` |"
             echo "| \`ml-dsa-65.pub.pem\` | Clé publique (référence : \`.github/release-signing/ml-dsa-65.pub.pem\` dans le dépôt) |"
             echo
             echo "Vérification (OpenSSL >= 3.5) :"
@@ -365,41 +640,25 @@ jobs:
             echo "openssl pkeyutl -verify -pubin -inkey ml-dsa-65.pub.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig"
             echo "openssl pkeyutl -verify -pubin -inkey ml-dsa-65.pub.pem -rawin -in ${APK} -sigfile ${APK}.sig"
             echo "apksigner verify --print-certs ${APK}"
+            echo "jarsigner -verify ${AAB} && keytool -printcert -jarfile ${AAB}"
             echo '```'
           } > notes.md
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Keep R8 mapping (private workflow artifact)
-        # mapping.txt de-obfuscates crash stack traces (retrace). It reveals the app's internal
-        # structure, so by default it is NOT a release asset: it stays a private artifact of this
-        # private repository (90 days, the maximum). Set repository variable MAPPING_IN_RELEASE=true
-        # to also attach it to the GitHub Release (permanent, covered by the signed SHA256SUMS, but
-        # visible to anyone the release is shared with).
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: tello-pilot-${{ steps.version.outputs.tag }}-mapping
-          path: mapping/${{ steps.dist.outputs.mapping }}
-          if-no-files-found: error
-          overwrite: true
-          retention-days: ${{ steps.version.outputs.dry_run == 'true' && 3 || 90 }}
-
       - name: Create GitHub Release
-        if: steps.version.outputs.dry_run == 'false'
+        if: needs.build.outputs.dry_run == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           flags=()
           [[ "$PRERELEASE" == "true" ]] && flags+=(--prerelease)
-          gh release create "$TAG" --verify-tag --title "Tello Pilot $TAG" --notes-file notes.md \
+          gh release create "$TAG" -R "$REPO" --verify-tag --title "Tello Pilot $TAG" --notes-file notes.md \
             "${flags[@]}" dist/*
 
       - name: Dry run summary
-        if: steps.version.outputs.dry_run == 'true'
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
+        if: needs.build.outputs.dry_run == 'true'
         run: |
-          echo "::notice::Dry run: release $TAG built, signed with ephemeral keys and verified; nothing published."
+          echo "::notice::Dry run: release $TAG (APK + AAB) built, signed with ephemeral keys and verified; nothing published."
           ls -l dist

@@ -55,10 +55,12 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 Le protocole a été analysé à partir de l'app officielle (`../official-app/decompiled-java`) et de TelloMe (`../competitor-tellome`). Voir `../research/COMPARAISON_FONCTIONNALITES.md` pour la comparaison des fonctionnalités et la feuille de route.
 
 ## Vérifier une release
-Chaque release (tag `vX.Y.Z`, workflow `Release`) publie :
-- `tello-pilot-vX.Y.Z.apk` : APK signé avec la clé release (certificat SHA-256 `55:0A:3C:40:C6:49:B3:EA:44:68:17:84:20:05:DE:71:97:4B:62:F9:D5:75:FC:1B:FD:6F:F0:BF:7C:FA:55:A1`, aussi dans `.github/release-signing/apk-signing-cert.sha256`) ;
-- `SHA256SUMS` : empreinte SHA-256 de l'APK ;
-- `*.sig` : signatures **post-quantiques ML-DSA-65 (FIPS 204)** de l'APK et de `SHA256SUMS`.
+Chaque release (tag `vX.Y.Z`, workflow `Release`) est construite **une seule fois, sans aucun secret** (APK et AAB non signés, un seul appel Gradle), puis signée hors de Gradle. Elle publie :
+- `tello-pilot-vX.Y.Z.apk` : APK signé avec la clé release par `apksigner` (certificat SHA-256 `55:0A:3C:40:C6:49:B3:EA:44:68:17:84:20:05:DE:71:97:4B:62:F9:D5:75:FC:1B:FD:6F:F0:BF:7C:FA:55:A1`, aussi dans `.github/release-signing/apk-signing-cert.sha256`) ;
+- `tello-pilot-vX.Y.Z-unsigned.apk` : le même APK, non signé ;
+- `tello-pilot-vX.Y.Z.aab` : Android App Bundle pour le Play Store, signé par `jarsigner` avec la **clé d'upload** Play (RSA 4096, `CN=Tello Pilot, O=tt-box`, certificat SHA-256 `80:03:98:D1:88:6B:10:37:6B:70:69:38:97:96:DD:0E:4C:E6:CD:5D:FA:AF:86:C3:D3:55:B2:99:11:EE:20:FC`, certificat et empreinte dans `.github/release-signing/upload-cert.pem` et `upload-cert.sha256`). Google re-signe l'app avec sa propre clé (Play App Signing) ;
+- `SHA256SUMS` : empreintes SHA-256 des APK et de l'AAB ;
+- `*.sig` : signatures **post-quantiques ML-DSA-65 (FIPS 204)** de chaque APK, de l'AAB et de `SHA256SUMS`.
 
 La clé publique de référence est celle du dépôt, `.github/release-signing/ml-dsa-65.pub.pem` (SHA-256 de la clé en DER : `ab7dc579b67e6888370cf9c138dc4bfaee8809b48d9c308b76c02d539d2fbef6`). Il faut **OpenSSL ≥ 3.5** (`openssl version`) :
 ```sh
@@ -66,13 +68,15 @@ TAG=v0.1.0
 gh release download "$TAG" -R tt-box/tello-pilot -D "release-$TAG" && cd "release-$TAG"
 cp ../.github/release-signing/ml-dsa-65.pub.pem ref.pub.pem   # depuis un clone du dépôt
 
-# 1. Intégrité de l'APK
+# 1. Intégrité des fichiers
 sha256sum -c SHA256SUMS
 # 2. Signatures ML-DSA-65 (doivent afficher « Signature Verified Successfully »)
 openssl pkeyutl -verify -pubin -inkey ref.pub.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
 openssl pkeyutl -verify -pubin -inkey ref.pub.pem -rawin -in "tello-pilot-$TAG.apk" -sigfile "tello-pilot-$TAG.apk.sig"
 # 3. Signature Android (Android SDK build-tools) : comparer le « certificate SHA-256 digest »
 apksigner verify --print-certs "tello-pilot-$TAG.apk"
+# 4. AAB (JDK) : « jar verified », puis comparer l'empreinte SHA256 à upload-cert.sha256
+jarsigner -verify "tello-pilot-$TAG.aab" && keytool -printcert -jarfile "tello-pilot-$TAG.aab"
 ```
 Sous Windows, `sha256sum` est disponible dans Git Bash (ou `certutil -hashfile <apk> SHA256`).
 
@@ -83,6 +87,6 @@ Sous Windows, `sha256sum` est disponible dans Git Bash (ou `certutil -hashfile <
 | `codeql.yml` | push/PR, hebdo | Analyse CodeQL java-kotlin (build manuel). Sans GitHub Advanced Security, le SARIF est conservé en artefact et le job échoue sur les alertes de sévérité ≥ 7 (variable `CODE_SCANNING_ENABLED=true` pour téléverser vers Code scanning) |
 | `dependencies.yml` | push/PR, hebdo | Soumission du graphe de dépendances Gradle (alertes Dependabot) + OSV-Scanner sur le graphe résolu, échec sur CVSS ≥ 7 |
 | `dependabot-automerge.yml` | PR Dependabot, fin de CI | Fusion automatique des mises à jour patch/minor uniquement après une CI verte sur le commit de tête |
-| `release.yml` | tag `v*` | APK release signé, `SHA256SUMS`, signatures ML-DSA-65, GitHub Release |
+| `release.yml` | tag `v*` (dry run : `workflow_dispatch`) | Job `build` sans secret ni environment : un seul build Gradle (APK + AAB non signés, versionCode vérifié par `aapt2`/`bundletool`), tag refusé hors de `main`. Job `sign-publish` (environnement `release`, sans Gradle) : contrôle des SHA-256 transmis, APK signé par `apksigner` (clé release), AAB signé par `jarsigner` (clé d'upload Play), `SHA256SUMS`, signatures ML-DSA-65, GitHub Release |
 
-Secrets : `RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`, `PQ_SIGNING_KEY` (optionnel : `AUTOMERGE_TOKEN`).
+Secrets (environnement `release`) : `RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`, `UPLOAD_KEYSTORE_BASE64`, `UPLOAD_KEYSTORE_PASSWORD`, `UPLOAD_KEY_ALIAS`, `PQ_SIGNING_KEY` (optionnel : `AUTOMERGE_TOKEN`).
