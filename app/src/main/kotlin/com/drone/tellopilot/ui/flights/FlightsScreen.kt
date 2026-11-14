@@ -203,7 +203,9 @@ class FlightsViewModel @Inject constructor(
         viewModelScope.launch { store.delete(ids) }
     }
 
-    fun shareUri(id: String) = store.shareUri(id)
+    /** Share URI of one flight; a flight deleted in the meantime is reported. */
+    fun shareOne(id: String): List<Pair<String, Uri>> =
+        listOfNotNull(store.shareUri(id)?.let { id to it }).also { if (it.isEmpty()) _messages.trySend(ExportMessage.ShareMissing(1)) }
 
     /** Share URIs of the selected flights that still exist; the others are reported. */
     fun shareSelected(): List<Pair<String, Uri>> {
@@ -272,7 +274,9 @@ class FlightDetailViewModel @Inject constructor(
         }
     }
 
-    fun shareUri(id: String) = store.shareUri(id)
+    /** Share URI of one flight; a flight deleted in the meantime is reported. */
+    fun shareOne(id: String): List<Pair<String, Uri>> =
+        listOfNotNull(store.shareUri(id)?.let { id to it }).also { if (it.isEmpty()) _messages.trySend(ExportMessage.ShareMissing(1)) }
 
     private val _messages = Channel<ExportMessage>(Channel.BUFFERED)
     val messages: Flow<ExportMessage> = _messages.receiveAsFlow()
@@ -310,7 +314,7 @@ fun FlightsRoute(
                 onBack = onBack,
                 onOpen = onOpen,
                 onToggle = viewModel::toggle,
-                onShare = { id -> share(context, listOfNotNull(viewModel.shareUri(id)?.let { id to it })) },
+                onShare = { id -> share(context, viewModel.shareOne(id)) },
                 onSave = { id -> launchSave(saveCsv, viewModel.prepareCsv(id)) },
                 onDelete = viewModel::delete,
                 onSelectAll = viewModel::selectAll,
@@ -587,7 +591,7 @@ fun FlightDetailRoute(
                         ExportMenu(
                             label = stringResource(R.string.flights_export),
                             saveLabel = stringResource(R.string.flights_save_device),
-                            onShare = { share(context, listOfNotNull(viewModel.shareUri(id)?.let { id to it })) },
+                            onShare = { share(context, viewModel.shareOne(id)) },
                             onSave = { launchSave(saveCsv, FlightExport.csvFileName(id)) },
                         )
                         TextButton(onClick = { confirmDelete = true }) { Text(stringResource(R.string.gallery_delete)) }

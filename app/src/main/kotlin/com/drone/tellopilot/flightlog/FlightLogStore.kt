@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -116,10 +117,12 @@ class FlightLogStore @Inject constructor(@ApplicationContext private val context
      * no storage permission): a ZIP of [ids], or the bare CSV of a single flight when [zip] is false.
      * Without anything to write, or on failure, the empty document is deleted.
      */
-    suspend fun saveTo(target: Uri, ids: List<String>, zip: Boolean): ExportResult = withContext(Dispatchers.IO) {
+    suspend fun saveTo(target: Uri, ids: List<String>, zip: Boolean): ExportResult = withContext(Dispatchers.IO + NonCancellable) {
+        // NonCancellable: leaving the screen must neither cut the file short nor leave an empty document.
         val resolver = context.contentResolver
         val result = try {
-            val out = resolver.openOutputStream(target, "wt") ?: throw IOException("cannot open $target")
+            // "w": the document was just created empty by the picker, and every provider supports this mode.
+            val out = resolver.openOutputStream(target, "w") ?: throw IOException("cannot open $target")
             if (zip) {
                 exportZip(ids, out)
             } else {
@@ -132,8 +135,10 @@ class FlightLogStore @Inject constructor(@ApplicationContext private val context
             Log.w(TAG, "cannot export to $target", e)
             runCatching { DocumentsContract.deleteDocument(resolver, target) }
             throw e
-        } catch (e: SecurityException) {
+        } catch (e: RuntimeException) {
+            // Provider errors over binder (SecurityException, IllegalArgumentException…).
             Log.w(TAG, "cannot export to $target", e)
+            runCatching { DocumentsContract.deleteDocument(resolver, target) }
             throw IOException(e)
         }
         if (result.exported.isEmpty()) runCatching { DocumentsContract.deleteDocument(resolver, target) }

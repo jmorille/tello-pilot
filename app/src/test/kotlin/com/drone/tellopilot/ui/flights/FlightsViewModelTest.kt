@@ -178,4 +178,11 @@ class FlightsViewModelTest {
         assertEquals(listOf(ids[1], ids[2]), vm.shareSelected().map { it.first })
         assertEquals(ExportMessage.ShareMissing(1), withTimeout(5_000) { vm.messages.first() })
     }
+
+    @Test
+    fun `sharing one flight deleted in the meantime is reported`() = runBlocking {
+        every { store.shareUri(any()) } returns null
+        assertTrue(vm.shareOne(ids[0]).isEmpty())
+        assertEquals(ExportMessage.ShareMissing(1), withTimeout(5_000) { vm.messages.first() })
+    }
 }
