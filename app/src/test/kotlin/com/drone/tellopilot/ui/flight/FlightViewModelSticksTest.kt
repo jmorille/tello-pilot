@@ -217,9 +217,14 @@ class FlightViewModelSticksTest {
             assertEquals(StickInput(pitch = 0.25f), drone.lastSticks)
             // Tripod on from fast mode: normal profile, then the tripod scale.
             vm.onAction(FlightAction.ToggleFastMode)
+            val before = drone.sticks.size
             vm.onAction(FlightAction.ToggleTripod)
-            assertEquals(0.25f * settings.value.pilot.tripodScale, drone.lastSticks!!.pitch, 1e-6f)
-            assertFalse(drone.lastSticks!!.fastMode)
+            // One update, normal profile then the tripod, fast flag off: never a mixed state.
+            assertEquals(listOf(StickInput(pitch = 0.25f * settings.value.pilot.tripodScale)), drone.sticks.drop(before))
+            // Fast mode on again from the tripod: one update with the fast profile, full scale.
+            vm.onAction(FlightAction.ToggleFastMode)
+            assertEquals(listOf(StickInput(pitch = 0.75f, fastMode = true)), drone.sticks.drop(before + 1))
+            verify { drone.controller.setFastMode(false) }
         }
 
     @Test

@@ -415,12 +415,13 @@ class FlightViewModel internal constructor(
 
     private fun touchIdle() = touch.all { it == 0f }
 
-    /** Tripod mode: stick output scaled down (read by the stick handlers on the main thread). */
+    /**
+     * Tripod mode: stick output scaled down (read by the stick handlers on the main thread).
+     * The caller re-mixes the held sticks (pushSticks) once the fast mode is settled too.
+     */
     private fun setTripod(on: Boolean) {
         tripod.value = on
         mixer.scale = if (on) pilot.value.tripodScale else 1f
-        // A stick held still sends no new event: apply the new scale at once.
-        pushSticks()
     }
 
     /** Last smart video cancelled by a stick movement (one stop request per second at most). */
@@ -597,21 +598,24 @@ class FlightViewModel internal constructor(
                 autoRecording = false
                 if (recorder.isActive) stopRecording() else startRecording()
             }
+            // Each flight mode has its own axis profile and a stick held still sends no new
+            // event: the held sticks are re-mixed at once. The new fast flag travels in the
+            // same stick update (one atomic write), never a new flag with the old profile.
             FlightAction.ToggleFastMode -> {
-                fastMode.value = !fastMode.value
-                if (fastMode.value) setTripod(false)
-                session.controller.value?.setFastMode(fastMode.value)
-                // Each flight mode has its own axis profile: a stick held still sends no new
-                // event, so re-mix it at once with the profile of the new mode.
+                val on = !fastMode.value
+                fastMode.value = on
+                if (on) setTripod(false)
                 pushSticks()
+                // Also when pushSticks sent nothing (automatic flight still flying).
+                session.controller.value?.setFastMode(on)
             }
             FlightAction.ToggleTripod -> {
-                setTripod(!tripod.value)
-                if (tripod.value && fastMode.value) {
-                    fastMode.value = false
-                    session.controller.value?.setFastMode(false)
-                    pushSticks() // normal mode profile at once (setTripod mixed with the fast one)
-                }
+                val on = !tripod.value
+                val fastOff = on && fastMode.value
+                if (fastOff) fastMode.value = false
+                setTripod(on)
+                pushSticks()
+                if (fastOff) session.controller.value?.setFastMode(false)
             }
             is FlightAction.StartMission -> startAutopilot(tracking = false, fromPad) { autopilot.startMission(action.mission) }
             is FlightAction.StartTracking -> startAutopilot(tracking = true, fromPad) {
