@@ -1,12 +1,12 @@
 # Tello Pilot
 
-[![CI](https://github.com/jmorille/tello-pilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmorille/tello-pilot/actions/workflows/ci.yml)
-[![Coverage](https://github.com/jmorille/tello-pilot/blob/badges/coverage.svg?raw=true)](https://github.com/jmorille/tello-pilot/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/jmorille/tello-pilot/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/jmorille/tello-pilot/actions/workflows/codeql.yml)
-[![Dependency scan](https://github.com/jmorille/tello-pilot/actions/workflows/dependencies.yml/badge.svg?branch=main)](https://github.com/jmorille/tello-pilot/actions/workflows/dependencies.yml)
-[![Release](https://github.com/jmorille/tello-pilot/actions/workflows/release.yml/badge.svg)](https://github.com/jmorille/tello-pilot/releases/latest)
-[![Version](https://img.shields.io/github/v/release/jmorille/tello-pilot?sort=semver&label=version)](https://github.com/jmorille/tello-pilot/releases/latest)
-[![Dependabot](https://img.shields.io/badge/Dependabot-enabled-025E8C?logo=dependabot)](https://github.com/jmorille/tello-pilot/blob/main/.github/dependabot.yml)
+[![CI](https://github.com/tt-box/tello-pilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tt-box/tello-pilot/actions/workflows/ci.yml)
+[![Coverage](https://github.com/tt-box/tello-pilot/blob/badges/coverage.svg?raw=true)](https://github.com/tt-box/tello-pilot/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/tt-box/tello-pilot/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/tt-box/tello-pilot/actions/workflows/codeql.yml)
+[![Dependency scan](https://github.com/tt-box/tello-pilot/actions/workflows/dependencies.yml/badge.svg?branch=main)](https://github.com/tt-box/tello-pilot/actions/workflows/dependencies.yml)
+[![Release](https://github.com/tt-box/tello-pilot/actions/workflows/release.yml/badge.svg)](https://github.com/tt-box/tello-pilot/releases/latest)
+[![Version](https://img.shields.io/github/v/release/tt-box/tello-pilot?sort=semver&label=version)](https://github.com/tt-box/tello-pilot/releases/latest)
+[![Dependabot](https://img.shields.io/badge/Dependabot-enabled-025E8C?logo=dependabot)](https://github.com/tt-box/tello-pilot/blob/main/.github/dependabot.yml)
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.4.21-7F52FF?logo=kotlin&logoColor=white)
 ![AGP](https://img.shields.io/badge/AGP-9.5.0-3DDC84?logo=android&logoColor=white)
 ![minSdk](https://img.shields.io/badge/minSdk-30-3DDC84?logo=android&logoColor=white)
@@ -63,7 +63,7 @@ Chaque release (tag `vX.Y.Z`, workflow `Release`) publie :
 La clé publique de référence est celle du dépôt, `.github/release-signing/ml-dsa-65.pub.pem` (SHA-256 de la clé en DER : `ab7dc579b67e6888370cf9c138dc4bfaee8809b48d9c308b76c02d539d2fbef6`). Il faut **OpenSSL ≥ 3.5** (`openssl version`) :
 ```sh
 TAG=v0.1.0
-gh release download "$TAG" -R jmorille/tello-pilot -D "release-$TAG" && cd "release-$TAG"
+gh release download "$TAG" -R tt-box/tello-pilot -D "release-$TAG" && cd "release-$TAG"
 cp ../.github/release-signing/ml-dsa-65.pub.pem ref.pub.pem   # depuis un clone du dépôt
 
 # 1. Intégrité de l'APK
