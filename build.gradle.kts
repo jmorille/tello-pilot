@@ -5,9 +5,9 @@ buildscript {
     dependencies {
         constraints {
             listOf(
-                "org.bouncycastle:bcprov-jdk18on:1.86", // CVE-2026-8763, CVE-2026-13506, CVE-2026-0636
-                "org.bouncycastle:bcpkix-jdk18on:1.86", // CVE-2026-5588
-                "org.bouncycastle:bcutil-jdk18on:1.86", // kept aligned with bcprov/bcpkix
+                "org.bouncycastle:bcprov-jdk18on:1.87", // CVE-2026-8763, CVE-2026-13506, CVE-2026-0636
+                "org.bouncycastle:bcpkix-jdk18on:1.87", // CVE-2026-5588
+                "org.bouncycastle:bcutil-jdk18on:1.87", // kept aligned with bcprov/bcpkix
                 "org.bitbucket.b_c:jose4j:0.9.7", // CVE-2024-29371
                 "org.jdom:jdom2:2.0.6.1", // CVE-2021-33813
                 "org.apache.commons:commons-lang3:3.21.0", // CVE-2025-48924
@@ -29,9 +29,9 @@ buildscript {
 // Keep in sync with the buildscript list above; drop an entry once the tools ship the patched version.
 allprojects {
     val securityFloor = mapOf(
-        "org.bouncycastle:bcprov-jdk18on" to "1.86", // CVE-2026-8763, CVE-2026-13506, CVE-2026-0636
-        "org.bouncycastle:bcpkix-jdk18on" to "1.86", // CVE-2026-5588
-        "org.bouncycastle:bcutil-jdk18on" to "1.86", // kept aligned with bcprov/bcpkix
+        "org.bouncycastle:bcprov-jdk18on" to "1.87", // CVE-2026-8763, CVE-2026-13506, CVE-2026-0636
+        "org.bouncycastle:bcpkix-jdk18on" to "1.87", // CVE-2026-5588
+        "org.bouncycastle:bcutil-jdk18on" to "1.87", // kept aligned with bcprov/bcpkix
         "org.bitbucket.b_c:jose4j" to "0.9.7", // CVE-2024-29371
         "org.jdom:jdom2" to "2.0.6.1", // CVE-2021-33813
         "org.apache.commons:commons-lang3" to "3.21.0", // CVE-2025-48924
