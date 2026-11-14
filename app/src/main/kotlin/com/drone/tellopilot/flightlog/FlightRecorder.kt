@@ -3,6 +3,7 @@ package com.drone.tellopilot.flightlog
 import android.os.SystemClock
 import android.util.Log
 import com.drone.tello.control.Telemetry
+import com.drone.tello.protocol.StickInput
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -36,18 +37,20 @@ class FlightRecorder internal constructor(
     /**
      * Runs until cancelled. [latest] returns the live telemetry, or `null` when the link is
      * down (a reconnection within [FlightSampler.NO_DATA_TIMEOUT_MS] continues the same flight).
+     * [commands] returns the stick command being sent (`null` when unknown): logged with each row.
      */
-    suspend fun record(latest: () -> Telemetry?) = single.withLock { recordFlights(latest) }
+    suspend fun record(commands: () -> StickInput? = { null }, latest: () -> Telemetry?) =
+        single.withLock { recordFlights(commands, latest) }
 
     /** Overlapping session runs (screen recreated) must not record the same flight twice. */
     private val single = Mutex()
 
-    private suspend fun recordFlights(latest: () -> Telemetry?) = withContext(io) {
+    private suspend fun recordFlights(commands: () -> StickInput?, latest: () -> Telemetry?) = withContext(io) {
         val sampler = FlightSampler()
         var writer: FlightLogStore.FlightWriter? = null
         try {
             while (isActive) {
-                val tick = sampler.onTick(clock(), latest())
+                val tick = sampler.onTick(clock(), latest(), commands())
                 try {
                     if (tick.start) {
                         val start = System.currentTimeMillis()
