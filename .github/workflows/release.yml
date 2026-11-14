@@ -3,8 +3,8 @@ name: Release
 # Publishes a signed release for each vMAJOR.MINOR.PATCH[-suffix] tag (a suffix => prerelease).
 # workflow_dispatch runs the same pipeline as a DRY RUN: built, signed and verified with EPHEMERAL
 # keys generated on the fly (no production secret is ever used), and nothing is published.
-# Recommendation: move the signing secrets to a protected "release" environment restricted to v* tags,
-# so that GitHub only hands them to tag runs.
+# The signing secrets live in the "release" environment, whose deployments are restricted to v* tags:
+# GitHub only hands them to tag runs. The dry run references no environment (see jobs.release.environment).
 on:
   push:
     tags: ['v*']
@@ -32,6 +32,10 @@ jobs:
     name: Signed release APK
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    # Real release (tag push) only: the "release" environment (v* tags only) holds the signing secrets.
+    # The dry run (workflow_dispatch from any branch) gets an empty name, i.e. no environment: it is
+    # not blocked by the tag-only policy and receives no environment secret.
+    environment: ${{ github.event_name == 'push' && 'release' || '' }}
     # Artifact attestations (actions/attest-build-provenance) are not offered here: for private
     # repositories they require GitHub Enterprise Cloud (README of actions/attest-build-provenance).
     # Without them, no id-token/attestations permission is granted to the build.
