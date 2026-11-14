@@ -159,9 +159,11 @@ class ImpactDetectorTest {
     @Test
     fun `a non finite sample is skipped and detection goes on`() {
         val f = Flight()
+        // Between two tilted samples: if a non finite one were evaluated it would read as calm and
+        // reset the tilt count, and the second tilted sample would not confirm the tilt.
+        assertNull(f.feed(S(roll = 60f)))
         assertNull(f.feed(S(roll = Float.NaN)))
         assertNull(f.feed(S(vn = Float.POSITIVE_INFINITY)))
-        assertNull(f.feed(S(roll = 60f)))
         assertEquals(ImpactKind.TILT, f.feed(S(roll = 60f)))
     }
 

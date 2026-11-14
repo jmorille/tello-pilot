@@ -39,6 +39,8 @@ tasks.register<JavaExec>("pitest") {
     mainClass = "org.pitest.mutationtest.commandline.MutationCoverageReport"
     inputs.files(testRuntime)
     outputs.dir(reportDir)
+    // On-demand task: always rerun (the -Ppitest.* filters are not tracked as inputs).
+    outputs.upToDateWhen { false }
     argumentProviders += CommandLineArgumentProvider {
         // Every package of the module (com.drone.tello.control.*, …).
         val packages = mainClassDirs.files
