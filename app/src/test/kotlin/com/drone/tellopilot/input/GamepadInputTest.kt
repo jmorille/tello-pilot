@@ -577,6 +577,24 @@ class GamepadInputTest {
     }
 
     @Test
+    fun `flip safety - L2 released by its axis after another pad's event never stays held`() {
+        val input = ready(1, 2)
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 1f)) // A presses L2 (axis)
+        input.onMotionEvent(motion(2)) // B reports its own L2 at 0
+        input.onMotionEvent(motion(1)) // A releases L2
+        input.sticks(1, rx = 0.5f)
+        assertEquals((0.5f - 0.08f) / 0.92f, listener.last.rightX, 1e-5f)
+    }
+
+    @Test
+    fun `flip safety - a centred right stick with R2 half pressed is not suspect`() {
+        val input = ready()
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 0.5f)) // Z = 0 = 2 * 0.5 - 1
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 1f, MotionEvent.AXIS_Z to 1f))
+        assertEquals("a real stick at its stop", 1f, listener.last.rightX, 1e-6f)
+    }
+
+    @Test
     fun `flip safety - a stick at its stop with a trigger fully down stays at its stop`() {
         val input = ready()
         input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 1f, MotionEvent.AXIS_Z to 1f))
