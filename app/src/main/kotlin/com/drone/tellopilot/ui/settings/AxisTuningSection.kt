@@ -42,10 +42,15 @@ import kotlin.math.roundToInt
 /**
  * Per-axis response (gain, amplitude, expo) of the normal and fast flight modes, with a live
  * response curve per axis. The sliders edit a local draft (the curve follows the finger) and
- * persist on release, like [SliderSetting].
+ * persist on release, like [SliderSetting]. [fastExtras] is shown in the fast tab only (settings
+ * that only exist in fast mode, such as the max tilt angle).
  */
 @Composable
-internal fun AxisTuningSection(pilot: PilotSettings, updatePilot: ((PilotSettings) -> PilotSettings) -> Unit) {
+internal fun AxisTuningSection(
+    pilot: PilotSettings,
+    updatePilot: ((PilotSettings) -> PilotSettings) -> Unit,
+    fastExtras: @Composable () -> Unit = {},
+) {
     Text(stringResource(R.string.axis_title), style = MaterialTheme.typography.titleMedium)
     Text(stringResource(R.string.axis_help), style = MaterialTheme.typography.bodySmall)
 
@@ -59,6 +64,7 @@ internal fun AxisTuningSection(pilot: PilotSettings, updatePilot: ((PilotSetting
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+    if (fast) fastExtras()
 
     val persisted = pilot.axisTuning(fast).sanitized()
     var draft by remember(persisted, fast) { mutableStateOf(persisted) }

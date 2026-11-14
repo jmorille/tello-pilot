@@ -41,7 +41,12 @@ import kotlinx.coroutines.test.runCurrent
  * scheduler (`Dispatchers.Main` must be set to the test dispatcher).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-internal class FlightViewModelRig(val scope: TestScope, pilot: PilotSettings = linearPilot()) {
+internal class FlightViewModelRig(
+    val scope: TestScope,
+    pilot: PilotSettings = linearPilot(),
+    /** What the settings store answers for the start mode ([SettingsRepository.initialFastMode]). */
+    initialFastMode: Boolean = false,
+) {
     val drone = FakeDrone()
     val controller = MutableStateFlow<TelloController?>(drone.controller)
     val wifi = MutableStateFlow<WifiState>(WifiState.Drone(mockk(relaxed = true)))
@@ -59,12 +64,13 @@ internal class FlightViewModelRig(val scope: TestScope, pilot: PilotSettings = l
     val gamepad: GamepadInput = mockk(relaxed = true)
     val recorder: VideoRecorder = mockk(relaxed = true)
     val session: DroneSession = mockk(relaxed = true)
-    private val settingsRepo: SettingsRepository = mockk(relaxed = true)
+    val settingsRepo: SettingsRepository = mockk(relaxed = true)
     private val thermal: PhoneThermal = mockk(relaxed = true)
     private val context: android.content.Context = mockk(relaxed = true)
 
     init {
         every { settingsRepo.settings } returns settings
+        coEvery { settingsRepo.initialFastMode() } returns initialFastMode
         every { thermal.heat } returns flowOf(PhoneHeat.NORMAL)
         every { context.getString(any()) } returns "Hauteur de décollage"
         every { gamepad.status } returns padStatus

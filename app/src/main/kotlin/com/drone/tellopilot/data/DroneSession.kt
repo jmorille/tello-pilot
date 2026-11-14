@@ -131,6 +131,9 @@ class DroneSession internal constructor(
         _controller.flatMapLatest { it?.imuCalibration ?: flowOf(ImuCalibrationState.Idle) }
     val wifiChange: Flow<WifiChangeState> = _controller.flatMapLatest { it?.wifiChangeState ?: flowOf(WifiChangeState.Idle) }
     val events: Flow<DroneEvent> = _controller.flatMapLatest { it?.events ?: emptyFlow() }
+
+    /** Fast-mode max tilt angle as read from the drone (degrees), `null` when unknown. */
+    val droneMaxTilt: Flow<Float?> = _controller.flatMapLatest { it?.droneMaxTilt ?: flowOf(null) }
     /** Photo transfer progress (0..1) or `null` when no photo is in progress. */
     val photoProgress: Flow<Float?> = _controller.flatMapLatest { it?.photoProgress ?: flowOf(null) }
 

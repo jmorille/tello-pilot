@@ -101,6 +101,8 @@ class FlightViewModel internal constructor(
 
     private val fastMode = MutableStateFlow(false)
     private val tripod = MutableStateFlow(false)
+    /** The pilot switched the fast / tripod mode: the remembered start mode no longer applies. */
+    private var flightModeTouched = false
     /** Visual-odometry track of the current flight (valid positions only). */
     private val track = MutableStateFlow<List<androidx.compose.ui.geometry.Offset>>(emptyList())
 
@@ -179,6 +181,26 @@ class FlightViewModel internal constructor(
     init {
         // The drone session lives as long as the flight screen.
         viewModelScope.launch { session.run() }
+        viewModelScope.launch {
+            // Start mode (normal unless the pilot chose to remember the last one). Never
+            // overrides a choice made meanwhile, nor the tripod mode (which excludes it).
+            val on = try {
+                settings.initialFastMode()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("FlightViewModel", "start mode unavailable", e)
+                false
+            }
+            if (on && !flightModeTouched && !tripod.value) {
+                fastMode.value = true
+                remixSticks()
+                session.controller.value?.setFastMode(true)
+            }
+        }
+        // A new controller (session restarted, Wi-Fi back) starts in normal mode: give it the
+        // pilot's current mode, as shown on screen.
+        viewModelScope.launch { session.controller.collect { it?.setFastMode(fastMode.value) } }
         viewModelScope.launch {
             // Official app: one tip when the calibration starts, one when it is done; the start
             // tip is re-armed only by a completion (an unstable bit cannot loop the messages).
@@ -437,6 +459,19 @@ class FlightViewModel internal constructor(
         controller.setSticks(mixer.setRight(mergeAxis(touch[2], pad.rightX), mergeAxis(touch[3], pad.rightY), fast))
     }
 
+    /** Stored for the next launch (used only if the pilot chose to remember it); never blocks the flight. */
+    private fun rememberFastMode(on: Boolean) {
+        viewModelScope.launch {
+            try {
+                settings.rememberFastMode(on)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("FlightViewModel", "cannot store the fast mode", e)
+            }
+        }
+    }
+
     /**
      * Tripod mode: stick output scaled down (read by the stick handlers on the main thread).
      * The caller re-mixes the held sticks (pushSticks) once the fast mode is settled too.
@@ -624,20 +659,26 @@ class FlightViewModel internal constructor(
             // event: the held sticks are re-mixed at once. The new fast flag travels in the
             // same stick update (one atomic write), never a new flag with the old profile.
             FlightAction.ToggleFastMode -> {
+                flightModeTouched = true
                 val on = !fastMode.value
                 fastMode.value = on
                 if (on) setTripod(false)
                 remixSticks()
                 // Also when nothing was re-mixed (automatic flight, smart video).
                 session.controller.value?.setFastMode(on)
+                rememberFastMode(on)
             }
             FlightAction.ToggleTripod -> {
+                flightModeTouched = true
                 val on = !tripod.value
                 val fastOff = on && fastMode.value
                 if (fastOff) fastMode.value = false
                 setTripod(on)
                 remixSticks()
-                if (fastOff) session.controller.value?.setFastMode(false)
+                if (fastOff) {
+                    session.controller.value?.setFastMode(false)
+                    rememberFastMode(false)
+                }
             }
             is FlightAction.StartMission -> startAutopilot(tracking = false, fromPad) { autopilot.startMission(action.mission) }
             is FlightAction.StartTracking -> startAutopilot(tracking = true, fromPad) {

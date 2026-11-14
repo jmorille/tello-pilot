@@ -42,6 +42,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.drone.tello.control.DroneSettings
+import com.drone.tello.control.FastModeStartup
 import com.drone.tello.control.HorizonAnchor
 import com.drone.tello.control.HorizonPlacement
 import com.drone.tello.control.PilotSettings
@@ -75,6 +76,10 @@ class SettingsViewModel @Inject constructor(
     val settings: StateFlow<AppSettings?> = repository.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /** Fast-mode max tilt as read from the connected drone, `null` when unknown. */
+    val droneMaxTilt: StateFlow<Float?> = session.droneMaxTilt
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     fun updatePilot(transform: (PilotSettings) -> PilotSettings) {
         viewModelScope.launch { repository.updatePilot(transform) }
     }
@@ -93,12 +98,14 @@ fun SettingsRoute(
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val flying by viewModel.flying.collectAsStateWithLifecycle()
+    val droneMaxTilt by viewModel.droneMaxTilt.collectAsStateWithLifecycle()
     LaunchedEffect(flying) { if (flying) onBack() }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         settings?.let {
             SettingsScreen(
                 it, onBack, viewModel::updatePilot, viewModel::updateDrone, onOpenGamepad,
                 videos = { pilot -> VideoSection(pilot, viewModel::updatePilot) },
+                droneMaxTilt = droneMaxTilt,
             ) {
                 MaintenanceSection(onOpenImuCalibration)
             }
@@ -129,6 +136,8 @@ fun SettingsScreen(
     updateDrone: ((DroneSettings) -> DroneSettings) -> Unit,
     onOpenGamepad: () -> Unit = {},
     videos: @Composable (PilotSettings) -> Unit = {},
+    /** Fast-mode max tilt read from the drone (degrees), `null` when unknown. */
+    droneMaxTilt: Float? = null,
     maintenance: @Composable () -> Unit = {},
 ) {
     var category by rememberSaveable { mutableStateOf(SettingsCategory.CONTROL) }
@@ -155,7 +164,7 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.primary,
                 )
                 when (category) {
-                    SettingsCategory.CONTROL -> ControlSettings(settings.pilot, updatePilot)
+                    SettingsCategory.CONTROL -> ControlSettings(settings.pilot, updatePilot, settings.drone, updateDrone, droneMaxTilt)
                     SettingsCategory.GAMEPAD -> GamepadSettings(settings.pilot, updatePilot, onOpenGamepad)
                     SettingsCategory.DISPLAY -> DisplaySettings(settings.pilot, updatePilot)
                     SettingsCategory.VIDEOS -> {
@@ -174,7 +183,13 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun ControlSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) -> PilotSettings) -> Unit) {
+private fun ControlSettings(
+    pilot: PilotSettings,
+    updatePilot: ((PilotSettings) -> PilotSettings) -> Unit,
+    drone: DroneSettings,
+    updateDrone: ((DroneSettings) -> DroneSettings) -> Unit,
+    droneMaxTilt: Float?,
+) {
     Label(R.string.settings_stick_mode)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StickMode.entries.forEach { mode ->
@@ -190,7 +205,9 @@ private fun ControlSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
         label = { stringResource(R.string.settings_dead_zone, (it * 100).roundToInt()) },
         value = pilot.deadZone, range = PilotSettings.DEAD_ZONE_RANGE,
     ) { v -> updatePilot { it.copy(deadZone = v) } }
-    AxisTuningSection(pilot, updatePilot)
+    // The max tilt only applies to the fast mode: shown in its tab, as in the official app.
+    AxisTuningSection(pilot, updatePilot) { MaxTiltSetting(drone, updateDrone, droneMaxTilt) }
+    FastModeStartupSetting(pilot, updatePilot)
     SliderSetting(
         label = { stringResource(R.string.settings_tripod_scale, (it * 100).roundToInt()) },
         value = pilot.tripodScale, range = PilotSettings.TRIPOD_RANGE,
@@ -212,6 +229,58 @@ private fun ControlSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
         ) { v -> updatePilot { it.copy(takeoffHeight = (v * 10).roundToInt() / 10f) } }
     }
     Text(stringResource(R.string.settings_takeoff_height_help), style = MaterialTheme.typography.bodySmall)
+}
+
+/** Fast-mode max tilt (cmd 4184), whole degrees, with the value the drone reports (cmd 4185). */
+@Composable
+private fun MaxTiltSetting(
+    drone: DroneSettings,
+    updateDrone: ((DroneSettings) -> DroneSettings) -> Unit,
+    droneMaxTilt: Float?,
+) {
+    val range = DroneSettings.MAX_TILT_RANGE
+    SliderSetting(
+        label = { stringResource(R.string.settings_max_tilt, it.roundToInt()) },
+        value = drone.maxTiltDeg,
+        range = range,
+        steps = (range.endInclusive - range.start).roundToInt() - 1,
+    ) { v -> updateDrone { it.copy(maxTiltDeg = DroneSettings.sanitizeMaxTilt(v)) } }
+    Text(
+        if (droneMaxTilt != null) {
+            stringResource(R.string.settings_max_tilt_drone, formatDegrees(droneMaxTilt))
+        } else {
+            stringResource(R.string.settings_max_tilt_drone_unknown)
+        },
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(stringResource(R.string.settings_max_tilt_help), style = MaterialTheme.typography.bodySmall)
+}
+
+/** Whole degrees as an integer, otherwise one decimal with a French comma. */
+private fun formatDegrees(v: Float): String {
+    val tenths = (v * 10).roundToInt()
+    return if (tenths % 10 == 0) (tenths / 10).toString() else "${tenths / 10},${kotlin.math.abs(tenths % 10)}"
+}
+
+@Composable
+private fun FastModeStartupSetting(pilot: PilotSettings, updatePilot: ((PilotSettings) -> PilotSettings) -> Unit) {
+    Label(R.string.settings_fast_startup)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FastModeStartup.entries.forEach { option ->
+            FilterChip(
+                selected = pilot.fastModeStartup == option,
+                onClick = { updatePilot { it.copy(fastModeStartup = option) } },
+                label = {
+                    Text(stringResource(when (option) {
+                        FastModeStartup.ALWAYS_NORMAL -> R.string.settings_fast_startup_normal
+                        FastModeStartup.REMEMBER -> R.string.settings_fast_startup_remember
+                    }))
+                },
+            )
+        }
+    }
+    Text(stringResource(R.string.settings_fast_startup_help), style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
