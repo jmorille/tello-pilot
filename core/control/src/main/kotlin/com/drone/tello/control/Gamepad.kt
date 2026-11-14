@@ -17,8 +17,8 @@ sealed interface PadAction {
     data class Flip(val direction: FlipDirection) : PadAction
     /**
      * A flip being prepared was cancelled: a second D-pad direction went down before the
-     * release (diagonal / rolled press, e.g. a GameSir cross that reports "up" then "left"
-     * 30-90 ms later). Nothing is flown; the pilot is told.
+     * release (diagonal / rolled press, e.g. a GameSir G4 Pro cross that, with L2 held,
+     * reports "left" 150 ms after "up" on about 1 press in 4). Nothing is flown; the pilot is told.
      */
     data object FlipCancelled : PadAction
     data object ToggleFastMode : PadAction

@@ -84,7 +84,7 @@ class FlightViewModelFlipTest {
         val mapper = GamepadMapper()
         pad(mapper, PadButton.L2, down = true)
         pad(mapper, PadButton.DPAD_UP, down = true)
-        pad(mapper, PadButton.DPAD_LEFT, down = true) // GameSir: "left" 30-90 ms after "up"
+        pad(mapper, PadButton.DPAD_LEFT, down = true) // GameSir G4 Pro: "left" 150 ms after "up" (1 press in 4)
         pad(mapper, PadButton.DPAD_LEFT, down = false)
         pad(mapper, PadButton.DPAD_UP, down = false)
         coVerify(exactly = 0) { drone.controller.flip(any(), any()) }

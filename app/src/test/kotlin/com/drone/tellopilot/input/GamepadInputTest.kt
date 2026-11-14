@@ -585,6 +585,20 @@ class GamepadInputTest {
     }
 
     @Test
+    fun `GameSir - second capture, left added 150 ms after up then released before it, gives no flip`() {
+        // L2 held + cross up: 1 press out of 4 adds HAT_X=-1 150 ms after "up", X back to 0 before Y.
+        val input = ready()
+        input.gameSirL2Down()
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_HAT_Y to -1f))
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_HAT_Y to -1f, MotionEvent.AXIS_HAT_X to -1f))
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_HAT_Y to -1f))
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f))
+        input.gameSirL2Up()
+        assertEquals(listOf<PadAction>(PadAction.FlipCancelled), listener.actions)
+        assertTrue(listener.sticks.none { it != PadSticks.Neutral })
+    }
+
+    @Test
     fun `GameSir - both hat axes in the same frame gives no flip either`() {
         val input = ready()
         input.gameSirL2Down()
