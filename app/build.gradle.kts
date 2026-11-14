@@ -38,6 +38,9 @@ android {
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
+    // The app is French only: drop the other translations shipped by libraries (Compose, Media3…).
+    androidResources { localeFilters += listOf("fr") }
+
     signingConfigs {
         if (releaseKeystore != null && !unsignedRelease) {
             create("release") {
@@ -51,9 +54,9 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // R8 (AGP 9.3+ DSL): code + resource optimization, default Android rules included;
+            // app keep rules in src/main/keepRules/*.keep.
+            optimization { enable = true }
             // Side-loaded app: release key when provided, else the debug key so it can be installed directly.
             signingConfig = when {
                 unsignedRelease -> null
