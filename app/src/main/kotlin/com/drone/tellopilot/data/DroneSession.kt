@@ -132,6 +132,8 @@ class DroneSession internal constructor(
     val wifiChange: Flow<WifiChangeState> = _controller.flatMapLatest { it?.wifiChangeState ?: flowOf(WifiChangeState.Idle) }
     val events: Flow<DroneEvent> = _controller.flatMapLatest { it?.events ?: emptyFlow() }
 
+    /** Fast-mode max tilt angle as read from the drone (degrees), `null` when unknown. */
+    val droneMaxTilt: Flow<Float?> = _controller.flatMapLatest { it?.droneMaxTilt ?: flowOf(null) }
     /** Photo transfer progress (0..1) or `null` when no photo is in progress. */
     val photoProgress: Flow<Float?> = _controller.flatMapLatest { it?.photoProgress ?: flowOf(null) }
 
@@ -183,7 +185,10 @@ class DroneSession internal constructor(
             coroutineScope {
                 // Black box: polls the live telemetry on an I/O thread (never the realtime ones).
                 launch {
-                    flightRecorder.record {
+                    flightRecorder.record(
+                        // The sticks actually sent (the controller only sends them while connected).
+                        commands = { _controller.value?.takeIf { it.isConnected }?.currentSticks },
+                    ) {
                         _controller.value?.takeIf { it.isConnected }?.telemetry?.value
                     }
                 }

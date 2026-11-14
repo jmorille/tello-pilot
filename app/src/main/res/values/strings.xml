@@ -88,7 +88,7 @@
     <string name="axis_presets">Préréglages (mode affiché)</string>
     <string name="axis_preset_cinema">Doux (cinéma)</string>
     <string name="axis_preset_standard">Standard</string>
-    <string name="axis_preset_official">Réactif (officielle)</string>
+    <string name="axis_preset_official">Officiel (app Tello)</string>
     <string name="axis_preset_pitch_boost">Tangage renforcé</string>
     <string name="axis_preset_sport">Sport</string>
     <string name="axis_reset_mode">Réinitialiser ce mode</string>
@@ -297,6 +297,15 @@
     <string name="takeoff_height_mission">Hauteur de décollage</string>
     <string name="action_tripod">Trépied</string>
     <string name="settings_tripod_scale">Amplitude des manches en mode trépied : %1$d %%</string>
+    <string name="settings_max_tilt">Inclinaison max (mode rapide) : %1$d°</string>
+    <string name="settings_max_tilt_drone">Valeur du drone : %1$s°</string>
+    <string name="settings_max_tilt_drone_unknown">Valeur du drone : inconnue</string>
+    <string name="settings_max_tilt_help">Angle maximal que le drone peut prendre en mode rapide, donc sa vitesse de pointe : 15° est plus doux, 25° (valeur de l’app officielle) le plus vif. Envoyé au drone à chaque connexion et à chaque modification ; sans effet en mode normal.</string>
+    <string name="message_max_tilt_refused">Le drone a refusé l’inclinaison max</string>
+    <string name="settings_fast_startup">Mode rapide au démarrage</string>
+    <string name="settings_fast_startup_normal">Toujours normal</string>
+    <string name="settings_fast_startup_remember">Se souvenir</string>
+    <string name="settings_fast_startup_help">« Toujours normal » démarre en mode lent, le plus sûr. « Se souvenir » reprend le mode de la dernière utilisation (le mode trépied désactive le mode rapide).</string>
     <string name="settings_tripod_help">Le mode trépied (icône dans la barre de vol) réduit la course des manches pour des plans lents et fluides. Il désactive le mode rapide.</string>
     <string name="settings_video_fit">Cadrage de la vidéo</string>
     <string name="settings_video_fit_fill">Plein écran</string>

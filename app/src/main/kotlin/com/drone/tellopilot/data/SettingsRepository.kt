@@ -16,6 +16,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.drone.tello.control.AxisTuning
 import com.drone.tello.control.DroneSettings
+import com.drone.tello.control.FastModeStartup
 import com.drone.tello.control.FlightTuning
 import com.drone.tello.control.GamepadBindings
 import com.drone.tello.control.HorizonAnchor
@@ -25,6 +26,7 @@ import com.drone.tello.control.StickAxis
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlin.math.roundToInt
 import javax.inject.Inject
@@ -60,6 +62,17 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
     suspend fun updateDrone(transform: (DroneSettings) -> DroneSettings) {
         store.edit { p -> SettingsCodec.writeDrone(p, transform(SettingsCodec.readDrone(p)).sanitized()) }
     }
+
+    /** Fast mode to start the flight screen with ([PilotSettings.fastModeStartup]); `false` if unreadable. */
+    suspend fun initialFastMode(): Boolean = SettingsCodec.initialFastMode(settingsPreferences().first())
+
+    /** Remembers the current fast mode for the next launch (always stored, used only with REMEMBER). */
+    suspend fun rememberFastMode(on: Boolean) {
+        store.edit { p -> SettingsCodec.writeLastFastMode(p, on) }
+    }
+
+    private fun settingsPreferences(): Flow<Preferences> =
+        store.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }
 }
 
 /** Mapping between the settings and their DataStore preferences (pure, no I/O). */
@@ -106,6 +119,7 @@ internal object SettingsCodec {
                 if (it.isFinite()) it.coerceIn(PilotSettings.MISSION_SPEED_RANGE) else d.missionMaxSpeed
             },
             batteryVoiceAlert = p[BATTERY_VOICE_ALERT] ?: d.batteryVoiceAlert,
+            fastModeStartup = p[FAST_MODE_STARTUP].toEnum(d.fastModeStartup),
         )
     }
 
@@ -142,6 +156,15 @@ internal object SettingsCodec {
         p[MISSION_SPEED_LIMIT] = s.missionSpeedLimit
         p[MISSION_MAX_SPEED] = s.missionMaxSpeed
         p[BATTERY_VOICE_ALERT] = s.batteryVoiceAlert
+        p[FAST_MODE_STARTUP] = s.fastModeStartup.name
+    }
+
+    /** Fast mode at launch: the last one only when the pilot chose to remember it. */
+    fun initialFastMode(p: Preferences): Boolean =
+        p[FAST_MODE_STARTUP].toEnum(PilotSettings().fastModeStartup) == FastModeStartup.REMEMBER && p[LAST_FAST_MODE] == true
+
+    fun writeLastFastMode(p: MutablePreferences, on: Boolean) {
+        p[LAST_FAST_MODE] = on
     }
 
     /**
@@ -209,6 +232,7 @@ internal object SettingsCodec {
             lowBatteryPercent = p[LOW_BATTERY] ?: d.lowBatteryPercent,
             exposureSteps = p[EXPOSURE] ?: d.exposureSteps,
             bitrate = p[BITRATE].toEnum(d.bitrate),
+            maxTiltDeg = p[MAX_TILT] ?: d.maxTiltDeg,
         ).sanitized()
     }
 
@@ -217,6 +241,7 @@ internal object SettingsCodec {
         p[LOW_BATTERY] = s.lowBatteryPercent
         p[EXPOSURE] = s.exposureSteps
         p[BITRATE] = s.bitrate.name
+        p[MAX_TILT] = DroneSettings.sanitizeMaxTilt(s.maxTiltDeg)
     }
 
     private inline fun <reified E : Enum<E>> String?.toEnum(default: E): E =
@@ -262,4 +287,8 @@ internal object SettingsCodec {
     private val LOW_BATTERY = intPreferencesKey("low_battery_percent")
     private val EXPOSURE = intPreferencesKey("exposure_steps")
     private val BITRATE = stringPreferencesKey("bitrate")
+    private val MAX_TILT = floatPreferencesKey("max_tilt_deg")
+    private val FAST_MODE_STARTUP = stringPreferencesKey("fast_mode_startup")
+    // Not part of PilotSettings: written on every toggle, read once at launch.
+    private val LAST_FAST_MODE = booleanPreferencesKey("last_fast_mode")
 }

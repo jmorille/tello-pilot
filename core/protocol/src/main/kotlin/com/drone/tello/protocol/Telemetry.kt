@@ -160,6 +160,8 @@ sealed interface DroneMessage {
     data class ImuCalibration(val status: ImuCalibrationStatus) : DroneMessage
     /** Reply to [Command.QUERY_SSID]; `null` when the drone could not read it. */
     data class Ssid(val name: String?) : DroneMessage
+    /** Reply to [Command.QUERY_MAX_TILT]; `degrees` is `null` on failure or an implausible value. */
+    data class MaxTilt(val degrees: Float?) : DroneMessage
     /** Status reply (`[0] == 0` = success) to one of [RESULT_IDS]. */
     data class CommandResult(val messageId: Int, val success: Boolean) : DroneMessage
     data class Other(val packet: Packet) : DroneMessage
@@ -169,6 +171,7 @@ sealed interface DroneMessage {
         val RESULT_IDS = setOf(
             MessageId.SET_SSID, MessageId.SET_WIFI_PASSWORD, MessageId.SMART_VIDEO, MessageId.BOUNCE,
             MessageId.CENTER_OF_GRAVITY_CALIBRATION, MessageId.IMU_CALIBRATION_START, MessageId.FLIP,
+            MessageId.MAX_TILT,
         )
 
         fun from(packet: Packet): DroneMessage {
@@ -185,6 +188,7 @@ sealed interface DroneMessage {
                 MessageId.SSID if p.isNotEmpty() -> Ssid(
                     if (p[0].toInt() == 0) String(p, 1, p.size - 1, Charsets.US_ASCII).trimEnd(' ') else null,
                 )
+                MessageId.MAX_TILT_QUERY if p.isNotEmpty() -> MaxTilt(Payloads.parseMaxTilt(p))
                 in RESULT_IDS if p.isNotEmpty() -> CommandResult(packet.messageId, p[0].toInt() == 0)
                 // [status][ASCII x30]: the first 11 characters are the version (official app).
                 MessageId.FIRMWARE if p.size > 1 -> Firmware(

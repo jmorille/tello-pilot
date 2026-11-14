@@ -48,6 +48,8 @@ sealed interface UserMessage {
     data class ModeRefused(val reason: ModeCheck) : UserMessage
     /** Refused by the drone itself. */
     data object DroneRefused : UserMessage
+    /** The drone refused the fast-mode max tilt angle (4184). */
+    data object MaxTiltRefused : UserMessage
     data class AutopilotEnded(val end: com.drone.tellopilot.tracking.AutopilotEnd) : UserMessage
     /** Automatic flight refused: the drone must be flying with a live link (and video for tracking). */
     data object AutopilotUnavailable : UserMessage
@@ -101,6 +103,8 @@ class FlightViewModel internal constructor(
 
     private val fastMode = MutableStateFlow(false)
     private val tripod = MutableStateFlow(false)
+    /** The pilot switched the fast / tripod mode: the remembered start mode no longer applies. */
+    private var flightModeTouched = false
     /** Visual-odometry track of the current flight (valid positions only). */
     private val track = MutableStateFlow<List<androidx.compose.ui.geometry.Offset>>(emptyList())
 
@@ -179,6 +183,28 @@ class FlightViewModel internal constructor(
     init {
         // The drone session lives as long as the flight screen.
         viewModelScope.launch { session.run() }
+        viewModelScope.launch {
+            // Start mode (normal unless the pilot chose to remember the last one). Never
+            // overrides a choice made meanwhile, nor the tripod mode (which excludes it), and
+            // never switches during an automatic flight or a smart video.
+            val on = try {
+                settings.initialFastMode()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("FlightViewModel", "start mode unavailable", e)
+                false
+            }
+            val busy = autopilot.active || session.controller.value?.maneuvers?.value?.smartVideoActive == true
+            if (on && !flightModeTouched && !tripod.value && !busy) {
+                fastMode.value = true
+                remixSticks()
+                session.controller.value?.setFastMode(true)
+            }
+        }
+        // A new controller (session restarted, Wi-Fi back) starts in normal mode: give it the
+        // pilot's current mode, as shown on screen.
+        viewModelScope.launch { session.controller.collect { it?.setFastMode(fastMode.value) } }
         viewModelScope.launch {
             // Official app: one tip when the calibration starts, one when it is done; the start
             // tip is re-armed only by a completion (an unstable bit cannot loop the messages).
@@ -266,7 +292,13 @@ class FlightViewModel internal constructor(
             }
         }
         viewModelScope.launch {
-            session.events.collect { if (it is DroneEvent.ManeuverRefused) _messages.trySend(UserMessage.DroneRefused) }
+            session.events.collect {
+                when (it) {
+                    is DroneEvent.ManeuverRefused -> _messages.trySend(UserMessage.DroneRefused)
+                    DroneEvent.MaxTiltRefused -> _messages.trySend(UserMessage.MaxTiltRefused)
+                    else -> Unit
+                }
+            }
         }
         viewModelScope.launch { vibrateOnAlerts() }
         viewModelScope.launch {
@@ -435,6 +467,19 @@ class FlightViewModel internal constructor(
         val fast = fastMode.value
         mixer.setLeft(mergeAxis(touch[0], pad.leftX), mergeAxis(touch[1], pad.leftY), fast)
         controller.setSticks(mixer.setRight(mergeAxis(touch[2], pad.rightX), mergeAxis(touch[3], pad.rightY), fast))
+    }
+
+    /** Stored for the next launch (used only if the pilot chose to remember it); never blocks the flight. */
+    private fun rememberFastMode(on: Boolean) {
+        viewModelScope.launch {
+            try {
+                settings.rememberFastMode(on)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("FlightViewModel", "cannot store the fast mode", e)
+            }
+        }
     }
 
     /**
@@ -624,20 +669,26 @@ class FlightViewModel internal constructor(
             // event: the held sticks are re-mixed at once. The new fast flag travels in the
             // same stick update (one atomic write), never a new flag with the old profile.
             FlightAction.ToggleFastMode -> {
+                flightModeTouched = true
                 val on = !fastMode.value
                 fastMode.value = on
                 if (on) setTripod(false)
                 remixSticks()
                 // Also when nothing was re-mixed (automatic flight, smart video).
                 session.controller.value?.setFastMode(on)
+                rememberFastMode(on)
             }
             FlightAction.ToggleTripod -> {
+                flightModeTouched = true
                 val on = !tripod.value
                 val fastOff = on && fastMode.value
                 if (fastOff) fastMode.value = false
                 setTripod(on)
                 remixSticks()
-                if (fastOff) session.controller.value?.setFastMode(false)
+                if (fastOff) {
+                    session.controller.value?.setFastMode(false)
+                    rememberFastMode(false)
+                }
             }
             is FlightAction.StartMission -> startAutopilot(tracking = false, fromPad) { autopilot.startMission(action.mission) }
             is FlightAction.StartTracking -> startAutopilot(tracking = true, fromPad) {

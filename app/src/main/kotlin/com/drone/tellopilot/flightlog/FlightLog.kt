@@ -1,6 +1,7 @@
 package com.drone.tellopilot.flightlog
 
 import com.drone.tello.control.Telemetry
+import com.drone.tello.protocol.StickInput
 import com.drone.tellopilot.ui.flight.Warning
 import java.util.Locale
 import kotlin.math.hypot
@@ -44,12 +45,23 @@ data class FlightSample(
      * error carries its code (`MOTOR_ERROR:231`). Empty: none; `null`: not recorded (old file).
      */
     val alerts: List<String>? = null,
+    /**
+     * Stick command actually sent to the drone at the sample time, normalised -1..1 (the wire
+     * value is `1024 + 660 * v`, i.e. 364..1684), after mixing / tuning / tripod scaling.
+     * `null`: not recorded (file before v3, or no live link).
+     */
+    val cmdRoll: Float? = null,
+    val cmdPitch: Float? = null,
+    val cmdThrottle: Float? = null,
+    val cmdYaw: Float? = null,
+    /** Fast-mode flag sent with those sticks; `null` when not recorded. */
+    val fastMode: Boolean? = null,
 ) {
     val horizontalMps: Float get() = hypot(northMps, eastMps)
 
     companion object {
-        /** `null` when the telemetry has no flight data yet. */
-        fun from(tMs: Long, t: Telemetry): FlightSample? {
+        /** `null` when the telemetry has no flight data yet. [sticks]: the command being sent, if known. */
+        fun from(tMs: Long, t: Telemetry, sticks: StickInput? = null): FlightSample? {
             val f = t.flight ?: return null
             val odo = t.odometry
             return FlightSample(
@@ -76,11 +88,19 @@ data class FlightSample(
                 alerts = Warning.from(f, t).map {
                     if (it == Warning.MOTOR_ERROR) "${it.name}$CODE_SEPARATOR${f.motorErrorCode}" else it.name
                 },
+                cmdRoll = sticks?.roll?.let(::sentAxis),
+                cmdPitch = sticks?.pitch?.let(::sentAxis),
+                cmdThrottle = sticks?.throttle?.let(::sentAxis),
+                cmdYaw = sticks?.yaw?.let(::sentAxis),
+                fastMode = sticks?.fastMode,
             )
         }
 
         /** Between an alert name and its code in [alerts]. */
         const val CODE_SEPARATOR = ':'
+
+        /** As the stick encoder sees it: NaN is neutral, the rest clamped to -1..1. */
+        private fun sentAxis(v: Float): Float = if (v.isNaN()) 0f else v.coerceIn(-1f, 1f)
     }
 }
 
@@ -106,7 +126,7 @@ class FlightSampler(
 
     val recording: Boolean get() = startedAt != null
 
-    fun onTick(now: Long, telemetry: Telemetry?): Tick {
+    fun onTick(now: Long, telemetry: Telemetry?, sticks: StickInput? = null): Tick {
         val started = startedAt
         val flight = telemetry?.flight
         if (started == null) {
@@ -115,7 +135,7 @@ class FlightSampler(
             lastDataAt = now
             lastSampleAt = now
             landedSince = null
-            return Tick(start = true, sample = FlightSample.from(0, telemetry))
+            return Tick(start = true, sample = FlightSample.from(0, telemetry, sticks))
         }
         if (flight == null) {
             if (now - lastDataAt >= noDataTimeoutMs) {
@@ -127,7 +147,7 @@ class FlightSampler(
         lastDataAt = now
         // Tolerates a late tick: never two samples closer than 3/4 of the interval.
         val due = now - lastSampleAt >= intervalMs * 3 / 4
-        val sample = if (due) FlightSample.from(now - started, telemetry).also { lastSampleAt = now } else null
+        val sample = if (due) FlightSample.from(now - started, telemetry, sticks).also { lastSampleAt = now } else null
         if (flight.flying) {
             landedSince = null
         } else {
@@ -150,9 +170,10 @@ class FlightSampler(
          * 10 Hz, about the rate of the drone's flight data and log stream (the tick is not
          * synchronised with them, so a row may repeat a reading): the attitude replayed in the
          * video overlay follows quick rolls and flips much better than at 5 Hz, where linear
-         * interpolation cuts their corners. About 85 bytes a row, i.e. ~50 KB a
-         * minute: ~0.65 MB for a full 13-minute battery. [FlightRetention.MAX_BYTES] still
-         * holds 75 such flights, or the [FlightRetention.MAX_FLIGHTS] of 5 minutes.
+         * interpolation cuts their corners. About 115 bytes a row (v3, with the stick
+         * command), i.e. ~70 KB a minute: ~0.9 MB for a full 13-minute battery.
+         * [FlightRetention.MAX_BYTES] still holds 55 such flights, or the
+         * [FlightRetention.MAX_FLIGHTS] of about 4 minutes.
          */
         const val INTERVAL_MS = 100L
         const val TAIL_MS = 5_000L
@@ -229,7 +250,7 @@ data class FlightLog(
 /**
  * File format (UTF-8, LF, one file per flight):
  * ```
- * # tellopilot-flight v2 start=<epoch ms>
+ * # tellopilot-flight v3 start=<epoch ms>
  * t_ms,height_m,north_mps,east_mps,climb_mps,battery_pct,flying,roll_deg,…
  * 0,0.30,0.00,0.00,0.10,87,1,,,,,,,,,90,0,0,0,1.2,BATTERY_LOW
  * …
@@ -241,10 +262,13 @@ data class FlightLog(
  *
  * Columns are read by name, so files of any version read back: a column missing from an older
  * file gives `null` values. v2 added `fly_time_s` and `alerts` (`;`-separated names, see
- * [FlightSample.alerts]) at the end of the row.
+ * [FlightSample.alerts]) at the end of the row. v3 added the stick command actually sent,
+ * `cmd_roll`, `cmd_pitch`, `cmd_throttle`, `cmd_yaw` (normalised -1..1 with 3 decimals, enough
+ * to recover the exact 364..1684 wire value `round(1024 + 660 * v)`), and `fast_mode` (1 / 0);
+ * empty when the command was not known.
  */
 object FlightLogCsv {
-    const val VERSION = 2
+    const val VERSION = 3
     private const val MAGIC = "# tellopilot-flight"
     private const val SUMMARY = "# summary"
 
@@ -253,13 +277,14 @@ object FlightLogCsv {
         "roll_deg", "pitch_deg", "yaw_deg", "odo_x_m", "odo_y_m", "odo_z_m", "odo_valid",
         "imu_temp_c", "wifi_pct", "battery_low", "battery_critical", "overheating",
         "fly_time_s", "alerts",
+        "cmd_roll", "cmd_pitch", "cmd_throttle", "cmd_yaw", "fast_mode",
     )
 
     private const val ALERT_SEPARATOR = ';'
 
     fun header(startEpochMs: Long): String = "$MAGIC v$VERSION start=$startEpochMs\n${COLUMNS.joinToString(",")}\n"
 
-    fun row(s: FlightSample): String = buildString(96) {
+    fun row(s: FlightSample): String = buildString(128) {
         append(s.tMs).append(',')
         f(s.heightM).append(',')
         f(s.northMps).append(',')
@@ -286,6 +311,12 @@ object FlightLogCsv {
             if (i > 0) append(ALERT_SEPARATOR)
             append(name)
         }
+        append(',')
+        f(s.cmdRoll, 3).append(',')
+        f(s.cmdPitch, 3).append(',')
+        f(s.cmdThrottle, 3).append(',')
+        f(s.cmdYaw, 3).append(',')
+        s.fastMode?.let { b(it) }
         append('\n')
     }
 
@@ -375,6 +406,11 @@ object FlightLogCsv {
             flyTimeS = float("fly_time_s"),
             // Present column, empty cell: no alert (not "unknown").
             alerts = if ("alerts" in columns) cell("alerts")?.split(ALERT_SEPARATOR)?.filter { it.isNotBlank() }.orEmpty() else null,
+            cmdRoll = float("cmd_roll")?.takeIf { it.isFinite() },
+            cmdPitch = float("cmd_pitch")?.takeIf { it.isFinite() },
+            cmdThrottle = float("cmd_throttle")?.takeIf { it.isFinite() },
+            cmdYaw = float("cmd_yaw")?.takeIf { it.isFinite() },
+            fastMode = bool("fast_mode"),
         )
     }
 
