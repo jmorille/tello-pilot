@@ -45,12 +45,13 @@ jobs:
         # Kover instruments the unit tests: merged line coverage of :core:protocol, :core:control and
         # :app (debug), root reports only (the leading ':' skips the per-module reports, not uploaded).
         # Lint is blocking: lint errors fail the build; its report is uploaded with the test reports.
+        # --continue: a lint failure does not stop the coverage reports (exit code still non-zero).
         run: >-
-          ./gradlew --stacktrace
+          ./gradlew --stacktrace --continue
           test :app:assembleDebug :koverXmlReportCoverage :koverHtmlReportCoverage :app:lint
 
       - name: Coverage badge
-        # Also when lint failed after the tests (report present), as before the steps were merged.
+        # Also when lint failed (report present: --continue keeps Kover running), as before the merge.
         if: ${{ !cancelled() && hashFiles('build/reports/kover/reportCoverage.xml') != '' }}
         # The SVG badge is generated locally because shields.io cannot read a private repository.
         run: |
