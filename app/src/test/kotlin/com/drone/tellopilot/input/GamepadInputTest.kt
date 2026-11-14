@@ -532,6 +532,51 @@ class GamepadInputTest {
     }
 
     @Test
+    fun `flip safety - a centred-form coupling (2t - 1) stays ignored when the trigger is released at -1`() {
+        val input = ready()
+        for (t in listOf(0.2f, 0.4f, 0.6f)) input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to t, MotionEvent.AXIS_RZ to 2 * t - 1))
+        assertTrue(input.coupledAxis.value)
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 1f, MotionEvent.AXIS_RZ to 1f))
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RZ to -1f)) // released: the axis rests at -1
+        assertTrue("still ignored", input.coupledAxis.value)
+        assertTrue("sticks sent: ${listener.sticks}", listener.sticks.none { it != PadSticks.Neutral })
+    }
+
+    @Test
+    fun `flip safety - a trigger pushed on to its stop after one mid-travel match never leaks`() {
+        val input = ready()
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 0.3f, MotionEvent.AXIS_RZ to 0.3f))
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 1f, MotionEvent.AXIS_RZ to 1f))
+        assertTrue("sticks sent: ${listener.sticks}", listener.sticks.none { it != PadSticks.Neutral })
+        // Triggers at rest: no longer suspect, a real stick at its stop with R2 fully down flies.
+        input.onMotionEvent(motion(1))
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 1f, MotionEvent.AXIS_RZ to 1f))
+        assertEquals(-1f, listener.last.rightY, 1e-6f)
+    }
+
+    @Test
+    fun `flip safety - the left stick equal to a trigger half pressed still flies`() {
+        val input = ready()
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 0.4f, MotionEvent.AXIS_X to 0.4f))
+        assertEquals((0.4f - 0.08f) / 0.92f, listener.last.leftX, 1e-5f)
+    }
+
+    @Test
+    fun `flip safety - L2 of the driving pad locks even when another pad already holds L2`() {
+        val input = ready(1, 2)
+        input.sticks(1, rx = 1f) // pad 1 drives
+        input.onKeyEvent(key(2, KeyEvent.KEYCODE_BUTTON_L2, down = true)) // pad 2 holds L2: no lock
+        input.sticks(1, rx = 0.9f)
+        assertEquals((0.9f - 0.08f) / 0.92f, listener.last.rightX, 1e-5f)
+        input.onKeyEvent(key(1, KeyEvent.KEYCODE_BUTTON_L2, down = true)) // the driving pad too
+        input.sticks(1, rx = 1f)
+        assertSticks(PadSticks.Neutral, listener.last)
+        input.onKeyEvent(key(1, KeyEvent.KEYCODE_BUTTON_L2, down = false))
+        input.sticks(1, rx = 1f)
+        assertSticks(PadSticks.Neutral, listener.last) // waits to be centred
+    }
+
+    @Test
     fun `flip safety - a stick at its stop with a trigger fully down stays at its stop`() {
         val input = ready()
         input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 1f, MotionEvent.AXIS_Z to 1f))

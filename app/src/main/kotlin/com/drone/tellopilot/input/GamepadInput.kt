@@ -76,11 +76,21 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
     /** Per-device axis layout and centring state. */
     private class Pad(val rightX: Int, val rightY: Int, val flat: Float) {
         var armed = false
-        /** Stick axes found to follow a trigger (see [detectCoupling]): read as centred from then on. */
-        val coupled = HashSet<Int>()
-        /** Per stick axis: consecutive events where it followed a trigger, and that trigger value. */
+        /**
+         * Stick axes found to follow a trigger (see [detectCoupling]): read as centred from then
+         * on. Value: the coupling is the centred form `2t - 1` (rests at -1), else direct (rests at 0).
+         */
+        val coupled = HashMap<Int, Boolean>()
+        /** Per stick axis: consecutive events where it followed a trigger, that trigger value and the form. */
         val couplingHits = HashMap<Int, Int>()
         val couplingLast = HashMap<Int, Float>()
+        val couplingForm = HashMap<Int, Boolean>()
+        /**
+         * Right-stick axes seen once equal to a trigger pressed part-way: until every trigger is
+         * back at rest, a value equal to a pressed trigger (full travel included) is read as
+         * centred, so a trigger pushed on to its stop never leaks before the proof.
+         */
+        val suspect = HashSet<Int>()
     }
 
     /**
@@ -89,8 +99,18 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
      * the drone when the button is released).
      */
     private var sticksNeedRecentre = false
-    /** Device whose flip button is held (-1: none): only the pad that drives locks the sticks. */
-    private var flipHolder = -1
+    /**
+     * Devices holding the flip button, per source (the merged button state hides a second pad
+     * pressing it): only a pad that drives (or no pad driving) locks the sticks.
+     */
+    private val flipKeyHolders = HashSet<Int>()
+    private val flipAxisHolders = HashSet<Int>()
+
+    /** The flip button is held by the pad that drives the sticks, or by any pad when none drives. */
+    private fun flipLocksSticks(): Boolean {
+        val holders = flipKeyHolders + flipAxisHolders
+        return holders.isNotEmpty() && (owner == -1 || owner in holders)
+    }
 
     private val _coupledAxis = MutableStateFlow(false)
     /** A stick axis of a connected pad follows a trigger and is ignored (shown on the pad screen). */
@@ -99,6 +119,8 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
     private fun publishCoupling() {
         _coupledAxis.value = pads.values.any { it.coupled.isNotEmpty() }
     }
+
+    private fun Pad.restOf(axis: Int) = if (coupled[axis] == true) -1f else 0f
 
     private val pads = HashMap<Int, Pad>()
     /** Device currently driving the sticks (-1 = none). */
@@ -120,6 +142,8 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
                 override fun onInputDeviceChanged(deviceId: Int) = refresh()
                 override fun onInputDeviceRemoved(deviceId: Int) {
                     pads.remove(deviceId)
+                    flipKeyHolders -= deviceId
+                    flipAxisHolders -= deviceId
                     // A button held when a pad drops (its key-up never comes) must not stay
                     // "held" and complete a combo or a shortcut at the next press; the sticks of
                     // another pad that drives are left alone.
@@ -189,7 +213,8 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
     /** No held button any more; a trigger still pressed must be released before it counts again. */
     private fun releaseButtons() {
         mapper.reset()
-        flipHolder = -1
+        // Key-ups are lost meanwhile; a trigger still held keeps being reported as such.
+        flipKeyHolders.clear()
         // Key-ups are lost while the window has no focus: forget the keys. Axes (triggers, hat)
         // are reported continuously: one still held must be released before it counts again,
         // otherwise the next motion event would re-press it (e.g. L2 + D-pad = flip).
@@ -217,6 +242,10 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
     private fun update(button: PadButton, key: Boolean, down: Boolean, device: Int = -1) {
         val i = button.ordinal
         if (key) keyDown[i] = down else axisDown[i] = down
+        if (button == mapper.bindings[PadCommand.FLIP].button && device != -1) {
+            val holders = if (key) flipKeyHolders else flipAxisHolders
+            if (down) holders += device else holders -= device
+        }
         val now = keyDown[i] || axisDown[i]
         if (!now) blocked[i] = false
         if (blocked[i] || now == effective[i]) return
@@ -224,21 +253,11 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
         press(button, now, device)
     }
 
-    /** The flip button of [device] locks the sticks unless another pad drives them. */
-    private fun locksSticks(device: Int) = owner == -1 || owner == device
-
     private fun press(button: PadButton, down: Boolean, device: Int) {
-        if (button == mapper.bindings[PadCommand.FLIP].button) {
-            if (down) {
-                flipHolder = device
-                // Sticks neutral at once, whatever is held (see onMotionEvent).
-                if (locksSticks(device)) {
-                    sticksNeedRecentre = true
-                    sendSticks(PadSticks.Neutral)
-                }
-            } else {
-                flipHolder = -1
-            }
+        // Flip button pressed: sticks neutral at once, whatever is held (see onMotionEvent).
+        if (down && button == mapper.bindings[PadCommand.FLIP].button && flipLocksSticks()) {
+            sticksNeedRecentre = true
+            sendSticks(PadSticks.Neutral)
         }
         // A flip fires on the D-pad release (see GamepadMapper), the other actions on a press.
         val action = if (down) mapper.onButtonDown(button) else mapper.onButtonUp(button)
@@ -257,15 +276,15 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
         val pad = pads[event.deviceId] ?: event.device?.takeIf(::isGamepad)?.let { layoutOf(it).also { p -> pads[it.id] = p } }
             ?: return false
         detectCoupling(pad, event)
-        // Until a coupling is proven, a right-stick axis equal to a trigger pressed part-way is
-        // read as centred on that event: the first presses of L2 never leak into a flight axis.
-        // Only intermediate travel counts: a stick at its stop with a trigger fully down is real.
-        val partial = TRIGGER_AXES.map(event::getAxisValue).filter { it in COUPLING_RANGE }
+        // Until a coupling is proven, a suspect right-stick axis (seen once equal to a trigger
+        // pressed part-way, see [Pad.suspect]) equal to a pressed trigger is read as centred:
+        // the first presses of L2 never leak into a flight axis, even pushed on to the stop.
+        // Nothing suspect: a stick at its stop with a trigger fully down is real.
+        val pressed = TRIGGER_AXES.map(event::getAxisValue).filter { it >= TRIGGER_NOISE }
         fun stick(axis: Int): Float {
             if (axis in pad.coupled) return 0f
             val v = event.getAxisValue(axis)
-            val right = axis == pad.rightX || axis == pad.rightY
-            return if (right && partial.any { abs(v - it) < COUPLING_TOLERANCE }) 0f else v
+            return if (axis in pad.suspect && pressed.any { followsTrigger(v, it) }) 0f else v
         }
         val lx = stick(MotionEvent.AXIS_X)
         val ly = stick(MotionEvent.AXIS_Y)
@@ -296,7 +315,7 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
         // Flip button held (the combo, or a shortcut modifier): the sticks fly nothing, and
         // once it is released they wait to be seen centred, like a pad at connection.
         // The flip button of a pad that does not drive locks nothing.
-        if (effective[mapper.bindings[PadCommand.FLIP].button.ordinal] && locksSticks(flipHolder)) {
+        if (flipLocksSticks()) {
             sticksNeedRecentre = true
             sticks = PadSticks.Neutral
         } else if (sticksNeedRecentre) {
@@ -331,10 +350,12 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
         val axes = listOf(MotionEvent.AXIS_X, MotionEvent.AXIS_Y, pad.rightX, pad.rightY)
         val all = TRIGGER_AXES.map(event::getAxisValue)
         if (all.all { it < TRIGGER_NOISE }) {
-            // Triggers at rest: a coupled axis that moves on its own is a real stick.
-            val released = axes.filter { it in pad.coupled && abs(event.getAxisValue(it)) > UNCOUPLE_TRAVEL }
+            pad.suspect.clear()
+            // Triggers at rest: a coupled axis that moves away from its rest (0, or -1 for the
+            // centred form) on its own is a real stick.
+            val released = axes.filter { it in pad.coupled && abs(event.getAxisValue(it) - pad.restOf(it)) > UNCOUPLE_TRAVEL }
             if (released.isNotEmpty()) {
-                pad.coupled -= released.toSet()
+                released.forEach { pad.coupled.remove(it) }
                 android.util.Log.i("GamepadInput", "axes $released move on their own: sticks again")
                 publishCoupling()
             }
@@ -343,35 +364,47 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
         if (triggers.isEmpty()) {
             pad.couplingHits.clear()
             pad.couplingLast.clear()
+            pad.couplingForm.clear()
             return
         }
         for (axis in axes) {
             if (axis in pad.coupled) continue
             val v = event.getAxisValue(axis)
-            val t = triggers.firstOrNull { abs(v - it) < COUPLING_TOLERANCE || abs(v - (2 * it - 1)) < COUPLING_TOLERANCE }
-            val last = pad.couplingLast[axis]
+            val t = triggers.firstOrNull { followsTrigger(v, it) }
             if (t == null) {
                 pad.couplingHits.remove(axis)
                 pad.couplingLast.remove(axis)
+                pad.couplingForm.remove(axis)
                 continue
             }
-            if (last != null && abs(t - last) < COUPLING_STEP) {
-                // The same reading again (another axis moved): the count starts over from it.
+            if (axis == pad.rightX || axis == pad.rightY) pad.suspect += axis
+            val centred = abs(v - t) >= COUPLING_TOLERANCE // matched only by 2t - 1
+            val last = pad.couplingLast[axis]
+            if ((last != null && abs(t - last) < COUPLING_STEP) || pad.couplingForm[axis].let { it != null && it != centred }) {
+                // The same reading again (another axis moved), or the other form: start over from it.
                 pad.couplingHits[axis] = 1
+                pad.couplingLast[axis] = t
+                pad.couplingForm[axis] = centred
                 continue
             }
             pad.couplingLast[axis] = t
+            pad.couplingForm[axis] = centred
             val hits = (pad.couplingHits[axis] ?: 0) + 1
             pad.couplingHits[axis] = hits
             if (hits >= COUPLING_EVENTS) {
-                pad.coupled += axis
+                pad.coupled[axis] = centred
                 pad.couplingHits.remove(axis)
                 pad.couplingLast.remove(axis)
-                android.util.Log.w("GamepadInput", "axis $axis follows a trigger: ignored as a stick")
+                pad.couplingForm.remove(axis)
+                android.util.Log.w("GamepadInput", "axis $axis follows a trigger (centred form: $centred): ignored as a stick")
                 publishCoupling()
             }
         }
     }
+
+    /** [v] equals trigger value [t] directly, or in its centred form `2t - 1`. */
+    private fun followsTrigger(v: Float, t: Float) =
+        abs(v - t) < COUPLING_TOLERANCE || abs(v - (2 * t - 1)) < COUPLING_TOLERANCE
 
     /** Hysteresis on a hat direction ([v] > 0 towards it): a worn or bouncing D-pad never double-presses. */
     private fun hatDown(wasDown: Boolean, v: Float) = if (wasDown) v > HAT_RELEASE else v > HAT_PRESS
@@ -448,7 +481,7 @@ class GamepadInput @Inject constructor(@ApplicationContext context: Context) {
         const val COUPLING_EVENTS = 3
         /** Trigger travel below this is rest noise. */
         const val TRIGGER_NOISE = 0.05f
-        /** A coupled axis moving this far with every trigger at rest is a real stick again. */
+        /** A coupled axis moving this far from its rest with every trigger at rest is a real stick again. */
         const val UNCOUPLE_TRAVEL = 0.3f
     }
 }

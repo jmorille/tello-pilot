@@ -25,14 +25,21 @@ import org.junit.jupiter.api.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class TelloControllerFlipTest {
 
-    private class Session(val scope: TestScope) {
+    private class Session(val scope: TestScope, guard: FlipGuard = FlipGuard()) {
         val transport = FakeTransport(scope)
-        val controller = TelloController(transport, clock = { scope.testScheduler.currentTime })
+        val controller = TelloController(transport, flipGuard = guard, clock = { scope.testScheduler.currentTime })
         val diagnostics = mutableListOf<String>()
+        private val runJob: kotlinx.coroutines.Job
 
         init {
             controller.diagnostics = { diagnostics += it }
-            scope.backgroundScope.launch { controller.run() }
+            runJob = scope.backgroundScope.launch { controller.run() }
+            scope.runCurrent()
+        }
+
+        /** The session drops this controller (reconnection). */
+        fun stop() {
+            runJob.cancel()
             scope.runCurrent()
         }
 
@@ -223,6 +230,9 @@ class TelloControllerFlipTest {
         scope.advanceTimeBy(100)
         transport.droneMessage(MessageId.FLIP, byteArrayOf(1))
         scope.runCurrent()
+        // Hold over, but the stick held through the flip still waits to be centred.
+        scope.advanceTimeBy(40)
+        assertTrue(transport.sticks().last().isNeutralStick(), "not centred yet: neutral")
         controller.setSticks(StickInput())
         scope.advanceTimeBy(40)
         controller.setSticks(StickInput(pitch = 0.6f))
@@ -232,21 +242,23 @@ class TelloControllerFlipTest {
     }
 
     @Test
-    fun `the lock and the hold survive a new controller of the same session`() = session {
-        flying()
+    fun `the lock and the hold survive a new controller of the same session`() = runTest {
         val guard = FlipGuard()
-        val first = TelloController(FakeTransport(scope), clock = { scope.testScheduler.currentTime }, flipGuard = guard)
-        guard.lastFlipAt.set(scope.testScheduler.currentTime)
-        guard.stickHoldUntil.set(scope.testScheduler.currentTime + FlightModeRules.FLIP_STICK_HOLD_MS)
-        guard.sticksNeedRecentre.set(true)
-        first.setSticks(StickInput(roll = 1f))
-        assertEquals(StickInput.Neutral, first.currentSticks)
-        // Reconnection: a new controller with the session's guard.
-        val second = TelloController(FakeTransport(scope), clock = { scope.testScheduler.currentTime }, flipGuard = guard)
-        second.setSticks(StickInput(roll = 1f))
-        assertEquals(StickInput.Neutral, second.currentSticks, "still held")
-        scope.advanceTimeBy(FlightModeRules.FLIP_STICK_HOLD_MS)
-        assertEquals(StickInput.Neutral, second.currentSticks, "still waiting to be centred")
+        val first = Session(this, guard)
+        first.flying()
+        first.controller.setSticks(StickInput(roll = 1f))
+        assertEquals(ModeCheck.OK, first.controller.flip(FlipDirection.FORWARD))
+        first.stop()
+        // Reconnection: a new controller with the session's guard, the pilot still holding the stick.
+        val second = Session(this, guard)
+        second.flying(settle = false)
+        second.controller.setSticks(StickInput(roll = 1f))
+        advanceTimeBy(200)
+        assertTrue(second.transport.sticks().last().isNeutralStick(), "still held")
+        advanceTimeBy(FlightModeRules.FLIP_MIN_FLYING_MS)
+        assertEquals(ModeCheck.FLIP_LOCKED, second.controller.flip(FlipDirection.BACK), "one flip per 4 s across controllers")
+        assertTrue(second.transport.sticks().last().isNeutralStick(), "still waiting to be centred")
+        assertEquals(0, second.transport.count(Command.FLIP))
     }
 
     @Test

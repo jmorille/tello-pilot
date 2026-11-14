@@ -420,13 +420,15 @@ class TelloController(
      */
     suspend fun flip(direction: FlipDirection, appBusy: Boolean = false): ModeCheck {
         val now = clock()
+        // Read once: the lock is claimed below only if nobody flipped in between (shared guard).
+        val previousFlip = flipGuard.lastFlipAt.get()
         val result = if (!isConnected) {
             ModeCheck.NOT_CONNECTED
         } else {
             val m = _maneuvers.value
             val context = FlipContext(
                 flyingForMs = flyingSince?.let { now - it },
-                sinceLastFlipMs = flipGuard.lastFlipAt.get()?.let { now - it },
+                sinceLastFlipMs = previousFlip?.let { now - it },
                 busy = appBusy || landRequested.get() || m.bounce || m.smartVideoActive,
                 telemetryAgeMs = lastFlightAt?.let { now - it },
             )
@@ -440,7 +442,11 @@ class TelloController(
             logEvent("flip_refused:${result.name.lowercase()}")
             return result
         }
-        flipGuard.lastFlipAt.set(now)
+        if (!flipGuard.lastFlipAt.compareAndSet(previousFlip, now)) {
+            // Another controller of the session flipped meanwhile.
+            logEvent("flip_refused:flip_locked")
+            return ModeCheck.FLIP_LOCKED
+        }
         // Neutral before the flip leaves: the very next stick packet is already neutral.
         stickHoldUntil.set(now + FlightModeRules.FLIP_STICK_HOLD_MS)
         sticksNeedRecentre.set(true)
