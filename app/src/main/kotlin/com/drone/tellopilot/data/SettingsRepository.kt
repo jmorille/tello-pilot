@@ -26,6 +26,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlin.math.roundToInt
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -149,7 +150,9 @@ internal object SettingsCodec {
      * changes nothing; gain and amplitude default to 100 %, i.e. the historical response.
      */
     private fun readAxes(p: Preferences, fast: Boolean): FlightTuning {
-        val legacyExpo = p[EXPO]?.takeUnless { it.isNaN() }?.coerceIn(AxisTuning.EXPO_RANGE) ?: AxisTuning.DEFAULT_EXPO
+        // Rounded to the 0.05 step of the per-axis sliders (the former slider had no steps).
+        val legacyExpo = p[EXPO]?.takeUnless { it.isNaN() }?.coerceIn(AxisTuning.EXPO_RANGE)
+            ?.let { (it * 20f).roundToInt() / 20f } ?: AxisTuning.DEFAULT_EXPO
         return StickAxis.entries.fold(FlightTuning.Default) { tuning, axis ->
             val keys = axisKeys(fast, axis)
             tuning.with(

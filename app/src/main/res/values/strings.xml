@@ -195,7 +195,7 @@
     <string name="pad_channel_throttle">Gaz</string>
     <string name="pad_channel_yaw">Lacet</string>
     <string name="pad_packet">Paquet manches : %1$s</string>
-    <string name="pad_preview_note">Aperçu calculé avec le mode de manches, la zone morte et l\'expo actuels. Rien n\'est envoyé au drone depuis cette page.</string>
+    <string name="pad_preview_note">Aperçu calculé avec le mode de manches, la zone morte et la réponse des axes du mode normal. Rien n\'est envoyé au drone depuis cette page.</string>
     <string name="pad_section_bindings">Affectation des boutons</string>
     <string name="pad_edit">Modifier</string>
     <string name="pad_cancel">Annuler</string>

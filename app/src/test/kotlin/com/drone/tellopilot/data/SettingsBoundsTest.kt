@@ -86,6 +86,13 @@ class SettingsBoundsTest {
     }
 
     @Test
+    fun `the former expo is rounded to the 0_05 step of the axis sliders`() {
+        assertEquals(FlightTuning.uniform(0.3f), pilotWith(floatPreferencesKey("expo") to 0.3127f).axisNormal)
+        assertEquals(FlightTuning.uniform(0.35f), pilotWith(floatPreferencesKey("expo") to 0.3381f).axisFast)
+        assertEquals(FlightTuning.uniform(0.8f), pilotWith(floatPreferencesKey("expo") to 0.79f).axisNormal)
+    }
+
+    @Test
     fun `per axis values win over the former expo and survive the codec`() {
         val p = mutablePreferencesOf(floatPreferencesKey("expo") to 0.55f)
         SettingsCodec.writePilot(p, PilotSettings(axisNormal = FlightTuning(pitch = AxisTuning(1.4f, 1f, 0.15f))))

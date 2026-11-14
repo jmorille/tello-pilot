@@ -234,6 +234,60 @@ class FlightViewModelSticksTest {
             assertEquals(0.6f, drone.lastSticks!!.pitch, 1e-6f)
         }
 
+    @Test
+    fun `a response change in the settings applies to the held stick at once`() =
+        test(FlightViewModelRig.linearPilot()) {
+            vm.onPadSticks(PadSticks(0f, 0f, 0f, 0.4f)) // pitch, held still
+            assertEquals(StickInput(pitch = 0.4f), drone.lastSticks)
+            settings.value = settings.value.copy(pilot = settings.value.pilot.copy(axisNormal = boostedPitch))
+            scope.runCurrent()
+            assertEquals(0.6f, drone.lastSticks!!.pitch, 1e-6f)
+            // An unrelated setting re-sends nothing.
+            val count = drone.sticks.size
+            settings.value = settings.value.copy(pilot = settings.value.pilot.copy(autoRecord = true))
+            scope.runCurrent()
+            assertEquals(count, drone.sticks.size)
+        }
+
+    @Test
+    fun `a response change during an automatic flight neither sends the held stick nor takes control`() = test {
+        vm.onPadSticks(PadSticks(0f, 0f, 0f, 0.2f)) // held still, below the takeover threshold
+        startMission()
+        settings.value = settings.value.copy(pilot = settings.value.pilot.copy(axisNormal = boostedPitch))
+        scope.runCurrent()
+        scope.advanceTimeBy(100)
+        assertTrue(autopilot.active)
+        assertEquals(StickInput.Neutral, drone.lastSticks)
+        assertFalse(messages.contains(UserMessage.AutopilotEnded(AutopilotEnd.PilotTookOver)))
+    }
+
+    @Test
+    fun `toggling the fast mode ends a mission as a manual command, never as a pilot takeover`() = test {
+        vm.onPadSticks(PadSticks(0f, 0f, 0f, 0.2f)) // held still
+        startMission()
+        vm.onAction(FlightAction.ToggleFastMode)
+        scope.advanceTimeBy(100)
+        assertFalse(autopilot.active)
+        assertFalse(messages.contains(UserMessage.AutopilotEnded(AutopilotEnd.PilotTookOver)))
+        verify { drone.controller.setFastMode(true) }
+    }
+
+    @Test
+    fun `toggling the fast mode during a smart video sends no stick and never cancels it`() = test {
+        flyingConnected()
+        vm.onPadSticks(PadSticks(0f, 0f, 0.6f, 0f)) // held before the start: not armed
+        drone.maneuversFlow.value = ManeuverState(requestedSmartVideo = SmartVideoMode.CIRCLE)
+        vm.onAction(FlightAction.StartSmartVideo(SmartVideoMode.CIRCLE))
+        scope.runCurrent()
+        val count = drone.sticks.size
+        vm.onAction(FlightAction.ToggleFastMode)
+        vm.onAction(FlightAction.ToggleTripod)
+        scope.runCurrent()
+        assertEquals(count, drone.sticks.size)
+        coVerify(exactly = 0) { drone.controller.stopSmartVideo() }
+        verify { drone.controller.setFastMode(true) }
+    }
+
     private val weakest = com.drone.tello.control.StickAxis.entries.fold(com.drone.tello.control.FlightTuning.uniform(0f)) { t, a ->
         t.with(a, com.drone.tello.control.AxisTuning(gain = 0.5f, amplitude = 0.2f, expo = 0.8f))
     }

@@ -229,11 +229,19 @@ class FlightViewModel internal constructor(
         }
         // Stick mapping / shaping are read on the main thread by the touch / gamepad handlers.
         viewModelScope.launch {
+            var first = true
             pilot.collect {
+                val tuning = it.stickTuning
+                val changed = mixer.mode != it.stickMode || mixer.tuning != tuning ||
+                    (tripod.value && mixer.scale != it.tripodScale.coerceIn(0.05f, 1f))
                 mixer.mode = it.stickMode
-                mixer.tuning = it.stickTuning
+                mixer.tuning = tuning
                 if (tripod.value) mixer.scale = it.tripodScale
                 gamepad.setBindings(it.padBindings)
+                // A held stick sends no new event: apply the new response now, not as a jump
+                // at the next movement (never at startup, never over an automatic flight).
+                if (changed && !first) remixSticks()
+                first = false
             }
         }
         viewModelScope.launch {
@@ -414,6 +422,20 @@ class FlightViewModel internal constructor(
     }
 
     private fun touchIdle() = touch.all { it == 0f }
+
+    /**
+     * Re-sends the held sticks after a change of response (fast mode, tripod, settings) that is
+     * not a pilot movement: no takeover / cancel logic, and nothing while an automatic flight or
+     * a smart video flies (their own sticks win; the next real stick event mixes as usual).
+     */
+    private fun remixSticks() {
+        if (autopilot.active) return
+        val controller = session.controller.value ?: return
+        if (controller.maneuvers?.value?.smartVideoActive == true) return
+        val fast = fastMode.value
+        mixer.setLeft(mergeAxis(touch[0], pad.leftX), mergeAxis(touch[1], pad.leftY), fast)
+        controller.setSticks(mixer.setRight(mergeAxis(touch[2], pad.rightX), mergeAxis(touch[3], pad.rightY), fast))
+    }
 
     /**
      * Tripod mode: stick output scaled down (read by the stick handlers on the main thread).
@@ -605,8 +627,8 @@ class FlightViewModel internal constructor(
                 val on = !fastMode.value
                 fastMode.value = on
                 if (on) setTripod(false)
-                pushSticks()
-                // Also when pushSticks sent nothing (automatic flight still flying).
+                remixSticks()
+                // Also when nothing was re-mixed (automatic flight, smart video).
                 session.controller.value?.setFastMode(on)
             }
             FlightAction.ToggleTripod -> {
@@ -614,7 +636,7 @@ class FlightViewModel internal constructor(
                 val fastOff = on && fastMode.value
                 if (fastOff) fastMode.value = false
                 setTripod(on)
-                pushSticks()
+                remixSticks()
                 if (fastOff) session.controller.value?.setFastMode(false)
             }
             is FlightAction.StartMission -> startAutopilot(tracking = false, fromPad) { autopilot.startMission(action.mission) }
