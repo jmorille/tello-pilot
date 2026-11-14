@@ -14,9 +14,12 @@ kover {
     }
 }
 
-// Release signing / versioning come from the environment (CI), see .github/workflows/release.yml.
-// Without them, release builds fall back to the debug key and the default version.
+// Release signing / versioning come from the environment, see .github/workflows/release.yml.
+// Local builds: with TELLO_KEYSTORE_FILE the release variant is signed with that key, else with the debug key.
+// CI (-Ptello.unsignedRelease=true): no signing config at all; the unsigned APK/AAB are signed afterwards
+// by apksigner/jarsigner, outside Gradle, so no signing secret is ever exposed to the build.
 val releaseKeystore = providers.environmentVariable("TELLO_KEYSTORE_FILE").orNull
+val unsignedRelease = providers.gradleProperty("tello.unsignedRelease").orNull == "true"
 val ciVersionCode = providers.environmentVariable("TELLO_VERSION_CODE").orNull?.toInt()
 val ciVersionName = providers.environmentVariable("TELLO_VERSION_NAME").orNull
 
@@ -36,7 +39,7 @@ android {
     }
 
     signingConfigs {
-        if (releaseKeystore != null) {
+        if (releaseKeystore != null && !unsignedRelease) {
             create("release") {
                 storeFile = file(releaseKeystore)
                 storePassword = providers.environmentVariable("TELLO_KEYSTORE_PASSWORD").get()
@@ -51,8 +54,12 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Side-loaded app: signed with the release key in CI, else the debug key so it can be installed directly.
-            signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "release" else "debug")
+            // Side-loaded app: release key when provided, else the debug key so it can be installed directly.
+            signingConfig = when {
+                unsignedRelease -> null
+                releaseKeystore != null -> signingConfigs.getByName("release")
+                else -> signingConfigs.getByName("debug")
+            }
         }
     }
 
