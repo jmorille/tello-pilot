@@ -102,6 +102,7 @@ jobs:
         # Tests and lint already ran in CI (ci.yml) on this exact commit: don't run them twice.
         # Green CI run (push/dispatch, this repo, this SHA) => skipped here; red => release refused;
         # none yet (tag pushed together with main, tag outside main, CI cancelled) => run here.
+        # Tag once CI is green on main to get the fast path.
         id: ci
         env:
           GH_TOKEN: ${{ github.token }}
@@ -122,7 +123,7 @@ jobs:
           elif [[ -n "$bad" ]]; then
             echo "::error::CI failed on $SHA ($bad): fix it before releasing"; exit 1
           else
-            echo "::notice::No completed green CI run for $SHA: tests and lint run in this job (tag once CI is green to skip them)"
+            echo "::notice::No completed green CI run for $SHA: unit tests and lintVitalRelease run in this job (tag once CI is green to skip them)"
             echo "run_tests=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -146,8 +147,10 @@ jobs:
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
 
       - name: Build signed release APK
-        # --no-build-cache: the signed APK is compiled from source, never from cached task outputs.
-        # lintVitalRelease is skipped: CI's :app:lint (or the fallback below) is a superset of it.
+        # --no-build-cache: the signed APK is compiled from source, never from cached task outputs
+        # (CI only builds the debug variant, so the cache would hardly help: R8 dominates).
+        # Green CI: assembleRelease only; lintVitalRelease skipped, CI's :app:lint is a superset of it.
+        # Otherwise: unit tests + lintVitalRelease in the same (parallel) Gradle run, as before.
         env:
           TELLO_KEYSTORE_FILE: ${{ runner.temp }}/release.p12
           TELLO_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
@@ -155,16 +158,15 @@ jobs:
           TELLO_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
           TELLO_VERSION_CODE: ${{ steps.version.outputs.code }}
           TELLO_VERSION_NAME: ${{ steps.version.outputs.name }}
-        run: ./gradlew --no-build-cache --no-configuration-cache :app:assembleRelease -x :app:lintVitalRelease --stacktrace
+          RUN_TESTS: ${{ steps.ci.outputs.run_tests }}
+        run: |
+          if [[ "$RUN_TESTS" == "true" ]]; then tasks=(test :app:assembleRelease)
+          else tasks=(:app:assembleRelease -x :app:lintVitalRelease); fi
+          ./gradlew --no-build-cache --no-configuration-cache "${tasks[@]}" --stacktrace
 
       - name: Remove keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/release.p12"
-
-      - name: Tests and lint (no green CI for this commit)
-        # Same tasks as ci.yml, run without any signing secret in the environment.
-        if: steps.ci.outputs.run_tests == 'true'
-        run: ./gradlew --no-build-cache test :app:lint --stacktrace
 
       - name: Collect APK, verify signature and version, compute checksums
         id: dist
