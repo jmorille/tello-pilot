@@ -98,6 +98,32 @@ object Payloads {
     /** Low-battery warning threshold in percent as u16 (clamped to 10..50). */
     fun lowBatteryThreshold(percent: Int): ByteArray = shorts(percent.coerceIn(10, 50))
 
+    /**
+     * Max tilt angle of the fast mode as f32 little-endian degrees, clamped to the official
+     * range [MAX_TILT_MIN_DEG]..[MAX_TILT_MAX_DEG]; NaN gives the official default (25°).
+     */
+    fun maxTilt(degrees: Float): ByteArray {
+        val v = if (degrees.isNaN()) MAX_TILT_MAX_DEG else degrees.coerceIn(MAX_TILT_MIN_DEG, MAX_TILT_MAX_DEG)
+        return ByteArray(4).also { putIntLe(it, 0, v.toRawBits()) }
+    }
+
+    /**
+     * Reply to [Command.QUERY_MAX_TILT]: `[status][f32 LE degrees]` (official `g.b`). `null` when
+     * the drone reports a failure, the payload is short, or the angle is not plausible
+     * (non-finite or outside [MAX_TILT_PLAUSIBLE_DEG]).
+     */
+    fun parseMaxTilt(payload: ByteArray): Float? {
+        if (payload.size < 5 || payload[0].toInt() != 0) return null
+        var bits = 0
+        for (i in 0 until 4) bits = bits or ((payload[1 + i].toInt() and 0xFF) shl (8 * i))
+        return Float.fromBits(bits).takeIf { it.isFinite() && it in MAX_TILT_PLAUSIBLE_DEG }
+    }
+
+    const val MAX_TILT_MIN_DEG = 15f
+    const val MAX_TILT_MAX_DEG = 25f
+    /** Wider than the settable range (a firmware default may differ), narrow enough to reject garbage. */
+    val MAX_TILT_PLAUSIBLE_DEG = 5f..45f
+
     /** Exposure compensation, i8 in 1/3 EV steps (clamped to -9..9). */
     fun exposure(steps: Int): ByteArray = byteArrayOf(steps.coerceIn(-9, 9).toByte())
 

@@ -48,6 +48,16 @@ enum class Command(val id: Int, val packetType: Int, val sequenced: Boolean = tr
     ACK_LOG(4176, PacketType.DATA_ACK),
     /** Payload: u16 percent (10..50). */
     SET_LOW_BATTERY_THRESHOLD(4181, PacketType.SET),
+    /**
+     * Max tilt (attitude) angle of the fast mode. Payload: f32 little-endian, degrees (15..25).
+     * Reply: [status]. Official `gcs/core/cmd/d.a(float)` (d.java:928-941), reply handler `j.i`.
+     */
+    SET_MAX_TILT(4184, PacketType.SET),
+    /**
+     * Reads the max tilt angle. No payload, type 0x48 (official `d.F()`, d.java:943-955).
+     * Reply: [status][f32 LE degrees] (official handler `g.b`, only read when status == 0).
+     */
+    QUERY_MAX_TILT(4185, PacketType.DATA_LOW),
     /** Reply payload[0] == 0 means activated. */
     QUERY_ACTIVATION_STATE(75, PacketType.DATA_LOW),
     /** Payload: 7 x u16 (year, month 1-12, day, hour, minute, second, ms). Type 0x50 (official). */
@@ -100,6 +110,8 @@ object MessageId {
     const val SMART_VIDEO_STATUS = 129
     const val BOUNCE = 4179
     const val CENTER_OF_GRAVITY_CALIBRATION = 4180
+    const val MAX_TILT = 4184
+    const val MAX_TILT_QUERY = 4185
     const val LOG_HEADER = 4176
     const val LOG_DATA = 4177
 }

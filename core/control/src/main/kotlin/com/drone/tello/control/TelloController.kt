@@ -200,6 +200,13 @@ class TelloController(
     private val _wifiChange = MutableStateFlow<WifiChangeState>(WifiChangeState.Idle)
     val wifiChangeState: StateFlow<WifiChangeState> = _wifiChange.asStateFlow()
 
+    private val _maxTilt = MutableStateFlow<Float?>(null)
+    /**
+     * Max tilt angle of the fast mode as stored in the drone (degrees, reply to 4185), `null`
+     * until a plausible answer arrives. Queried on every connection and after each change.
+     */
+    val droneMaxTilt: StateFlow<Float?> = _maxTilt.asStateFlow()
+
     private val _events = MutableSharedFlow<DroneEvent>(extraBufferCapacity = 8)
     val events: SharedFlow<DroneEvent> = _events.asSharedFlow()
 
@@ -468,6 +475,8 @@ class TelloController(
         command(Command.SET_LOW_BATTERY_THRESHOLD, Payloads.lowBatteryThreshold(s.lowBatteryPercent))
         command(Command.SET_EXPOSURE, Payloads.exposure(s.exposureSteps))
         command(Command.SET_BITRATE, Payloads.singleByte(s.bitrate.code))
+        // The drone's reply triggers a 4185 query, so the value shown is the one it stored.
+        command(Command.SET_MAX_TILT, Payloads.maxTilt(s.maxTiltDeg))
     }
 
     /** Tells the drone the phone is recording (as both reference apps do). */
@@ -590,6 +599,7 @@ class TelloController(
         command(Command.SET_EIS, Payloads.singleByte(0))
         command(Command.QUERY_ACTIVATION_STATE)
         command(Command.QUERY_FIRMWARE)
+        command(Command.QUERY_MAX_TILT)
         droneSettings?.let { sendDroneSettings(it) }
         requestKeyFrame()
         if (landRequested.get()) sendLand()
@@ -725,6 +735,9 @@ class TelloController(
                 publishImu()
             }
             is DroneMessage.Ssid -> _telemetry.update { it.copy(ssid = message.name ?: it.ssid) }
+            // Like the official handler, only a reply to our own query counts; an implausible
+            // value (null) keeps what was known.
+            is DroneMessage.MaxTilt -> if (answeredPending) message.degrees?.let { _maxTilt.value = it }
             // FLIP (type 0x70) is never pending: its reply is only informative.
             is DroneMessage.CommandResult -> if (answeredPending || message.messageId == MessageId.FLIP) onCommandResult(message)
             is DroneMessage.Other -> when (packet.messageId) {
@@ -769,6 +782,8 @@ class TelloController(
             }
             MessageId.FLIP -> if (!result.success) _events.tryEmit(DroneEvent.ManeuverRefused(FlightMode.Flip))
             MessageId.CENTER_OF_GRAVITY_CALIBRATION -> _events.tryEmit(DroneEvent.CenterOfGravityCalibrated(result.success))
+            // Read back what the drone stored (accepted or not).
+            MessageId.MAX_TILT -> command(Command.QUERY_MAX_TILT)
             MessageId.IMU_CALIBRATION_START -> {
                 imu.onStartResult(result.success)
                 publishImu()

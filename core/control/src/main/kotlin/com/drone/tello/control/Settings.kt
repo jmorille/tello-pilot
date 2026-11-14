@@ -143,6 +143,8 @@ data class PilotSettings(
     val missionMaxSpeed: Float = MISSION_SPEED_DEFAULT,
     /** Tone + spoken announcement (and vibration) when the drone battery gets low in flight. */
     val batteryVoiceAlert: Boolean = true,
+    /** Fast mode at launch: always off (default, safer) or as it was when the app was last used. */
+    val fastModeStartup: FastModeStartup = FastModeStartup.ALWAYS_NORMAL,
 ) {
     /** Mission runner tuning that follows these settings. */
     fun missionConfig(): MissionConfig = MissionConfig(
@@ -182,6 +184,14 @@ data class PilotSettings(
     }
 }
 
+/** Flight mode the app starts in. */
+enum class FastModeStartup {
+    /** Always the normal (slow) mode: the safe default. */
+    ALWAYS_NORMAL,
+    /** The mode of the last session (unless the tripod mode was on, which turns the fast mode off). */
+    REMEMBER,
+}
+
 /** Settings stored in the drone, sent on every connection and whenever they change. */
 data class DroneSettings(
     val maxAltitudeMeters: Int = 10,
@@ -189,11 +199,17 @@ data class DroneSettings(
     /** Exposure compensation in 1/3 EV steps (-9..9 = -3..+3 EV). */
     val exposureSteps: Int = 0,
     val bitrate: VideoBitrate = VideoBitrate.AUTO,
+    /**
+     * Max tilt angle of the fast mode, degrees (cmd 4184). Official app: slider 15..25°, shown
+     * in fast mode only, 25° by default.
+     */
+    val maxTiltDeg: Float = MAX_TILT_DEFAULT,
 ) {
     fun sanitized() = copy(
         maxAltitudeMeters = maxAltitudeMeters.coerceIn(MAX_ALTITUDE_RANGE),
         lowBatteryPercent = lowBatteryPercent.coerceIn(LOW_BATTERY_RANGE),
         exposureSteps = exposureSteps.coerceIn(EXPOSURE_RANGE),
+        maxTiltDeg = sanitizeMaxTilt(maxTiltDeg),
     )
 
     companion object {
@@ -201,5 +217,11 @@ data class DroneSettings(
         /** Firmware > 01.03.33.01 refuses values under 15 (official app). */
         val LOW_BATTERY_RANGE = 15..50
         val EXPOSURE_RANGE = -9..9
+        val MAX_TILT_RANGE = 15f..25f
+        const val MAX_TILT_DEFAULT = 25f
+
+        /** Within [MAX_TILT_RANGE], whole degrees (the slider's steps); NaN / infinite: the default. */
+        fun sanitizeMaxTilt(degrees: Float): Float =
+            if (degrees.isFinite()) Math.round(degrees).toFloat().coerceIn(MAX_TILT_RANGE) else MAX_TILT_DEFAULT
     }
 }
