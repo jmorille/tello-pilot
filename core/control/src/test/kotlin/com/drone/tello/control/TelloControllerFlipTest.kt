@@ -206,6 +206,50 @@ class TelloControllerFlipTest {
     }
 
     @Test
+    fun `a flip that could not be sent is logged as such, and still locks`() = session {
+        flying()
+        transport.failing = true
+        assertEquals(ModeCheck.OK, controller.flip(FlipDirection.FORWARD))
+        transport.failing = false
+        assertEquals(listOf("flip_unsent:forward"), controller.drainLogEvents())
+        assertEquals(ModeCheck.FLIP_LOCKED, controller.flip(FlipDirection.FORWARD))
+    }
+
+    @Test
+    fun `a flip refused by the drone ends the hold, the sticks still wait to be centred`() = session {
+        flying()
+        controller.setSticks(StickInput(pitch = 0.6f))
+        controller.flip(FlipDirection.FORWARD)
+        scope.advanceTimeBy(100)
+        transport.droneMessage(MessageId.FLIP, byteArrayOf(1))
+        scope.runCurrent()
+        controller.setSticks(StickInput())
+        scope.advanceTimeBy(40)
+        controller.setSticks(StickInput(pitch = 0.6f))
+        scope.advanceTimeBy(40)
+        assertTrue(!transport.sticks().last().isNeutralStick(), "flies again well before 1.5 s")
+        assertTrue(scope.testScheduler.currentTime < FlightModeRules.FLIP_MIN_FLYING_MS + FlightModeRules.FLIP_STICK_HOLD_MS)
+    }
+
+    @Test
+    fun `the lock and the hold survive a new controller of the same session`() = session {
+        flying()
+        val guard = FlipGuard()
+        val first = TelloController(FakeTransport(scope), clock = { scope.testScheduler.currentTime }, flipGuard = guard)
+        guard.lastFlipAt.set(scope.testScheduler.currentTime)
+        guard.stickHoldUntil.set(scope.testScheduler.currentTime + FlightModeRules.FLIP_STICK_HOLD_MS)
+        guard.sticksNeedRecentre.set(true)
+        first.setSticks(StickInput(roll = 1f))
+        assertEquals(StickInput.Neutral, first.currentSticks)
+        // Reconnection: a new controller with the session's guard.
+        val second = TelloController(FakeTransport(scope), clock = { scope.testScheduler.currentTime }, flipGuard = guard)
+        second.setSticks(StickInput(roll = 1f))
+        assertEquals(StickInput.Neutral, second.currentSticks, "still held")
+        scope.advanceTimeBy(FlightModeRules.FLIP_STICK_HOLD_MS)
+        assertEquals(StickInput.Neutral, second.currentSticks, "still waiting to be centred")
+    }
+
+    @Test
     fun `undrained events stay bounded`() = session {
         flying(heightDm = 6)
         repeat(500) { controller.flip(FlipDirection.FORWARD) }

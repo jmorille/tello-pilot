@@ -139,6 +139,7 @@ class GamepadViewModel @Inject constructor(
 
     val status: StateFlow<GamepadStatus> = gamepad.status
     val padName: StateFlow<String?> = gamepad.padName
+    val coupledAxis: StateFlow<Boolean> = gamepad.coupledAxis
 
     private val _live = MutableStateFlow(PadLive())
     val live: StateFlow<PadLive> = _live.asStateFlow()
@@ -353,6 +354,7 @@ fun GamepadRoute(onBack: () -> Unit, viewModel: GamepadViewModel = hiltViewModel
     val capture by viewModel.capture.collectAsStateWithLifecycle()
     val status by viewModel.status.collectAsStateWithLifecycle()
     val padName by viewModel.padName.collectAsStateWithLifecycle()
+    val coupledAxis by viewModel.coupledAxis.collectAsStateWithLifecycle()
 
     val snackbar = remember { SnackbarHostState() }
     val resources = LocalResources.current
@@ -372,7 +374,11 @@ fun GamepadRoute(onBack: () -> Unit, viewModel: GamepadViewModel = hiltViewModel
                         text = when (status) {
                             GamepadStatus.NONE -> stringResource(R.string.pad_status_none)
                             GamepadStatus.CENTER_STICKS -> stringResource(R.string.pad_status_center, padName ?: "")
-                            GamepadStatus.READY -> stringResource(R.string.pad_status_ready, padName ?: "")
+                            GamepadStatus.READY -> if (coupledAxis) {
+                                stringResource(R.string.pad_status_coupled, padName ?: "")
+                            } else {
+                                stringResource(R.string.pad_status_ready, padName ?: "")
+                            }
                         },
                         color = when (status) {
                             GamepadStatus.READY -> Color(0xFF66BB6A)

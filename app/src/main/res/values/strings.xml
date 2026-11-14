@@ -200,6 +200,7 @@ Pendant le flip, les manches sont ignorés ; relâchez-les au centre pour repren
     <string name="pad_status_none">Aucune manette connectée</string>
     <string name="pad_status_center">%1$s : centrez les manches</string>
     <string name="pad_status_ready">%1$s : prête</string>
+    <string name="pad_status_coupled">%1$s : prête, un axe de manche est ignoré (couplé à une gâchette)</string>
     <string name="pad_section_live">Visualisation en direct</string>
     <string name="pad_left_stick">Manche gauche</string>
     <string name="pad_right_stick">Manche droit</string>

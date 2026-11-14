@@ -471,7 +471,8 @@ class GamepadInputTest {
     fun `flip safety - L2 also reported on AXIS_Z (right stick X) never reaches a flight axis`() {
         // Pad declaring LTRIGGER (so the right stick is read on Z / RZ) whose L2 also moves Z.
         val input = ready()
-        for (t in listOf(0.1f, 0.3f, 0.5f, 0.7f, 1f)) input.l2Hat(l2 = t, more = arrayOf(MotionEvent.AXIS_Z to t))
+        for (t in listOf(0.2f, 0.4f, 0.6f, 0.8f, 1f)) input.l2Hat(l2 = t, more = arrayOf(MotionEvent.AXIS_Z to t))
+        assertTrue(input.coupledAxis.value)
         input.l2Hat(l2 = 1f, hy = -1f, more = arrayOf(MotionEvent.AXIS_Z to 1f))
         input.l2Hat(l2 = 1f, more = arrayOf(MotionEvent.AXIS_Z to 1f))
         for (t in listOf(0.8f, 0.6f, 0.4f, 0.2f, 0f)) input.l2Hat(l2 = t, more = arrayOf(MotionEvent.AXIS_Z to t))
@@ -491,6 +492,64 @@ class GamepadInputTest {
             input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to t, MotionEvent.AXIS_RZ to t))
         }
         assertTrue("sticks sent: ${listener.sticks}", listener.sticks.none { it != PadSticks.Neutral })
+    }
+
+    @Test
+    fun `flip safety - a right stick moved while L2 is half pressed is not taken for a trigger`() {
+        val input = ready()
+        for (z in listOf(0.5f, 0.6f, 0.7f, 0.8f)) {
+            input.onMotionEvent(motion(1, MotionEvent.AXIS_LTRIGGER to 0.3f, MotionEvent.AXIS_Z to z))
+        }
+        assertFalse(input.coupledAxis.value)
+        // L2 at 0.3 is below the press threshold: the stick flies.
+        assertEquals((0.8f - 0.08f) / 0.92f, listener.last.rightX, 1e-5f)
+    }
+
+    @Test
+    fun `flip safety - evidence never adds up from one trigger press to the next`() {
+        val input = ready()
+        // Two matching readings, then the trigger leaves the intermediate range (full press).
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 0.3f, MotionEvent.AXIS_RZ to 0.3f))
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 0.5f, MotionEvent.AXIS_RZ to 0.5f))
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 1f, MotionEvent.AXIS_RZ to -1f))
+        input.onMotionEvent(motion(1))
+        // A single match on the next press is not a third piece of evidence.
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 0.7f, MotionEvent.AXIS_RZ to 0.7f))
+        assertFalse(input.coupledAxis.value)
+    }
+
+    @Test
+    fun `flip safety - an ignored axis that moves on its own, triggers at rest, is a stick again`() {
+        val input = ready()
+        for (t in listOf(0.2f, 0.4f, 0.6f)) input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to t, MotionEvent.AXIS_Z to t))
+        assertTrue(input.coupledAxis.value)
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 1f, MotionEvent.AXIS_Z to 1f))
+        assertTrue("ignored meanwhile: ${listener.sticks}", listener.sticks.none { it.rightX != 0f || it.rightY != 0f })
+        input.onMotionEvent(motion(1))
+        input.sticks(1, rx = 0.5f) // triggers released, the axis moves: a real stick
+        assertFalse(input.coupledAxis.value)
+        assertEquals((0.5f - 0.08f) / 0.92f, listener.last.rightX, 1e-5f)
+    }
+
+    @Test
+    fun `flip safety - a stick at its stop with a trigger fully down stays at its stop`() {
+        val input = ready()
+        input.onMotionEvent(motion(1, MotionEvent.AXIS_RTRIGGER to 1f, MotionEvent.AXIS_Z to 1f))
+        assertEquals(1f, listener.last.rightX, 1e-6f)
+    }
+
+    @Test
+    fun `flip safety - L2 of a pad that does not drive locks nothing`() {
+        val input = ready(1, 2)
+        input.sticks(1, rx = 1f)
+        assertEquals(1f, listener.last.rightX, 1e-6f)
+        input.onKeyEvent(key(2, KeyEvent.KEYCODE_BUTTON_L2, down = true))
+        assertEquals(1f, listener.last.rightX, 1e-6f)
+        input.sticks(1, rx = 0.9f)
+        assertEquals((0.9f - 0.08f) / 0.92f, listener.last.rightX, 1e-5f)
+        input.onKeyEvent(key(2, KeyEvent.KEYCODE_BUTTON_L2, down = false))
+        input.sticks(1, rx = 1f)
+        assertEquals("no re-centring asked by the other pad", 1f, listener.last.rightX, 1e-6f)
     }
 
     @Test

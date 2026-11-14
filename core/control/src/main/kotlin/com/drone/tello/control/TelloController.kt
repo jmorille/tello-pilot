@@ -128,6 +128,11 @@ data class ControlConfig(
 class TelloController(
     private val transport: ControlTransport,
     private val config: ControlConfig = ControlConfig(),
+    /**
+     * Flip lock and stick hold: owned by the session, so that a new controller (Wi-Fi back,
+     * session restarted) never forgets a flip in progress. Same [clock] base required.
+     */
+    private val flipGuard: FlipGuard = FlipGuard(),
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val _link = MutableStateFlow(LinkState.IDLE)
@@ -234,12 +239,8 @@ class TelloController(
      * telemetry keeps the last packet when they stop: this tells a fresh state from a stale one.
      */
     fun flightDataAgeMs(): Long? = lastFlightAt?.let { clock() - it }
-    /** Last flip sent (`null`: none this session); control thread only. */
-    private var lastFlipAt: Long? = null
-    /** Neutral sticks are sent until this time (flip in progress). */
-    private val stickHoldUntil = AtomicLong(Long.MIN_VALUE / 2)
-    /** After a flip, the pilot's sticks wait to be seen centred before driving again. */
-    private val sticksNeedRecentre = AtomicBoolean(false)
+    private val stickHoldUntil get() = flipGuard.stickHoldUntil
+    private val sticksNeedRecentre get() = flipGuard.sticksNeedRecentre
 
     /** Flight-log events (flip sent / refused / answered), drained by the flight recorder. */
     private val logEvents = java.util.concurrent.ConcurrentLinkedQueue<String>()
@@ -422,7 +423,7 @@ class TelloController(
             val m = _maneuvers.value
             val context = FlipContext(
                 flyingForMs = flyingSince?.let { now - it },
-                sinceLastFlipMs = lastFlipAt?.let { now - it },
+                sinceLastFlipMs = flipGuard.lastFlipAt.get()?.let { now - it },
                 busy = appBusy || landRequested.get() || m.bounce || m.smartVideoActive,
                 telemetryAgeMs = lastFlightAt?.let { now - it },
             )
@@ -436,7 +437,7 @@ class TelloController(
             logEvent("flip_refused:${result.name.lowercase()}")
             return result
         }
-        lastFlipAt = now
+        flipGuard.lastFlipAt.set(now)
         // Neutral before the flip leaves: the very next stick packet is already neutral.
         stickHoldUntil.set(now + FlightModeRules.FLIP_STICK_HOLD_MS)
         sticksNeedRecentre.set(true)
@@ -444,7 +445,8 @@ class TelloController(
         wakeUp.trySend(Unit)
         val f = _telemetry.value.flight
         diag("flip $name sent=$sent (height ${f?.heightMeters} m, battery ${f?.batteryPercent} %, fly mode ${f?.flyMode})")
-        logEvent("flip:$name")
+        // Not sent (socket error): still locked and held, the drone may have received it.
+        logEvent(if (sent) "flip:$name" else "flip_unsent:$name")
         return result
     }
 
@@ -911,7 +913,11 @@ class TelloController(
             MessageId.FLIP -> {
                 diag("flip reply: ${if (result.success) "accepted" else "refused"}")
                 logEvent(if (result.success) "flip_reply:ok" else "flip_reply:refused")
-                if (!result.success) _events.tryEmit(DroneEvent.ManeuverRefused(FlightMode.Flip))
+                if (!result.success) {
+                    // No rotation: the hold ends now, the sticks still wait to be centred.
+                    stickHoldUntil.set(Long.MIN_VALUE / 2)
+                    _events.tryEmit(DroneEvent.ManeuverRefused(FlightMode.Flip))
+                }
             }
             MessageId.CENTER_OF_GRAVITY_CALIBRATION -> _events.tryEmit(DroneEvent.CenterOfGravityCalibrated(result.success))
             // Read back what the drone stored (accepted or not).

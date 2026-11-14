@@ -13,7 +13,7 @@ class FlightModeRulesFlipTest {
         batteryLow = false, batteryCritical = false, flyMode = flyMode, visionSensorError = vision, windWarning = wind,
     )
 
-    private val settled = FlipContext(flyingForMs = 10_000, sinceLastFlipMs = null, busy = false)
+    private val settled = FlipContext(flyingForMs = 10_000, sinceLastFlipMs = null, busy = false, telemetryAgeMs = 0)
 
     private fun check(f: FlightData, c: FlipContext? = settled) = FlightModeRules.check(FlightMode.Flip, f, 20, false, c)
 

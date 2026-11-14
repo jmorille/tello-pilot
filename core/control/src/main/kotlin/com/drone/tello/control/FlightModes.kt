@@ -50,9 +50,22 @@ data class FlipContext(
     val flyingForMs: Long?,
     val sinceLastFlipMs: Long?,
     val busy: Boolean,
-    /** Age of the flight data the decision is based on (`null`: none received). */
-    val telemetryAgeMs: Long? = 0,
+    /** Age of the flight data the decision is based on (`null`: none received, refused as stale). */
+    val telemetryAgeMs: Long?,
 )
+
+/**
+ * Flip state that outlives a [TelloController] (the session creates a new one on every
+ * reconnection): last flip sent, stick hold and re-centring. Thread-safe.
+ */
+class FlipGuard {
+    /** Time of the last flip sent (`null`: none). */
+    val lastFlipAt = java.util.concurrent.atomic.AtomicReference<Long?>(null)
+    /** Neutral sticks are sent until this time (flip in progress). */
+    val stickHoldUntil = java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE / 2)
+    /** After a flip, the pilot's sticks wait to be seen centred before driving again. */
+    val sticksNeedRecentre = java.util.concurrent.atomic.AtomicBoolean(false)
+}
 
 /**
  * Preconditions of the official app (`FlightModeActivity`): in flight, no strong wind; flips
@@ -114,7 +127,7 @@ object FlightModeRules {
         flight: FlightData?,
         lowBatteryThreshold: Int,
         photoInProgress: Boolean,
-        /** Required for [FlightMode.Flip]: without it a flip is refused ([ModeCheck.NOT_STABILISED]). */
+        /** Required for [FlightMode.Flip]: without it a flip is refused ([ModeCheck.TELEMETRY_STALE]). */
         flip: FlipContext? = null,
     ): ModeCheck {
         if (flight == null) return ModeCheck.NOT_CONNECTED
