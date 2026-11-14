@@ -56,12 +56,32 @@ data class FlightSample(
     val cmdYaw: Float? = null,
     /** Fast-mode flag sent with those sticks; `null` when not recorded. */
     val fastMode: Boolean? = null,
+    /** Flight mode byte of the drone's flight data (1: no positioning, 12: landing…); `null`: not recorded (before v4). */
+    val flyMode: Int? = null,
+    /** Motor error code of the flight data (0: none); `null`: not recorded (before v4). */
+    val motorError: Int? = null,
+    /**
+     * Age of the flight data in this row, ms: the telemetry keeps the last packet when they
+     * stop, so a large age marks a repeated (stale) row. `null`: unknown / before v4.
+     */
+    val telemetryAgeMs: Long? = null,
+    /**
+     * Events since the previous row (`flip:forward`, `flip_refused:too_low`, `flip_reply:ok`…),
+     * oldest first. Empty: none; `null`: not recorded (before v4).
+     */
+    val events: List<String>? = null,
 ) {
     val horizontalMps: Float get() = hypot(northMps, eastMps)
 
     companion object {
         /** `null` when the telemetry has no flight data yet. [sticks]: the command being sent, if known. */
-        fun from(tMs: Long, t: Telemetry, sticks: StickInput? = null): FlightSample? {
+        fun from(
+            tMs: Long,
+            t: Telemetry,
+            sticks: StickInput? = null,
+            events: List<String> = emptyList(),
+            telemetryAgeMs: Long? = null,
+        ): FlightSample? {
             val f = t.flight ?: return null
             val odo = t.odometry
             return FlightSample(
@@ -93,6 +113,10 @@ data class FlightSample(
                 cmdThrottle = sticks?.throttle?.let(::sentAxis),
                 cmdYaw = sticks?.yaw?.let(::sentAxis),
                 fastMode = sticks?.fastMode,
+                flyMode = f.flyMode,
+                motorError = f.motorErrorCode,
+                telemetryAgeMs = telemetryAgeMs,
+                events = events,
             )
         }
 
@@ -126,16 +150,31 @@ class FlightSampler(
 
     val recording: Boolean get() = startedAt != null
 
-    fun onTick(now: Long, telemetry: Telemetry?, sticks: StickInput? = null): Tick {
+    /** Events not written yet: they go with the next row (a tick does not always write one). */
+    private val pendingEvents = ArrayList<String>()
+
+    /** [events]: what happened since the previous tick (see [FlightSample.events]). */
+    fun onTick(
+        now: Long,
+        telemetry: Telemetry?,
+        sticks: StickInput? = null,
+        events: List<String> = emptyList(),
+        telemetryAgeMs: Long? = null,
+    ): Tick {
         val started = startedAt
         val flight = telemetry?.flight
+        pendingEvents += events
         if (started == null) {
-            if (flight?.flying != true) return NOTHING
+            // Not flying yet: what happens on the ground is not part of a flight.
+            if (flight?.flying != true) {
+                pendingEvents.clear()
+                return NOTHING
+            }
             startedAt = now
             lastDataAt = now
             lastSampleAt = now
             landedSince = null
-            return Tick(start = true, sample = FlightSample.from(0, telemetry, sticks))
+            return Tick(start = true, sample = FlightSample.from(0, telemetry, sticks, takeEvents(), telemetryAgeMs))
         }
         if (flight == null) {
             if (now - lastDataAt >= noDataTimeoutMs) {
@@ -147,7 +186,7 @@ class FlightSampler(
         lastDataAt = now
         // Tolerates a late tick: never two samples closer than 3/4 of the interval.
         val due = now - lastSampleAt >= intervalMs * 3 / 4
-        val sample = if (due) FlightSample.from(now - started, telemetry, sticks).also { lastSampleAt = now } else null
+        val sample = if (due) FlightSample.from(now - started, telemetry, sticks, takeEvents(), telemetryAgeMs).also { lastSampleAt = now } else null
         if (flight.flying) {
             landedSince = null
         } else {
@@ -160,9 +199,12 @@ class FlightSampler(
         return Tick(sample = sample)
     }
 
+    private fun takeEvents(): List<String> = pendingEvents.toList().also { pendingEvents.clear() }
+
     private fun reset() {
         startedAt = null
         landedSince = null
+        pendingEvents.clear()
     }
 
     companion object {
@@ -265,10 +307,13 @@ data class FlightLog(
  * [FlightSample.alerts]) at the end of the row. v3 added the stick command actually sent,
  * `cmd_roll`, `cmd_pitch`, `cmd_throttle`, `cmd_yaw` (normalised -1..1 with 3 decimals, enough
  * to recover the exact 364..1684 wire value `round(1024 + 660 * v)`), and `fast_mode` (1 / 0);
- * empty when the command was not known.
+ * empty when the command was not known. v4 added `fly_mode` and `motor_err` (flight data),
+ * `tlm_age_ms` (age of the flight data of the row: a repeated, stale row shows a growing age), and
+ * `event`: what happened since the previous row (flip sent, refused, the drone's answer), as
+ * `;`-separated tokens without commas (see [FlightSample.events]).
  */
 object FlightLogCsv {
-    const val VERSION = 3
+    const val VERSION = 4
     private const val MAGIC = "# tellopilot-flight"
     private const val SUMMARY = "# summary"
 
@@ -278,6 +323,7 @@ object FlightLogCsv {
         "imu_temp_c", "wifi_pct", "battery_low", "battery_critical", "overheating",
         "fly_time_s", "alerts",
         "cmd_roll", "cmd_pitch", "cmd_throttle", "cmd_yaw", "fast_mode",
+        "fly_mode", "motor_err", "tlm_age_ms", "event",
     )
 
     private const val ALERT_SEPARATOR = ';'
@@ -317,6 +363,17 @@ object FlightLogCsv {
         f(s.cmdThrottle, 3).append(',')
         f(s.cmdYaw, 3).append(',')
         s.fastMode?.let { b(it) }
+        append(',')
+        s.flyMode?.let { append(it) }
+        append(',')
+        s.motorError?.let { append(it) }
+        append(',')
+        s.telemetryAgeMs?.let { append(it) }
+        append(',')
+        s.events?.forEachIndexed { i, e ->
+            if (i > 0) append(ALERT_SEPARATOR)
+            append(cleanEvent(e))
+        }
         append('\n')
     }
 
@@ -411,8 +468,16 @@ object FlightLogCsv {
             cmdThrottle = float("cmd_throttle")?.takeIf { it.isFinite() },
             cmdYaw = float("cmd_yaw")?.takeIf { it.isFinite() },
             fastMode = bool("fast_mode"),
+            flyMode = cell("fly_mode")?.toIntOrNull(),
+            motorError = cell("motor_err")?.toIntOrNull(),
+            telemetryAgeMs = cell("tlm_age_ms")?.toLongOrNull(),
+            // Present column, empty cell: no event (not "unknown").
+            events = if ("event" in columns) cell("event")?.split(ALERT_SEPARATOR)?.filter { it.isNotBlank() }.orEmpty() else null,
         )
     }
+
+    /** An event is one cell token: no column / token separator, no blank. */
+    private fun cleanEvent(e: String) = e.map { if (it == ',' || it == ALERT_SEPARATOR || it.isWhitespace()) '_' else it }.joinToString("")
 
     private fun keyValues(s: String): Map<String, String> = s.trim().split(' ').mapNotNull {
         val i = it.indexOf('=')

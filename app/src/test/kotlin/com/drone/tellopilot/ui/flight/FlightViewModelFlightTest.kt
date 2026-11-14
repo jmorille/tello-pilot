@@ -228,6 +228,7 @@ class FlightViewModelFlightTest {
         test {
             cruising()
             vm.onAction(FlightAction.Flip(com.drone.tello.protocol.FlipDirection.FORWARD))
+            scope.runCurrent() // the flip left (accepted by the controller)
             tumble()
             assertFalse(Warning.IMPACT in ui.warnings)
         }

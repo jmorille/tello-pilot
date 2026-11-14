@@ -77,7 +77,7 @@ internal class FakeDrone {
         coEvery { c.takePicture() } returns true
         coEvery { c.requestKeyFrame() } returns true
         coEvery { c.setOnboardRecording(any()) } returns true
-        coEvery { c.flip(any()) } returns ModeCheck.OK
+        coEvery { c.flip(any(), any()) } returns ModeCheck.OK
         coEvery { c.setBounce(any()) } returns ModeCheck.OK
         coEvery { c.startSmartVideo(any()) } returns ModeCheck.OK
     }

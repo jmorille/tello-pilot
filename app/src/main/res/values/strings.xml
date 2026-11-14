@@ -134,12 +134,29 @@
     <string name="message_drone_refused">Le drone a refusé la manœuvre</string>
     <string name="mode_refused_not_connected">Drone non connecté</string>
     <string name="mode_refused_not_flying">Disponible uniquement en vol</string>
-    <string name="mode_refused_battery">Batterie insuffisante (flip : 50 % minimum)</string>
+    <string name="mode_refused_battery">Batterie insuffisante (flip : 55 % minimum)</string>
     <string name="mode_refused_height">Trop haut : 4 m maximum pour cette manœuvre</string>
     <string name="mode_refused_wind">Vent trop fort</string>
     <string name="mode_refused_photo">Photo en cours</string>
     <string name="mode_refused_ground">Posez le drone et arrêtez les moteurs</string>
     <string name="mode_refused_busy">Une autre manœuvre est en cours</string>
+    <string name="mode_refused_too_low">Trop bas pour un flip : montez à 2 m minimum</string>
+    <string name="mode_refused_no_positioning">Flip refusé : positionnement par caméra (VPS) indisponible, sol peu texturé ou trop sombre</string>
+    <string name="mode_refused_not_stabilised">Flip refusé : attendez que le drone soit stabilisé après le décollage (3 s)</string>
+    <string name="mode_refused_flip_locked">Flip refusé : un flip vient d’être lancé, attendez 4 s</string>
+    <string name="mode_refused_telemetry_stale">Flip refusé : télémétrie du drone interrompue</string>
+    <string name="message_flip_cancelled_diagonal">Flip annulé : croix en diagonale</string>
+    <string name="flip_warning_title">Avant votre premier flip</string>
+    <string name="flip_warning_text">Le drone perd jusqu’à 1 m pendant un flip et ne voit plus le sol pendant la rotation.
+
+• Au moins 3 m d’espace libre tout autour, rien au-dessus
+• Hauteur entre 2 m et 4 m
+• Sol texturé et bien éclairé (pas d’eau, pas de sol uni)
+• Batterie à 55 % minimum
+
+Pendant le flip, les manches sont ignorés ; relâchez-les au centre pour reprendre la main. Une fois confirmé, relancez le flip.</string>
+    <string name="flip_warning_confirm">J’ai compris</string>
+    <string name="flip_warning_cancel">Annuler</string>
 
     <string name="settings_section_maintenance">Maintenance</string>
     <string name="maintenance_not_connected">Connectez le drone pour accéder à ces fonctions.</string>
@@ -184,6 +201,7 @@
     <string name="pad_status_none">Aucune manette connectée</string>
     <string name="pad_status_center">%1$s : centrez les manches</string>
     <string name="pad_status_ready">%1$s : prête</string>
+    <string name="pad_status_coupled">%1$s : prête, un axe de manche est ignoré (couplé à une gâchette)</string>
     <string name="pad_section_live">Visualisation en direct</string>
     <string name="pad_left_stick">Manche gauche</string>
     <string name="pad_right_stick">Manche droit</string>

@@ -122,9 +122,13 @@ internal class FlightViewModelRig(
     }
 
     companion object {
-        /** Linear sticks (no dead zone, no expo): the stick value is the drone's. */
+        /**
+         * Linear sticks (no dead zone, no expo): the stick value is the drone's. The first-flip
+         * notice is already accepted (tested on its own with `flipWarningAccepted = false`).
+         */
         fun linearPilot(build: PilotSettings.() -> PilotSettings = { this }) =
             PilotSettings(
+                flipWarningAccepted = true,
                 deadZone = 0f,
                 axisNormal = com.drone.tello.control.FlightTuning.uniform(expo = 0f),
                 axisFast = com.drone.tello.control.FlightTuning.uniform(expo = 0f),

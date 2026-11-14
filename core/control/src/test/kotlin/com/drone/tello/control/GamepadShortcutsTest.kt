@@ -158,7 +158,8 @@ class GamepadShortcutsTest {
         assertNull(m.onButtonDown(PadButton.X), "auto-repeat")
         m.onButtonUp(PadButton.X)
         assertEquals(PadAction.Shortcut(PadFunction.RunMission("Carré 2 m")), m.onButtonDown(PadButton.A))
-        assertEquals(PadAction.Flip(FlipDirection.LEFT), m.onButtonDown(PadButton.DPAD_LEFT), "flips still work with L2")
+        assertNull(m.onButtonDown(PadButton.DPAD_LEFT))
+        assertEquals(PadAction.Flip(FlipDirection.LEFT), m.onButtonUp(PadButton.DPAD_LEFT), "flips still work with L2")
         m.reset()
         assertEquals(PadAction.Shortcut(PadFunction.Tripod), m.onButtonDown(PadButton.START))
     }

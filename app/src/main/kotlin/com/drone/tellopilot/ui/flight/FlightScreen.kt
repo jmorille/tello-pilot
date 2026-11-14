@@ -95,6 +95,7 @@ fun FlightRoute(onOpenSettings: () -> Unit, onOpenGallery: () -> Unit = {}, view
                 UserMessage.VideoSaved -> R.string.message_video_saved
                 UserMessage.VideoFailed -> R.string.message_video_failed
                 UserMessage.DroneRefused -> R.string.message_drone_refused
+                UserMessage.FlipCancelledDiagonal -> R.string.message_flip_cancelled_diagonal
                 UserMessage.MaxTiltRefused -> R.string.message_max_tilt_refused
                 is UserMessage.ModeRefused -> modeCheckText(message.reason)
             }
@@ -134,6 +135,18 @@ fun FlightRoute(onOpenSettings: () -> Unit, onOpenGallery: () -> Unit = {}, view
         onHorizonPlaced = viewModel::setHorizonPlacement,
         snackbar = snackbar,
     )
+
+    // First flip: a safety notice to confirm once (remembered); nothing flies meanwhile.
+    val flipWarning by viewModel.flipWarning.collectAsStateWithLifecycle()
+    if (flipWarning) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = viewModel::dismissFlipWarning,
+            title = { Text(stringResource(R.string.flip_warning_title)) },
+            text = { Text(stringResource(R.string.flip_warning_text)) },
+            confirmButton = { TextButton(onClick = viewModel::acceptFlipWarning) { Text(stringResource(R.string.flip_warning_confirm)) } },
+            dismissButton = { TextButton(onClick = viewModel::dismissFlipWarning) { Text(stringResource(R.string.flip_warning_cancel)) } },
+        )
+    }
 }
 
 @Composable
@@ -737,6 +750,11 @@ private fun modeCheckText(reason: com.drone.tello.control.ModeCheck) = when (rea
     com.drone.tello.control.ModeCheck.PHOTO_IN_PROGRESS -> R.string.mode_refused_photo
     com.drone.tello.control.ModeCheck.MUST_BE_ON_GROUND -> R.string.mode_refused_ground
     com.drone.tello.control.ModeCheck.BUSY -> R.string.mode_refused_busy
+    com.drone.tello.control.ModeCheck.TOO_LOW -> R.string.mode_refused_too_low
+    com.drone.tello.control.ModeCheck.NO_POSITIONING -> R.string.mode_refused_no_positioning
+    com.drone.tello.control.ModeCheck.NOT_STABILISED -> R.string.mode_refused_not_stabilised
+    com.drone.tello.control.ModeCheck.FLIP_LOCKED -> R.string.mode_refused_flip_locked
+    com.drone.tello.control.ModeCheck.TELEMETRY_STALE -> R.string.mode_refused_telemetry_stale
 }
 
 @Preview(widthDp = 860, heightDp = 400)

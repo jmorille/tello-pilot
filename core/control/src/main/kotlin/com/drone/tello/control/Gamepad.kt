@@ -15,6 +15,12 @@ sealed interface PadAction {
     data object Photo : PadAction
     data object ToggleRecording : PadAction
     data class Flip(val direction: FlipDirection) : PadAction
+    /**
+     * A flip being prepared was cancelled: a second D-pad direction went down before the
+     * release (diagonal / rolled press, e.g. a GameSir G4 Pro cross that, with L2 held,
+     * reports "left" 150 ms after "up" on about 1 press in 4). Nothing is flown; the pilot is told.
+     */
+    data object FlipCancelled : PadAction
     data object ToggleFastMode : PadAction
     /**
      * Stop what runs: smart video, automatic flight, bounce (a manoeuvre must always be
@@ -444,19 +450,43 @@ class GamepadBindings private constructor(
  * Sticks work like the on-screen joysticks; buttons follow [bindings] (default: official GameSir
  * layout). Combos fire once, when their second button goes down, so holding a button never
  * repeats an action.
+ *
+ * Flips fire on the *release* of the D-pad, like the official app: the flip button must be held
+ * when the D-pad goes down and still held when it comes back up, and no other D-pad direction
+ * may be pressed in between (a rolled press, up then right, is ambiguous: no flip at all until
+ * the whole D-pad is released). One press, one flip at most.
  */
 class GamepadMapper(var bindings: GamepadBindings = GamepadBindings.Default) {
     private val held = LinkedHashSet<PadButton>()
 
+    /** D-pad direction waiting for its release to flip, if any. */
+    private var pendingFlip: PadButton? = null
+    /** Two D-pad directions were held together: no flip until the D-pad is fully released. */
+    private var flipCancelled = false
+
     /** Buttons currently down (copy). */
     val heldButtons: Set<PadButton> get() = held.toSet()
 
-    /** Returns the action triggered by pressing [button], if any. */
+    /** Returns the action triggered by pressing [button], if any (never a flip: see [onButtonUp]). */
     fun onButtonDown(button: PadButton): PadAction? {
         if (!held.add(button)) return null // auto-repeat
-        flipDirection(button)?.let { direction ->
-            return if (bindings[PadCommand.FLIP].button in held) PadAction.Flip(direction) else null
+        if (flipDirection(button) != null) {
+            val flipHeld = bindings[PadCommand.FLIP].button in held
+            when {
+                // Another direction already down (rolled press, diagonal): ambiguous, nothing.
+                pendingFlip != null || held.count { flipDirection(it) != null } > 1 -> {
+                    val wasPending = pendingFlip != null
+                    pendingFlip = null
+                    flipCancelled = true
+                    // Told once, when a flip the pilot was preparing is dropped.
+                    if (wasPending) return PadAction.FlipCancelled
+                }
+                flipHeld && !flipCancelled -> pendingFlip = button
+            }
+            return null
         }
+        // The flip button released / pressed again in the middle: that press no longer flips.
+        if (button == bindings[PadCommand.FLIP].button) pendingFlip = null
         // A combo completed by this button wins over a single-button command.
         val combo = bindings.entries.firstOrNull { (c, b) ->
             val modifier = b.modifier
@@ -475,12 +505,26 @@ class GamepadMapper(var bindings: GamepadBindings = GamepadBindings.Default) {
         return bindings.shortcuts.firstOrNull { !it.binding.isCombo && it.binding.button == button }?.let { PadAction.Shortcut(it.function) }
     }
 
-    fun onButtonUp(button: PadButton) {
-        held.remove(button)
+    /** Returns the flip completed by releasing [button], if any. */
+    fun onButtonUp(button: PadButton): PadAction? {
+        if (!held.remove(button)) return null
+        if (button == bindings[PadCommand.FLIP].button) {
+            pendingFlip = null // released before the D-pad: no flip
+            return null
+        }
+        val direction = flipDirection(button) ?: return null
+        val fire = pendingFlip == button && !flipCancelled && bindings[PadCommand.FLIP].button in held
+        if (pendingFlip == button) pendingFlip = null
+        if (held.none { flipDirection(it) != null }) flipCancelled = false
+        return if (fire) PadAction.Flip(direction) else null
     }
 
-    /** Controller disconnected / app paused: forget the held buttons. */
-    fun reset() = held.clear()
+    /** Controller disconnected / app paused: forget the held buttons (and a pending flip). */
+    fun reset() {
+        held.clear()
+        pendingFlip = null
+        flipCancelled = false
+    }
 
     private fun isSingle(command: PadCommand, binding: PadBinding) = command != PadCommand.FLIP && !binding.isCombo
 

@@ -26,12 +26,13 @@ class FlightLogCommandColumnsTest {
         FlightLogCsv.parse((FlightLogCsv.header(5) + FlightLogCsv.row(s)).lineSequence())!!.samples.single()
 
     @Test
-    fun `the header is v3 with the command columns at the end`() {
-        assertEquals(3, FlightLogCsv.VERSION)
-        assertTrue(FlightLogCsv.header(5).startsWith("# tellopilot-flight v3 start=5\n"))
-        assertEquals(listOf("cmd_roll", "cmd_pitch", "cmd_throttle", "cmd_yaw", "fast_mode"), FlightLogCsv.COLUMNS.takeLast(5))
+    fun `the header is v4, the command columns follow the alerts`() {
+        assertEquals(4, FlightLogCsv.VERSION)
+        assertTrue(FlightLogCsv.header(5).startsWith("# tellopilot-flight v4 start=5\n"))
+        assertEquals(listOf("cmd_roll", "cmd_pitch", "cmd_throttle", "cmd_yaw", "fast_mode"), FlightLogCsv.COLUMNS.subList(21, 26))
         // Older columns keep their place: positional readers of v2 files see the same prefix.
         assertEquals("alerts", FlightLogCsv.COLUMNS[20])
+        assertEquals(listOf("fly_mode", "motor_err", "tlm_age_ms", "event"), FlightLogCsv.COLUMNS.takeLast(4))
     }
 
     @Test

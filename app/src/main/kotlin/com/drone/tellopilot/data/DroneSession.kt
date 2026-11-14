@@ -74,6 +74,8 @@ class DroneSession internal constructor(
     ) : this(wifi, settings, recorder, photoStore, hints, flightRecorder, batteryAlert, RealtimeThreads.control, { DroneSockets.open(it) })
 
     private val _controller = MutableStateFlow<TelloController?>(null)
+    /** Flip lock / stick hold shared by the successive controllers of this session. */
+    private val flipGuard = com.drone.tello.control.FlipGuard()
     val controller: StateFlow<TelloController?> = _controller.asStateFlow()
 
     private val _wifiState = MutableStateFlow<WifiState>(WifiState.Off)
@@ -188,6 +190,10 @@ class DroneSession internal constructor(
                     flightRecorder.record(
                         // The sticks actually sent (the controller only sends them while connected).
                         commands = { _controller.value?.takeIf { it.isConnected }?.currentSticks },
+                        // Flip sent / refused / answered (also logged with Log.i by the controller).
+                        events = { _controller.value?.drainLogEvents().orEmpty() },
+                        // Repeated (stale) rows are visible: the flight data age goes with each row.
+                        telemetryAge = { _controller.value?.takeIf { it.isConnected }?.flightDataAgeMs() },
                     ) {
                         _controller.value?.takeIf { it.isConnected }?.telemetry?.value
                     }
@@ -247,7 +253,8 @@ class DroneSession internal constructor(
                 }
                 Log.i(TAG, "sockets open: ${sockets.stats}")
                 try {
-                    val controller = TelloController(sockets)
+                    // The flip lock and stick hold survive a new controller (reconnection).
+                    val controller = TelloController(sockets, flipGuard = flipGuard)
                     controller.diagnostics = { Log.i(TAG, it) }
                     _controller.value = controller
                     coroutineScope {
