@@ -51,7 +51,8 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          semver='^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$'
+          # Bounded digit counts: no 64-bit overflow can slip past the bounds below.
+          semver='^([0-9]{1,4})\.([0-9]{1,3})\.([0-9]{1,3})(-[0-9A-Za-z.-]+)?$'
           vcode() {  # MAJOR MINOR PATCH -> versionCode (base 10, bounded)
             (( 10#$2 < 1000 && 10#$3 < 1000 )) || return 1
             echo $(( 10#$1 * 1000000 + 10#$2 * 1000 + 10#$3 ))
@@ -103,7 +104,7 @@ jobs:
           max_final=0; final_tag=-
           while read -r t; do
             [[ "$t" == "$TAG" ]] && continue
-            [[ "${t#v}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || continue
+            [[ "${t#v}" =~ ^([0-9]{1,4})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || continue
             (( 10#${BASH_REMATCH[2]} < 1000 && 10#${BASH_REMATCH[3]} < 1000 )) || continue
             c=$(( 10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]} ))
             (( c > max_final )) && { max_final=$c; final_tag=$t; }
@@ -344,7 +345,7 @@ jobs:
             echo
             echo "| Fichier | Contenu |"
             echo "|---|---|"
-            echo "| \`${APK}\` | APK signé (clé release, certificat SHA-256 \`${CERT}\`) |"
+            echo "| \`${APK}\` | APK signé (certificat SHA-256 \`${CERT}\`) |"
             if [[ "$MAPPING_IN_RELEASE" == "true" ]]; then
               echo "| \`${MAPPING}\` | Mapping R8 pour désobfusquer les stack traces (\`retrace\`) |"
               echo "| \`SHA256SUMS\` | Empreintes SHA-256 de l'APK et du mapping |"
