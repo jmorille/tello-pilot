@@ -79,6 +79,21 @@ class FlightViewModelFlipTest {
     }
 
     @Test
+    fun `a cancelled pad flip is told to the pilot, with a buzz, and logged`() = test {
+        cruising()
+        val mapper = GamepadMapper()
+        pad(mapper, PadButton.L2, down = true)
+        pad(mapper, PadButton.DPAD_UP, down = true)
+        pad(mapper, PadButton.DPAD_LEFT, down = true) // GameSir: "left" 30-90 ms after "up"
+        pad(mapper, PadButton.DPAD_LEFT, down = false)
+        pad(mapper, PadButton.DPAD_UP, down = false)
+        coVerify(exactly = 0) { drone.controller.flip(any(), any()) }
+        assertEquals(UserMessage.FlipCancelledDiagonal, messages.last())
+        io.mockk.verify { haptics.warning() }
+        io.mockk.verify { drone.controller.recordEvent("flip_cancelled:diagonal") }
+    }
+
+    @Test
     fun `a refused flip does not suspend the shock detection`() = test {
         cruising()
         coEvery { drone.controller.flip(any(), any()) } returns ModeCheck.TOO_LOW

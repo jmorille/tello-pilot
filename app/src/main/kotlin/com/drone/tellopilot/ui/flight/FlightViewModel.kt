@@ -48,6 +48,8 @@ sealed interface UserMessage {
     data class ModeRefused(val reason: ModeCheck) : UserMessage
     /** Refused by the drone itself. */
     data object DroneRefused : UserMessage
+    /** A pad flip was dropped: two D-pad directions were pressed (diagonal / rolled press). */
+    data object FlipCancelledDiagonal : UserMessage
     /** The drone refused the fast-mode max tilt angle (4184). */
     data object MaxTiltRefused : UserMessage
     data class AutopilotEnded(val end: com.drone.tellopilot.tracking.AutopilotEnd) : UserMessage
@@ -544,6 +546,11 @@ class FlightViewModel internal constructor(
             PadAction.ToggleRecording -> perform(FlightAction.ToggleRecording, fromPad = true)
             PadAction.ToggleFastMode -> perform(FlightAction.ToggleFastMode, fromPad = true)
             is PadAction.Flip -> perform(FlightAction.Flip(action.direction), fromPad = true)
+            // Diagonal / rolled D-pad: no flip, and the pilot must know why nothing happened.
+            PadAction.FlipCancelled -> {
+                refuse(UserMessage.FlipCancelledDiagonal, fromPad = true)
+                session.controller.value?.recordEvent("flip_cancelled:diagonal")
+            }
             is PadAction.Shortcut -> padShortcut(action.function)
         }
     }

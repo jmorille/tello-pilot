@@ -71,6 +71,7 @@ internal fun PadAction.text(res: Resources): String = when (this) {
     PadAction.ToggleFastMode -> res.getString(R.string.pad_cmd_fast)
     PadAction.StopSmartVideo -> res.getString(R.string.pad_cmd_stop_smart)
     is PadAction.Flip -> res.getString(R.string.pad_action_flip, direction.arrow)
+    PadAction.FlipCancelled -> res.getString(R.string.message_flip_cancelled_diagonal)
     is PadAction.Shortcut -> function.text(res)
 }
 

@@ -441,11 +441,11 @@ class GamepadInputTest {
         input.l2Hat(hx = 1f, hy = -1f)
         input.l2Hat(hx = 1f)
         input.l2Hat()
-        assertTrue(listener.actions.isEmpty())
+        assertEquals(listOf<PadAction>(PadAction.FlipCancelled), listener.actions)
         // The next clean press works again.
         input.l2Hat(hy = -1f)
         input.l2Hat()
-        assertEquals(listOf<PadAction>(PadAction.Flip(FlipDirection.FORWARD)), listener.actions)
+        assertEquals(listOf(PadAction.FlipCancelled, PadAction.Flip(FlipDirection.FORWARD)), listener.actions)
     }
 
     @Test
@@ -454,7 +454,7 @@ class GamepadInputTest {
         input.l2Hat()
         input.l2Hat(hx = 0.7f, hy = -0.7f)
         input.l2Hat()
-        assertTrue(listener.actions.isEmpty())
+        assertEquals(listOf<PadAction>(PadAction.FlipCancelled), listener.actions)
     }
 
     @Test
@@ -550,6 +550,79 @@ class GamepadInputTest {
         input.onKeyEvent(key(2, KeyEvent.KEYCODE_BUTTON_L2, down = false))
         input.sticks(1, rx = 1f)
         assertEquals("no re-centring asked by the other pad", 1f, listener.last.rightX, 1e-6f)
+    }
+
+    // ------------------------- real GameSir G4 Pro captures (getevent, 8555:061c, Bluetooth)
+
+    /** GameSir G4 Pro: L2 on BRAKE + BTN_TL2, R2 on GAS + BTN_TR2, right stick on Z / RZ. */
+    private fun gameSir(vararg axes: Pair<Int, Float>) = motion(1, *axes)
+
+    /** BRAKE pressed progressively to 255, with the BTN_TL2 key down on the way. */
+    private fun GamepadInput.gameSirL2Down() {
+        for (b in listOf(0.1f, 0.35f, 0.6f, 0.85f, 1f)) {
+            onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to b))
+            if (b == 0.6f) onKeyEvent(key(1, KeyEvent.KEYCODE_BUTTON_L2, down = true))
+        }
+    }
+
+    private fun GamepadInput.gameSirL2Up() {
+        onKeyEvent(key(1, KeyEvent.KEYCODE_BUTTON_L2, down = false))
+        for (b in listOf(0.6f, 0.2f, 0f)) onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to b))
+    }
+
+    @Test
+    fun `GameSir - cross up reported as up then left 90 ms later gives no flip, and says so`() {
+        val input = ready()
+        input.gameSirL2Down()
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_HAT_Y to -1f))
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_HAT_Y to -1f, MotionEvent.AXIS_HAT_X to -1f))
+        // Thumb grazing the left stick on the release (raw X=0 / Y=0: full left, full up).
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_X to -1f, MotionEvent.AXIS_Y to -1f))
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f)) // X and Y back to 0 in one frame
+        input.gameSirL2Up()
+        assertEquals(listOf<PadAction>(PadAction.FlipCancelled), listener.actions)
+        assertTrue("sticks sent: ${listener.sticks}", listener.sticks.none { it != PadSticks.Neutral })
+    }
+
+    @Test
+    fun `GameSir - both hat axes in the same frame gives no flip either`() {
+        val input = ready()
+        input.gameSirL2Down()
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_HAT_Y to -1f, MotionEvent.AXIS_HAT_X to -1f))
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f))
+        input.gameSirL2Up()
+        assertEquals(listOf<PadAction>(PadAction.FlipCancelled), listener.actions)
+    }
+
+    @Test
+    fun `GameSir - a pure up gives exactly one forward flip, on the release, the stick graze ignored`() {
+        val input = ready()
+        input.gameSirL2Down()
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_HAT_Y to -1f))
+        assertTrue("nothing on the press", listener.actions.isEmpty())
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f)) // release of the cross
+        // The thumb leaving the cross brushes the left stick for 50-100 ms, L2 still held.
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_X to -1f, MotionEvent.AXIS_Y to -1f))
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_X to -0.6f, MotionEvent.AXIS_Y to -0.8f))
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f))
+        input.gameSirL2Up()
+        assertEquals(listOf<PadAction>(PadAction.Flip(FlipDirection.FORWARD)), listener.actions)
+        assertTrue("sticks sent: ${listener.sticks}", listener.sticks.none { it != PadSticks.Neutral })
+        assertFalse("L2 never moves Z on this pad", input.coupledAxis.value)
+    }
+
+    @Test
+    fun `GameSir - a graze still held after L2 is released waits to be centred`() {
+        val input = ready()
+        input.gameSirL2Down()
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_HAT_Y to -1f))
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_BRAKE to 1f, MotionEvent.AXIS_X to -1f, MotionEvent.AXIS_Y to -1f))
+        input.onKeyEvent(key(1, KeyEvent.KEYCODE_BUTTON_L2, down = false))
+        input.onMotionEvent(gameSir(MotionEvent.AXIS_X to -1f, MotionEvent.AXIS_Y to -1f)) // L2 released, stick still pushed
+        assertTrue("sticks sent: ${listener.sticks}", listener.sticks.none { it != PadSticks.Neutral })
+        input.sticks(1) // centred: re-armed
+        input.sticks(1, ly = -0.5f)
+        assertEquals((0.5f - 0.08f) / 0.92f, listener.last.leftY, 1e-5f)
     }
 
     @Test

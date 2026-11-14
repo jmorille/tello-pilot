@@ -95,6 +95,7 @@ fun FlightRoute(onOpenSettings: () -> Unit, onOpenGallery: () -> Unit = {}, view
                 UserMessage.VideoSaved -> R.string.message_video_saved
                 UserMessage.VideoFailed -> R.string.message_video_failed
                 UserMessage.DroneRefused -> R.string.message_drone_refused
+                UserMessage.FlipCancelledDiagonal -> R.string.message_flip_cancelled_diagonal
                 UserMessage.MaxTiltRefused -> R.string.message_max_tilt_refused
                 is UserMessage.ModeRefused -> modeCheckText(message.reason)
             }

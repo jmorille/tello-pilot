@@ -37,7 +37,7 @@ class GamepadMapperTest {
         m.onButtonDown(PadButton.L2)
         // Rolled press: up, then right while up is still down → nothing, even after the releases.
         assertNull(m.onButtonDown(PadButton.DPAD_UP))
-        assertNull(m.onButtonDown(PadButton.DPAD_RIGHT))
+        assertEquals(PadAction.FlipCancelled, m.onButtonDown(PadButton.DPAD_RIGHT), "the pilot is told")
         assertNull(m.onButtonUp(PadButton.DPAD_UP))
         assertNull(m.onButtonUp(PadButton.DPAD_RIGHT))
         // Auto-repeat of the D-pad press does not re-arm anything; one release, one flip.

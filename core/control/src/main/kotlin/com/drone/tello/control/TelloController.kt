@@ -252,6 +252,9 @@ class TelloController(
         return out
     }
 
+    /** An app-side event for the flight log (e.g. a pad flip cancelled before anything was sent). */
+    fun recordEvent(event: String) = logEvent(event)
+
     private fun logEvent(event: String) {
         logEvents.add(event)
         // Nobody drains when no flight is recorded: keep only the latest few.

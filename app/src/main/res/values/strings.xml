@@ -145,6 +145,7 @@
     <string name="mode_refused_not_stabilised">Flip refusé : attendez que le drone soit stabilisé après le décollage (3 s)</string>
     <string name="mode_refused_flip_locked">Flip refusé : un flip vient d’être lancé, attendez 4 s</string>
     <string name="mode_refused_telemetry_stale">Flip refusé : télémétrie du drone interrompue</string>
+    <string name="message_flip_cancelled_diagonal">Flip annulé : croix en diagonale</string>
     <string name="flip_warning_title">Avant votre premier flip</string>
     <string name="flip_warning_text">Le drone perd jusqu’à 1 m pendant un flip et ne voit plus le sol pendant la rotation.
 

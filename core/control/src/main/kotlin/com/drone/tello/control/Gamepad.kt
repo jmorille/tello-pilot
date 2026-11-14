@@ -15,6 +15,12 @@ sealed interface PadAction {
     data object Photo : PadAction
     data object ToggleRecording : PadAction
     data class Flip(val direction: FlipDirection) : PadAction
+    /**
+     * A flip being prepared was cancelled: a second D-pad direction went down before the
+     * release (diagonal / rolled press, e.g. a GameSir cross that reports "up" then "left"
+     * 30-90 ms later). Nothing is flown; the pilot is told.
+     */
+    data object FlipCancelled : PadAction
     data object ToggleFastMode : PadAction
     /**
      * Stop what runs: smart video, automatic flight, bounce (a manoeuvre must always be
@@ -469,8 +475,11 @@ class GamepadMapper(var bindings: GamepadBindings = GamepadBindings.Default) {
             when {
                 // Another direction already down (rolled press, diagonal): ambiguous, nothing.
                 pendingFlip != null || held.count { flipDirection(it) != null } > 1 -> {
+                    val wasPending = pendingFlip != null
                     pendingFlip = null
                     flipCancelled = true
+                    // Told once, when a flip the pilot was preparing is dropped.
+                    if (wasPending) return PadAction.FlipCancelled
                 }
                 flipHeld && !flipCancelled -> pendingFlip = button
             }
