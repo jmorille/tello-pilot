@@ -494,6 +494,36 @@
     <string name="flights_cancel">Annuler</string>
     <string name="flights_delete_title">Supprimer ce vol ?</string>
     <string name="flights_delete_text">L\'enregistrement de ce vol sera définitivement supprimé.</string>
+    <string name="flights_export_many">Exporter</string>
+    <string name="flights_share">Partager…</string>
+    <string name="flights_save_device">Enregistrer sur le téléphone</string>
+    <string name="flights_save_zip">Enregistrer sur le téléphone (ZIP)</string>
+    <string name="flights_select">Sélectionner</string>
+    <string name="flights_select_all">Tout sélectionner</string>
+    <string name="flights_select_none">Tout désélectionner</string>
+    <plurals name="flights_selected_count">
+        <item quantity="one">%1$d vol sélectionné</item>
+        <item quantity="many">%1$d de vols sélectionnés</item>
+        <item quantity="other">%1$d vols sélectionnés</item>
+    </plurals>
+    <plurals name="flights_delete_many_title">
+        <item quantity="one">Supprimer %1$d vol ?</item>
+        <item quantity="many">Supprimer %1$d de vols ?</item>
+        <item quantity="other">Supprimer %1$d vols ?</item>
+    </plurals>
+    <string name="flights_delete_many_text">Les enregistrements des vols sélectionnés seront définitivement supprimés.</string>
+    <plurals name="flights_saved">
+        <item quantity="one">%1$d vol enregistré sur le téléphone</item>
+        <item quantity="many">%1$d de vols enregistrés sur le téléphone</item>
+        <item quantity="other">%1$d vols enregistrés sur le téléphone</item>
+    </plurals>
+    <plurals name="flights_missing_skipped">
+        <item quantity="one">%1$d vol introuvable (supprimé entre-temps), ignoré</item>
+        <item quantity="many">%1$d de vols introuvables (supprimés entre-temps), ignorés</item>
+        <item quantity="other">%1$d vols introuvables (supprimés entre-temps), ignorés</item>
+    </plurals>
+    <string name="flights_nothing_exported">Rien n\'a été enregistré : les vols choisis n\'existent plus.</string>
+    <string name="flights_save_failed">Échec de l\'enregistrement du fichier.</string>
     <string name="flights_interrupted">interrompu</string>
     <string name="flights_status">État</string>
     <string name="flights_unknown">—</string>

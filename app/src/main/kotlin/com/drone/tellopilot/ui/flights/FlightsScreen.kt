@@ -4,6 +4,25 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.text.format.DateUtils
+import android.content.res.Resources
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.pluralStringResource
+import androidx.lifecycle.SavedStateHandle
+import com.drone.tellopilot.flightlog.FlightExport
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.update
+import java.io.IOException
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -80,28 +99,144 @@ private fun DroneSession.flyingState(vm: ViewModel): StateFlow<Boolean> =
     telemetry.map { it.flight?.flying == true }.distinctUntilChanged()
         .stateIn(vm.viewModelScope, SharingStarted.Eagerly, false)
 
+/** Result of an export, shown in a snackbar. */
+sealed interface ExportMessage {
+    /** [saved] flights written to the phone, [missing] skipped (deleted in the meantime). */
+    data class Saved(val saved: Int, val missing: Int) : ExportMessage
+    /** Some selected flights were gone when shared. */
+    data class ShareMissing(val missing: Int) : ExportMessage
+    /** None of the flights exists any more: nothing written. */
+    data object NothingToExport : ExportMessage
+    data object Failed : ExportMessage
+}
+
+/**
+ * Save to the phone through the system file picker: what is being saved survives the
+ * picker (and the process being killed meanwhile) in the [SavedStateHandle].
+ */
+private class PendingSave(private val state: SavedStateHandle) {
+    var ids: List<String>?
+        get() = state.get<ArrayList<String>>(KEY_IDS)
+        set(value) { state[KEY_IDS] = value?.let(::ArrayList) }
+    var zip: Boolean
+        get() = state.get<Boolean>(KEY_ZIP) ?: true
+        set(value) { state[KEY_ZIP] = value }
+
+    /** Takes the pending save (at most once per picker). */
+    fun take(): Pair<List<String>, Boolean>? = ids?.let { it to zip }.also { ids = null }
+
+    private companion object {
+        const val KEY_IDS = "pending_save_ids"
+        const val KEY_ZIP = "pending_save_zip"
+    }
+}
+
+private suspend fun FlightLogStore.saveMessage(target: Uri, ids: List<String>, zip: Boolean): ExportMessage = try {
+    val result = saveTo(target, ids, zip)
+    if (result.exported.isEmpty()) ExportMessage.NothingToExport else ExportMessage.Saved(result.exported.size, result.missing.size)
+} catch (e: IOException) {
+    ExportMessage.Failed
+}
+
 @HiltViewModel
 class FlightsViewModel @Inject constructor(
     private val store: FlightLogStore,
     session: DroneSession,
+    savedState: SavedStateHandle,
 ) : ViewModel() {
 
     private val _entries = MutableStateFlow<List<FlightEntry>?>(null)
     val entries: StateFlow<List<FlightEntry>?> = _entries.asStateFlow()
 
+    /** Selected flights; empty outside the selection mode. */
+    private val _selected = MutableStateFlow<Set<String>>(emptySet())
+    val selected: StateFlow<Set<String>> = _selected.asStateFlow()
+
+    private val _messages = Channel<ExportMessage>(Channel.BUFFERED)
+    val messages: Flow<ExportMessage> = _messages.receiveAsFlow()
+
+    private val pending = PendingSave(savedState)
+
     /** The drone took off: the screen gives way to the flight screen. */
     val flying: StateFlow<Boolean> = session.flyingState(this)
 
     init {
-        // Reloads when a flight is saved or deleted.
-        viewModelScope.launch { store.changes.collect { _entries.value = store.list() } }
+        // Reloads when a flight is saved or deleted; a deleted flight leaves the selection.
+        viewModelScope.launch {
+            store.changes.collect {
+                val entries = store.list()
+                _entries.value = entries
+                val ids = entries.mapTo(HashSet()) { it.id }
+                _selected.update { selected -> selected.filterTo(LinkedHashSet()) { it in ids } }
+            }
+        }
+    }
+
+    /** Long press: enters the selection mode with [id]; once in, a tap toggles a flight. */
+    fun toggle(id: String) {
+        _selected.update { if (id in it) it - id else it + id }
+    }
+
+    /** All the flights, or none when they all are already selected (leaves the selection mode). */
+    fun selectAll() {
+        val all = _entries.value.orEmpty().map { it.id }
+        _selected.update { if (it.containsAll(all)) emptySet() else all.toSet() }
+    }
+
+    fun clearSelection() {
+        _selected.value = emptySet()
+    }
+
+    /** Selected ids in list order (newest first). */
+    fun selectedIds(): List<String> {
+        val selected = _selected.value
+        return _entries.value.orEmpty().map { it.id }.filter { it in selected }
     }
 
     fun delete(id: String) {
         viewModelScope.launch { store.delete(id) }
     }
 
+    fun deleteSelected() {
+        val ids = selectedIds()
+        clearSelection()
+        viewModelScope.launch { store.delete(ids) }
+    }
+
     fun shareUri(id: String) = store.shareUri(id)
+
+    /** Share URIs of the selected flights that still exist; the others are reported. */
+    fun shareSelected(): List<Pair<String, Uri>> {
+        val ids = selectedIds()
+        val uris = store.shareUris(ids)
+        if (uris.size < ids.size) _messages.trySend(ExportMessage.ShareMissing(ids.size - uris.size))
+        return uris
+    }
+
+    /** Before opening the file picker for a ZIP of the selection; returns the suggested file name. */
+    fun prepareZip(nowMs: Long = System.currentTimeMillis()): String {
+        pending.ids = selectedIds()
+        pending.zip = true
+        return FlightExport.zipFileName(nowMs)
+    }
+
+    /** Before opening the file picker for one flight's CSV; returns the suggested file name. */
+    fun prepareCsv(id: String): String {
+        pending.ids = listOf(id)
+        pending.zip = false
+        return FlightExport.csvFileName(id)
+    }
+
+    /** File picker result: [target] `null` when cancelled (nothing written, selection kept). */
+    fun onSaveTarget(target: Uri?) {
+        val (ids, zip) = pending.take() ?: return
+        if (target == null || ids.isEmpty()) return
+        viewModelScope.launch {
+            val message = store.saveMessage(target, ids, zip)
+            if (zip && message is ExportMessage.Saved) clearSelection()
+            _messages.send(message)
+        }
+    }
 }
 
 @HiltViewModel
@@ -138,6 +273,15 @@ class FlightDetailViewModel @Inject constructor(
     }
 
     fun shareUri(id: String) = store.shareUri(id)
+
+    private val _messages = Channel<ExportMessage>(Channel.BUFFERED)
+    val messages: Flow<ExportMessage> = _messages.receiveAsFlow()
+
+    /** File picker result for this flight's CSV: [target] `null` when cancelled. */
+    fun saveCsv(id: String, target: Uri?) {
+        target ?: return
+        viewModelScope.launch { _messages.send(store.saveMessage(target, listOf(id), zip = false)) }
+    }
 }
 
 @Composable
@@ -148,33 +292,73 @@ fun FlightsRoute(
     viewModel: FlightsViewModel = hiltViewModel(),
 ) {
     val entries by viewModel.entries.collectAsStateWithLifecycle()
+    val selected by viewModel.selected.collectAsStateWithLifecycle()
     val flying by viewModel.flying.collectAsStateWithLifecycle()
     LaunchedEffect(flying) { if (flying) onFlying() }
     val context = LocalContext.current
+    val snackbar = remember { SnackbarHostState() }
+    ExportMessages(viewModel.messages, snackbar)
+    val saveZip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(FlightExport.ZIP_MIME), viewModel::onSaveTarget)
+    val saveCsv = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(FlightExport.CSV_MIME), viewModel::onSaveTarget)
+    // Back leaves the selection mode first.
+    BackHandler(enabled = selected.isNotEmpty(), onBack = viewModel::clearSelection)
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        FlightsScreen(
-            entries = entries,
-            onBack = onBack,
-            onOpen = onOpen,
-            onShare = { id -> share(context, id, viewModel.shareUri(id)) },
-            onDelete = viewModel::delete,
-        )
+        Box(Modifier.fillMaxSize()) {
+            FlightsScreen(
+                entries = entries,
+                selected = selected,
+                onBack = onBack,
+                onOpen = onOpen,
+                onToggle = viewModel::toggle,
+                onShare = { id -> share(context, listOfNotNull(viewModel.shareUri(id)?.let { id to it })) },
+                onSave = { id -> launchSave(saveCsv, viewModel.prepareCsv(id)) },
+                onDelete = viewModel::delete,
+                onSelectAll = viewModel::selectAll,
+                onClearSelection = viewModel::clearSelection,
+                onShareSelected = { share(context, viewModel.shareSelected()) },
+                onSaveSelected = { launchSave(saveZip, viewModel.prepareZip()) },
+                onDeleteSelected = viewModel::deleteSelected,
+            )
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).safeDrawingPadding())
+        }
     }
 }
 
 @Composable
 private fun FlightsScreen(
     entries: List<FlightEntry>?,
+    selected: Set<String>,
     onBack: () -> Unit,
     onOpen: (String) -> Unit,
+    onToggle: (String) -> Unit,
     onShare: (String) -> Unit,
+    onSave: (String) -> Unit,
     onDelete: (String) -> Unit,
+    onSelectAll: () -> Unit,
+    onClearSelection: () -> Unit,
+    onShareSelected: () -> Unit,
+    onSaveSelected: () -> Unit,
+    onDeleteSelected: () -> Unit,
 ) {
     var confirmDelete by remember { mutableStateOf<String?>(null) }
+    var confirmDeleteSelected by remember { mutableStateOf(false) }
+    val selecting = selected.isNotEmpty()
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = onBack) { Text(stringResource(R.string.settings_back)) }
-            Text(stringResource(R.string.flights_title), style = MaterialTheme.typography.titleLarge)
+        if (selecting) {
+            SelectionBar(
+                count = selected.size,
+                allSelected = entries.orEmpty().all { it.id in selected },
+                onClose = onClearSelection,
+                onSelectAll = onSelectAll,
+                onShare = onShareSelected,
+                onSave = onSaveSelected,
+                onDelete = { confirmDeleteSelected = true },
+            )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onBack) { Text(stringResource(R.string.settings_back)) }
+                Text(stringResource(R.string.flights_title), style = MaterialTheme.typography.titleLarge)
+            }
         }
         when {
             entries == null -> Unit
@@ -186,7 +370,15 @@ private fun FlightsScreen(
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
                 item(key = "stats") { StatsPanel(FlightStats.of(entries.map { it.summary })) }
                 items(entries, key = { it.id }) { entry ->
-                    FlightRow(entry, onOpen = { onOpen(entry.id) }, onShare = { onShare(entry.id) }, onDelete = { confirmDelete = entry.id })
+                    FlightRow(
+                        entry,
+                        selection = if (selecting) entry.id in selected else null,
+                        onOpen = { if (selecting) onToggle(entry.id) else onOpen(entry.id) },
+                        onLongPress = { onToggle(entry.id) },
+                        onShare = { onShare(entry.id) },
+                        onSave = { onSave(entry.id) },
+                        onDelete = { confirmDelete = entry.id },
+                    )
                 }
             }
         }
@@ -194,14 +386,89 @@ private fun FlightsScreen(
     confirmDelete?.let { id ->
         DeleteDialog(onConfirm = { onDelete(id); confirmDelete = null }, onDismiss = { confirmDelete = null })
     }
+    if (confirmDeleteSelected && selecting) {
+        DeleteDialog(
+            count = selected.size,
+            onConfirm = { confirmDeleteSelected = false; onDeleteSelected() },
+            onDismiss = { confirmDeleteSelected = false },
+        )
+    }
+}
+
+/** Top bar of the selection mode: count, select all, export (share or save), delete. */
+@Composable
+private fun SelectionBar(
+    count: Int,
+    allSelected: Boolean,
+    onClose: () -> Unit,
+    onSelectAll: () -> Unit,
+    onShare: () -> Unit,
+    onSave: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(onClick = onClose) { Text(stringResource(R.string.flights_cancel)) }
+        Text(
+            pluralStringResource(R.plurals.flights_selected_count, count, count),
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onSelectAll) {
+            Text(stringResource(if (allSelected) R.string.flights_select_none else R.string.flights_select_all))
+        }
+        ExportMenu(label = stringResource(R.string.flights_export_many), saveLabel = stringResource(R.string.flights_save_zip), onShare = onShare, onSave = onSave)
+        TextButton(onClick = onDelete) { Text(stringResource(R.string.gallery_delete)) }
+    }
+}
+
+/** "Export" button and its menu: share sheet, or saved on the phone (system file picker). */
+@Composable
+private fun ExportMenu(label: String, saveLabel: String, onShare: () -> Unit, onSave: () -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { menu = true }) { Text(label) }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(text = { Text(stringResource(R.string.flights_share)) }, onClick = { menu = false; onShare() })
+            DropdownMenuItem(text = { Text(saveLabel) }, onClick = { menu = false; onSave() })
+        }
+    }
+}
+
+/** Snackbar for each export result. */
+@Composable
+private fun ExportMessages(messages: Flow<ExportMessage>, snackbar: SnackbarHostState) {
+    val resources = LocalResources.current
+    LaunchedEffect(messages) {
+        messages.collect { snackbar.showSnackbar(exportMessageText(resources, it)) }
+    }
+}
+
+private fun exportMessageText(res: Resources, message: ExportMessage): String = when (message) {
+    is ExportMessage.Saved -> listOfNotNull(
+        res.getQuantityString(R.plurals.flights_saved, message.saved, message.saved),
+        message.missing.takeIf { it > 0 }?.let { res.getQuantityString(R.plurals.flights_missing_skipped, it, it) },
+    ).joinToString(". ")
+    is ExportMessage.ShareMissing -> res.getQuantityString(R.plurals.flights_missing_skipped, message.missing, message.missing)
+    ExportMessage.NothingToExport -> res.getString(R.string.flights_nothing_exported)
+    ExportMessage.Failed -> res.getString(R.string.flights_save_failed)
+}
+
+/** Opens the system file picker ("save as"); without any document provider, nothing happens. */
+private fun launchSave(launcher: ActivityResultLauncher<String>, fileName: String) {
+    runCatching { launcher.launch(fileName) }
 }
 
 @Composable
-private fun DeleteDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+private fun DeleteDialog(onConfirm: () -> Unit, onDismiss: () -> Unit, count: Int = 1) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.flights_delete_title)) },
-        text = { Text(stringResource(R.string.flights_delete_text)) },
+        title = {
+            Text(
+                if (count == 1) stringResource(R.string.flights_delete_title)
+                else pluralStringResource(R.plurals.flights_delete_many_title, count, count),
+            )
+        },
+        text = { Text(stringResource(if (count == 1) R.string.flights_delete_text else R.string.flights_delete_many_text)) },
         confirmButton = { TextButton(onClick = onConfirm) { Text(stringResource(R.string.gallery_delete)) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.flights_cancel)) } },
     )
@@ -239,16 +506,28 @@ private fun StatTile(label: String, value: String) {
     }
 }
 
+/** [selection] `null` outside the selection mode, else whether this flight is selected. */
 @Composable
-private fun FlightRow(entry: FlightEntry, onOpen: () -> Unit, onShare: () -> Unit, onDelete: () -> Unit) {
+private fun FlightRow(
+    entry: FlightEntry,
+    selection: Boolean?,
+    onOpen: () -> Unit,
+    onLongPress: () -> Unit,
+    onShare: () -> Unit,
+    onSave: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val context = LocalContext.current
     var menu by remember { mutableStateOf(false) }
     val s = entry.summary
+    val background = if (selection == true) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
-            .clickable(onClick = onOpen).padding(start = 12.dp, top = 6.dp, bottom = 6.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(background)
+            .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
+            .padding(start = if (selection != null) 0.dp else 12.dp, top = 6.dp, bottom = 6.dp, end = if (selection != null) 12.dp else 0.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (selection != null) Checkbox(checked = selection, onCheckedChange = { onOpen() })
         Column(Modifier.weight(1f)) {
             Text(dateTime(context, entry.startEpochMs), style = MaterialTheme.typography.bodyMedium)
             Text(
@@ -262,12 +541,16 @@ private fun FlightRow(entry: FlightEntry, onOpen: () -> Unit, onShare: () -> Uni
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        Box {
-            TextButton(onClick = { menu = true }) { Text("⋮") }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text(stringResource(R.string.gallery_open)) }, onClick = { menu = false; onOpen() })
-                DropdownMenuItem(text = { Text(stringResource(R.string.flights_export)) }, onClick = { menu = false; onShare() })
-                DropdownMenuItem(text = { Text(stringResource(R.string.gallery_delete)) }, onClick = { menu = false; onDelete() })
+        if (selection == null) {
+            Box {
+                TextButton(onClick = { menu = true }) { Text("⋮") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(text = { Text(stringResource(R.string.gallery_open)) }, onClick = { menu = false; onOpen() })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.flights_export)) }, onClick = { menu = false; onShare() })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.flights_save_device)) }, onClick = { menu = false; onSave() })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.flights_select)) }, onClick = { menu = false; onLongPress() })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.gallery_delete)) }, onClick = { menu = false; onDelete() })
+                }
             }
         }
     }
@@ -287,24 +570,35 @@ fun FlightDetailRoute(
     LaunchedEffect(flying) { if (flying) onFlying() }
     val context = LocalContext.current
     var confirmDelete by remember { mutableStateOf(false) }
+    val snackbar = remember { SnackbarHostState() }
+    ExportMessages(viewModel.messages, snackbar)
+    val saveCsv = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(FlightExport.CSV_MIME)) { viewModel.saveCsv(id, it) }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onBack) { Text(stringResource(R.string.settings_back)) }
-                Text(
-                    log?.let { dateTime(context, it.startEpochMs) } ?: stringResource(R.string.flights_title),
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                if (log != null) {
-                    TextButton(onClick = { share(context, id, viewModel.shareUri(id)) }) { Text(stringResource(R.string.flights_export)) }
-                    TextButton(onClick = { confirmDelete = true }) { Text(stringResource(R.string.gallery_delete)) }
+        Box(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onBack) { Text(stringResource(R.string.settings_back)) }
+                    Text(
+                        log?.let { dateTime(context, it.startEpochMs) } ?: stringResource(R.string.flights_title),
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (log != null) {
+                        ExportMenu(
+                            label = stringResource(R.string.flights_export),
+                            saveLabel = stringResource(R.string.flights_save_device),
+                            onShare = { share(context, listOfNotNull(viewModel.shareUri(id)?.let { id to it })) },
+                            onSave = { launchSave(saveCsv, FlightExport.csvFileName(id)) },
+                        )
+                        TextButton(onClick = { confirmDelete = true }) { Text(stringResource(R.string.gallery_delete)) }
+                    }
+                }
+                when {
+                    missing -> Text(stringResource(R.string.flights_missing), Modifier.padding(24.dp))
+                    else -> log?.let { FlightDetail(it) }
                 }
             }
-            when {
-                missing -> Text(stringResource(R.string.flights_missing), Modifier.padding(24.dp))
-                else -> log?.let { FlightDetail(it) }
-            }
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).safeDrawingPadding())
         }
     }
     if (confirmDelete) {
@@ -464,13 +758,20 @@ private fun downsample(samples: List<FlightSample>, max: Int): List<FlightSample
     return (0 until max).map { samples[(it * step).toInt()] } + samples.last()
 }
 
-private fun share(context: Context, id: String, uri: android.net.Uri?) {
-    uri ?: return
-    val intent = Intent(Intent.ACTION_SEND).setType("text/csv")
-        .putExtra(Intent.EXTRA_STREAM, uri)
-        .putExtra(Intent.EXTRA_SUBJECT, "$id.csv")
-        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    intent.clipData = ClipData.newRawUri(id, uri)
+/** Share sheet for one or several flight files ([FlightExport.sharePlan]); [files] are (id, content URI). */
+private fun share(context: Context, files: List<Pair<String, Uri>>) {
+    val plan = FlightExport.sharePlan(files.map { it.second }, files.map { FlightExport.csvFileName(it.first) }) ?: return
+    val intent = Intent(plan.action).setType(plan.mimeType).addFlags(plan.flags)
+    if (plan.action == Intent.ACTION_SEND_MULTIPLE) {
+        intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(plan.streams))
+    } else {
+        intent.putExtra(Intent.EXTRA_STREAM, plan.streams.single())
+    }
+    plan.subject?.let { intent.putExtra(Intent.EXTRA_SUBJECT, it) }
+    // The read grant covers every URI of the ClipData (EXTRA_STREAM alone is not enough for several).
+    intent.clipData = ClipData.newRawUri(files.first().first, plan.streams.first()).apply {
+        plan.streams.drop(1).forEach { addItem(ClipData.Item(it)) }
+    }
     runCatching { context.startActivity(Intent.createChooser(intent, null)) }
 }
 

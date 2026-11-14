@@ -2,6 +2,7 @@ package com.drone.tellopilot.flightlog
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.Log
 import androidx.core.content.FileProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -11,8 +12,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.io.RandomAccessFile
 import java.io.Writer
@@ -82,8 +85,60 @@ class FlightLogStore @Inject constructor(@ApplicationContext private val context
         notifyChanged()
     }
 
+    /** Deletes several flights, then reloads the list once. */
+    suspend fun delete(ids: Collection<String>) = withContext(Dispatchers.IO) {
+        ids.filter { it != activeId }.forEach { fileOf(it)?.delete() }
+        notifyChanged()
+    }
+
     /** content:// URI of the CSV file for the share sheet (FileProvider). */
     fun shareUri(id: String): Uri? = fileOf(id)?.let { FileProvider.getUriForFile(context, "${context.packageName}$AUTHORITY_SUFFIX", it) }
+
+    /** Share URIs of the flights that still exist, in order. */
+    fun shareUris(ids: List<String>): List<Pair<String, Uri>> = ids.mapNotNull { id -> shareUri(id)?.let { id to it } }
+
+    /** ZIP of the flights' CSV files written to [out] (closed on return), on the I/O thread. */
+    suspend fun exportZip(ids: List<String>, out: OutputStream): ExportResult = withContext(Dispatchers.IO) {
+        FlightExport.writeZip(out, ids.map { id -> id to fileOf(id)?.takeIf { id != activeId } })
+    }
+
+    /** Copies one flight's CSV file to [out] (closed on return); `false` when the flight no longer exists. */
+    suspend fun exportCsv(id: String, out: OutputStream): Boolean = withContext(Dispatchers.IO) {
+        out.use { stream ->
+            val input = fileOf(id)?.takeIf { id != activeId }?.let { runCatching { FileInputStream(it) }.getOrNull() }
+            input?.use { it.copyTo(stream) }
+            input != null
+        }
+    }
+
+    /**
+     * Saves to a document picked with the system file picker (Storage Access Framework,
+     * no storage permission): a ZIP of [ids], or the bare CSV of a single flight when [zip] is false.
+     * Without anything to write, or on failure, the empty document is deleted.
+     */
+    suspend fun saveTo(target: Uri, ids: List<String>, zip: Boolean): ExportResult = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val result = try {
+            val out = resolver.openOutputStream(target, "wt") ?: throw IOException("cannot open $target")
+            if (zip) {
+                exportZip(ids, out)
+            } else {
+                val id = ids.single()
+                if (exportCsv(id, out)) ExportResult(listOf(id), emptyList()) else ExportResult(emptyList(), listOf(id))
+            }
+        } catch (e: FlightExport.NothingToExport) {
+            ExportResult(emptyList(), e.missing)
+        } catch (e: IOException) {
+            Log.w(TAG, "cannot export to $target", e)
+            runCatching { DocumentsContract.deleteDocument(resolver, target) }
+            throw e
+        } catch (e: SecurityException) {
+            Log.w(TAG, "cannot export to $target", e)
+            throw IOException(e)
+        }
+        if (result.exported.isEmpty()) runCatching { DocumentsContract.deleteDocument(resolver, target) }
+        result
+    }
 
     /** Applies the storage cap ([FlightRetention]), I/O thread. */
     internal fun prune() {
