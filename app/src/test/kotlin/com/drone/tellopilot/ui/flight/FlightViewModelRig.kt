@@ -45,7 +45,7 @@ internal class FlightViewModelRig(
     val scope: TestScope,
     pilot: PilotSettings = linearPilot(),
     /** What the settings store answers for the start mode ([SettingsRepository.initialFastMode]). */
-    initialFastMode: Boolean = false,
+    initialFastMode: suspend () -> Boolean = { false },
 ) {
     val drone = FakeDrone()
     val controller = MutableStateFlow<TelloController?>(drone.controller)
@@ -70,7 +70,7 @@ internal class FlightViewModelRig(
 
     init {
         every { settingsRepo.settings } returns settings
-        coEvery { settingsRepo.initialFastMode() } returns initialFastMode
+        coEvery { settingsRepo.initialFastMode() } coAnswers { initialFastMode() }
         every { thermal.heat } returns flowOf(PhoneHeat.NORMAL)
         every { context.getString(any()) } returns "Hauteur de décollage"
         every { gamepad.status } returns padStatus

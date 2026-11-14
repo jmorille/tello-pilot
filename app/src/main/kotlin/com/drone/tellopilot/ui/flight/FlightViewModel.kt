@@ -48,6 +48,8 @@ sealed interface UserMessage {
     data class ModeRefused(val reason: ModeCheck) : UserMessage
     /** Refused by the drone itself. */
     data object DroneRefused : UserMessage
+    /** The drone refused the fast-mode max tilt angle (4184). */
+    data object MaxTiltRefused : UserMessage
     data class AutopilotEnded(val end: com.drone.tellopilot.tracking.AutopilotEnd) : UserMessage
     /** Automatic flight refused: the drone must be flying with a live link (and video for tracking). */
     data object AutopilotUnavailable : UserMessage
@@ -183,7 +185,8 @@ class FlightViewModel internal constructor(
         viewModelScope.launch { session.run() }
         viewModelScope.launch {
             // Start mode (normal unless the pilot chose to remember the last one). Never
-            // overrides a choice made meanwhile, nor the tripod mode (which excludes it).
+            // overrides a choice made meanwhile, nor the tripod mode (which excludes it), and
+            // never switches during an automatic flight or a smart video.
             val on = try {
                 settings.initialFastMode()
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -192,7 +195,8 @@ class FlightViewModel internal constructor(
                 android.util.Log.w("FlightViewModel", "start mode unavailable", e)
                 false
             }
-            if (on && !flightModeTouched && !tripod.value) {
+            val busy = autopilot.active || session.controller.value?.maneuvers?.value?.smartVideoActive == true
+            if (on && !flightModeTouched && !tripod.value && !busy) {
                 fastMode.value = true
                 remixSticks()
                 session.controller.value?.setFastMode(true)
@@ -288,7 +292,13 @@ class FlightViewModel internal constructor(
             }
         }
         viewModelScope.launch {
-            session.events.collect { if (it is DroneEvent.ManeuverRefused) _messages.trySend(UserMessage.DroneRefused) }
+            session.events.collect {
+                when (it) {
+                    is DroneEvent.ManeuverRefused -> _messages.trySend(UserMessage.DroneRefused)
+                    DroneEvent.MaxTiltRefused -> _messages.trySend(UserMessage.MaxTiltRefused)
+                    else -> Unit
+                }
+            }
         }
         viewModelScope.launch { vibrateOnAlerts() }
         viewModelScope.launch {
