@@ -80,6 +80,32 @@ class FlightSafetyMonitorTest {
         assertTrue(r.reports.none { it.impact != null })
     }
 
+    @Test
+    fun `the takeoff quiet time holds even when no IMU record came on the ground`() {
+        // The log stream may only start once airborne: the detector never saw a ground sample,
+        // the monitor's own flying edge must start the quiet time.
+        val r = Run(PilotSettings())
+        repeat(5) { r.feed(Telemetry(flight = flight(false))) }
+        repeat(30) { r.feed(Telemetry(flight = flight(true), imu = imu(80f))) } // 3 s of a wild takeoff
+        assertTrue(r.reports.none { it.impact != null })
+        repeat(15) { r.feed(Telemetry(flight = flight(true), imu = imu())) }
+        r.feed(Telemetry(flight = flight(true), imu = imu(80f)))
+        assertEquals(ImpactKind.TILT, r.feed(Telemetry(flight = flight(true), imu = imu(80f))).impact)
+    }
+
+    @Test
+    fun `turning the detection on in flight starts with a quiet second`() {
+        val monitor = FlightSafetyMonitor()
+        var now = 0L
+        fun feed(pilot: PilotSettings, rollDeg: Float) =
+            monitor.onTelemetry(Telemetry(flight = flight(now > 500), imu = imu(rollDeg)), pilot, false, now.also { now += 100 }).impact
+        repeat(80) { feed(PilotSettings(impactDetection = false), 0f) } // ground, then 7.5 s of flight
+        val on = PilotSettings(impactDetection = true)
+        repeat(9) { assertNull(feed(on, 80f), "at ${now} ms") }
+        assertNull(feed(on, 80f))
+        assertEquals(ImpactKind.TILT, feed(on, 80f))
+    }
+
     private fun odo(x: Float, y: Float, valid: Boolean = true) = LogRecord.VisualOdometry(x, y, 0f, valid)
 
     @Test

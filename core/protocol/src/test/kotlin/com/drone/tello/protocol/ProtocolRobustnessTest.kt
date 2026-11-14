@@ -126,7 +126,16 @@ class ProtocolRobustnessTest {
                 payload[2] = random.nextInt(12, 1200).toByte()
                 payload[3] = random.nextInt(0, 5).toByte()
             }
-            parser.feed(payload)
+            // Whatever gets through the plausibility checks is usable: finite, unit quaternion.
+            for (record in parser.feed(payload)) when (record) {
+                is LogRecord.Imu -> {
+                    val norm = listOf(record.qw, record.qx, record.qy, record.qz).sumOf { (it * it).toDouble() }
+                    val speeds = listOf(record.velocityNorth, record.velocityEast, record.velocityDown)
+                    assertTrue(norm in 0.81..1.21 && speeds.all { it.isFinite() && kotlin.math.abs(it) <= 30f }, "$record")
+                }
+                is LogRecord.VisualOdometry ->
+                    assertTrue(listOf(record.x, record.y, record.z).all { it.isFinite() }, "$record")
+            }
         }
     }
 

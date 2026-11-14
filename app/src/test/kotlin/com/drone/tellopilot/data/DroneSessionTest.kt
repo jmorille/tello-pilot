@@ -251,9 +251,13 @@ class DroneSessionTest {
         }
     }
 
-    /** Real sockets and threads: polls (virtual time advancing slowly) until [check] holds. */
+    /**
+     * Real sockets and threads: polls (virtual time advancing slowly) until [check] holds.
+     * Bounded by real time (10 s), not by a number of turns, for slow CI machines.
+     */
     private fun TestScope.eventually(what: String, check: () -> Boolean) {
-        repeat(400) {
+        val deadline = System.nanoTime() + 10_000_000_000
+        while (System.nanoTime() < deadline) {
             advanceTimeBy(20)
             runCurrent()
             if (check()) return

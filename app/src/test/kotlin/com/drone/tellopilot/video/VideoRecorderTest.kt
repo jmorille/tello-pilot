@@ -73,6 +73,18 @@ class VideoRecorderTest {
         withTimeout(5_000) { recorder.state.first(predicate) }
     }
 
+    /**
+     * Waits (bounded) until the writer thread has written [count] samples. A stop drops the
+     * frames still queued: stopping after a fixed sleep raced with a slow (loaded CI) writer.
+     */
+    private fun awaitSamples(count: Int) {
+        val deadline = System.nanoTime() + 5_000_000_000
+        while (samples.size < count) {
+            check(System.nanoTime() < deadline) { "only ${samples.size} of $count samples written" }
+            Thread.sleep(2)
+        }
+    }
+
     private fun awaitIdleOrDone(): RecordingState = awaitState { it is RecordingState.Saved || it is RecordingState.Failed || it == RecordingState.Idle }
 
     @Test
@@ -87,7 +99,7 @@ class VideoRecorderTest {
         assertTrue(recording.startedAtMs >= before)
         recorder.onFrame(slice)
         recorder.onFrame(slice)
-        Thread.sleep(300)
+        awaitSamples(3)
         recorder.stop()
         assertEquals(RecordingState.Saved(uri), awaitState { it is RecordingState.Saved })
         assertFalse(recorder.isActive)
@@ -158,11 +170,12 @@ class VideoRecorderTest {
         recorder.onFrame(keyFrame)
         awaitState { it is RecordingState.Recording }
         recorder.onFrame(slice)
-        Thread.sleep(700) // no frame at all: the writer just waits
+        awaitSamples(2)
+        Thread.sleep(450) // no frame at all, more than two empty polls (200 ms): the writer just waits
         assertTrue(recorder.state.value is RecordingState.Recording)
         recorder.onFrame(keyFrame)
         recorder.onFrame(slice)
-        Thread.sleep(300)
+        awaitSamples(4)
         recorder.stop()
         awaitState { it is RecordingState.Saved }
         assertEquals(4, samples.size)

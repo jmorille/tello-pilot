@@ -75,6 +75,35 @@ class ImpactDetectorTest {
     }
 
     @Test
+    fun `a hit on the east or the vertical axis is a shock too`() {
+        // The north-only cases above leave the east and down terms of the velocity change unchecked.
+        val east = Flight()
+        listOf(0.5f, 1f).forEach { east.feed(S(ve = it, roll = 10f)) }
+        repeat(10) { east.feed(S(ve = 1.5f, roll = 10f)) }
+        assertNull(east.feed(S(ve = 0.2f)))
+        assertEquals(ImpactKind.SHOCK, east.feed(S(ve = 0f)))
+        // Descending at 1.5 m/s onto an obstacle.
+        val down = Flight()
+        listOf(0.5f, 1f).forEach { down.feed(S(vd = it)) }
+        repeat(10) { down.feed(S(vd = 1.5f)) }
+        assertNull(down.feed(S(vd = 0.2f)))
+        assertEquals(ImpactKind.SHOCK, down.feed(S(vd = 0f)))
+    }
+
+    @Test
+    fun `a steady climb, descent or diagonal cruise raises nothing`() {
+        val f = Flight()
+        listOf(-0.5f, -1f, -1.5f).forEach { f.feed(S(vd = it)) }
+        repeat(30) { f.feed(S(vd = -1.5f)) } // climbing
+        listOf(-1f, -0.5f, 0f, 0.5f, 1f).forEach { f.feed(S(vd = it)) }
+        repeat(30) { f.feed(S(vd = 1f)) } // descending
+        listOf(0.5f, 0f).forEach { f.feed(S(vd = it)) }
+        listOf(0.5f, 1f, 1.5f).forEach { f.feed(S(vn = it, ve = it, pitch = -15f, roll = 15f)) }
+        repeat(30) { f.feed(S(vn = 1.5f, ve = 1.5f, pitch = -15f, roll = 15f)) }
+        assertEquals(emptyList<ImpactKind>(), f.detected)
+    }
+
+    @Test
     fun `a single corrupt velocity sample is not a shock`() {
         val f = Flight()
         repeat(5) { f.feed(S(vn = 0.5f)) }
@@ -116,6 +145,36 @@ class ImpactDetectorTest {
         listOf(179f, 179f, -179f, -178f, 180f).forEachIndexed { i, roll ->
             assertNull(d.onSample(5_000L + i * 100, 0f, 0f, 0f, roll, 0f, flying = true, maneuver = false))
         }
+    }
+
+    @Test
+    fun `roll wraps around 180 degrees the other way too`() {
+        val d = ImpactDetector(ImpactConfig(maxTiltDeg = 200f)) // only the jump rule
+        d.onSample(0, 0f, 0f, 0f, 0f, 0f, flying = false, maneuver = false)
+        listOf(-179f, -179f, 179f, 178f, -180f, 179f).forEachIndexed { i, roll ->
+            assertNull(d.onSample(5_000L + i * 100, 0f, 0f, 0f, roll, 0f, flying = true, maneuver = false))
+        }
+    }
+
+    @Test
+    fun `a non finite sample is skipped and detection goes on`() {
+        val f = Flight()
+        // Between two tilted samples: if a non finite one were evaluated it would read as calm and
+        // reset the tilt count, and the second tilted sample would not confirm the tilt.
+        assertNull(f.feed(S(roll = 60f)))
+        assertNull(f.feed(S(roll = Float.NaN)))
+        assertNull(f.feed(S(vn = Float.POSITIVE_INFINITY)))
+        assertEquals(ImpactKind.TILT, f.feed(S(roll = 60f)))
+    }
+
+    @Test
+    fun `a suppression forgets what came before it`() {
+        val f = Flight()
+        assertNull(f.feed(S(roll = 60f))) // first tilted sample
+        f.detector.suppress(f.now, 500)
+        f.now += 500 // no sample during the quiet time (a calm one would reset the count anyway)
+        assertNull(f.feed(S(roll = 60f)), "the tilt count restarts after the quiet time")
+        assertEquals(ImpactKind.TILT, f.feed(S(roll = 60f)))
     }
 
     @Test

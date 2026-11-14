@@ -72,6 +72,83 @@ class DroneLogTest {
         assertEquals(30f, Attitude.fromQuaternion(c, 0f, s, 0f).pitchDeg, 0.01f)
     }
 
+    /**
+     * A combined attitude (Z-Y-X: yaw 40°, then pitch -25°, then roll 15°): the single-axis
+     * cases above leave every cross term (y·z, z·x, x·y) at zero, so a sign error there went
+     * unnoticed. The tilt detection reads roll and pitch from here.
+     */
+    @Test
+    fun `combined rotation gives back its roll, pitch and yaw`() {
+        fun quaternion(rollDeg: Double, pitchDeg: Double, yawDeg: Double): FloatArray {
+            val (cr, sr) = Math.cos(Math.toRadians(rollDeg / 2)) to Math.sin(Math.toRadians(rollDeg / 2))
+            val (cp, sp) = Math.cos(Math.toRadians(pitchDeg / 2)) to Math.sin(Math.toRadians(pitchDeg / 2))
+            val (cy, sy) = Math.cos(Math.toRadians(yawDeg / 2)) to Math.sin(Math.toRadians(yawDeg / 2))
+            return floatArrayOf(
+                (cr * cp * cy + sr * sp * sy).toFloat(),
+                (sr * cp * cy - cr * sp * sy).toFloat(),
+                (cr * sp * cy + sr * cp * sy).toFloat(),
+                (cr * cp * sy - sr * sp * cy).toFloat(),
+            )
+        }
+        for ((roll, pitch, yaw) in listOf(Triple(15.0, -25.0, 40.0), Triple(-60.0, 35.0, -150.0))) {
+            val (w, x, y, z) = quaternion(roll, pitch, yaw)
+            val a = Attitude.fromQuaternion(w, x, y, z)
+            assertEquals(roll.toFloat(), a.rollDeg, 0.01f, "roll of $roll/$pitch/$yaw")
+            assertEquals(pitch.toFloat(), a.pitchDeg, 0.01f, "pitch of $roll/$pitch/$yaw")
+            assertEquals(yaw.toFloat(), a.yawDeg, 0.01f, "yaw of $roll/$pitch/$yaw")
+        }
+    }
+
+    /**
+     * Hybrid records (a lost packet in the middle of a split record) are rejected rather than
+     * turned into a false attitude (tilt alarm) or a false position (geofence).
+     */
+    @Test
+    fun `implausible imu and odometry records are rejected`() {
+        fun imu(data: ByteArray) = DroneLogParser().feed(byteArrayOf(0) + record(DroneLogParser.TYPE_IMU, 0x31, data))
+        fun withSpeed(offset: Int, value: Float) = imuData(1f, 0f, 0f, 0f).also {
+            ByteBuffer.wrap(it).order(ByteOrder.LITTLE_ENDIAN).putFloat(offset, value)
+        }
+        // |q| = 1 ± 10 %: |q|² from 0.81 to 1.21.
+        assertEquals(1, imu(imuData(0.91f, 0f, 0f, 0f)).size, "|q| 0.91")
+        assertEquals(1, imu(imuData(1.09f, 0f, 0f, 0f)).size, "|q| 1.09")
+        assertTrue(imu(imuData(0.89f, 0f, 0f, 0f)).isEmpty(), "|q| 0.89")
+        assertTrue(imu(imuData(1.11f, 0f, 0f, 0f)).isEmpty(), "|q| 1.11")
+        assertTrue(imu(imuData(0f, 0f, 0f, 0f)).isEmpty(), "null quaternion")
+        assertTrue(imu(imuData(Float.NaN, 0f, 0f, 0f)).isEmpty(), "NaN quaternion")
+        // Speeds up to 30 m/s, on each axis.
+        for (offset in listOf(76, 80, 84)) {
+            assertEquals(1, imu(withSpeed(offset, -30f)).size, "30 m/s at $offset")
+            assertTrue(imu(withSpeed(offset, 30.5f)).isEmpty(), "30.5 m/s at $offset")
+            assertTrue(imu(withSpeed(offset, Float.POSITIVE_INFINITY)).isEmpty(), "infinite speed at $offset")
+        }
+        // Positions within 500 m, on each axis.
+        fun mvo(x: Float, y: Float, z: Float) =
+            DroneLogParser().feed(byteArrayOf(0) + record(DroneLogParser.TYPE_MVO, 0x44, mvoData(x, y, z, true)))
+        assertEquals(1, mvo(500f, -500f, 500f).size)
+        assertTrue(mvo(500.5f, 0f, 0f).isEmpty())
+        assertTrue(mvo(0f, -500.5f, 0f).isEmpty())
+        assertTrue(mvo(0f, 0f, Float.NaN).isEmpty())
+    }
+
+    @Test
+    fun `record sizes - shortest imu and odometry records, length field bounds`() {
+        // 88 bytes is the shortest IMU record, 77 the shortest odometry one.
+        assertEquals(1, DroneLogParser().feed(byteArrayOf(0) + record(DroneLogParser.TYPE_IMU, 2, imuData(1f, 0f, 0f, 0f, null))).size)
+        assertTrue(DroneLogParser().feed(byteArrayOf(0) + record(DroneLogParser.TYPE_IMU, 2, imuData(1f, 0f, 0f, 0f, null).copyOf(87))).isEmpty())
+        assertEquals(1, DroneLogParser().feed(byteArrayOf(0) + record(DroneLogParser.TYPE_MVO, 2, mvoData(1f, 1f, 0f, true).copyOf(77))).size)
+        assertTrue(DroneLogParser().feed(byteArrayOf(0) + record(DroneLogParser.TYPE_MVO, 2, mvoData(1f, 1f, 0f, true).copyOf(76))).isEmpty())
+        // The temperature needs its two bytes at offset 106.
+        val temperature = imuData(1f, 0f, 0f, 0f, 2000)
+        assertEquals(20f, (DroneLogParser().feed(byteArrayOf(0) + record(DroneLogParser.TYPE_IMU, 2, temperature.copyOf(108))).single() as LogRecord.Imu).temperatureC)
+        assertNull((DroneLogParser().feed(byteArrayOf(0) + record(DroneLogParser.TYPE_IMU, 2, temperature.copyOf(107))).single() as LogRecord.Imu).temperatureC)
+        // A 1024-byte record (the largest) decodes; a length field of 1025 is not a record start.
+        val largest = imuData(1f, 0f, 0f, 0f, null).copyOf(1024 - DroneLogParser.HEADER - DroneLogParser.CRC16)
+        assertEquals(1, DroneLogParser().feed(byteArrayOf(0) + record(DroneLogParser.TYPE_IMU, 2, largest)).size)
+        val tooLong = imuData(1f, 0f, 0f, 0f, null).copyOf(1025 - DroneLogParser.HEADER - DroneLogParser.CRC16)
+        assertTrue(DroneLogParser().feed(byteArrayOf(0) + record(DroneLogParser.TYPE_IMU, 2, tooLong)).isEmpty())
+    }
+
     @Test
     fun `visual odometry record`() {
         val payload = byteArrayOf(0) + record(DroneLogParser.TYPE_MVO, 0x7F, mvoData(1.25f, -2f, 0.8f, true))

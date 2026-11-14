@@ -35,3 +35,6 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
 }
+
+// On-demand mutation testing: `./gradlew :core:control:pitest` (see gradle/pitest.gradle.kts).
+apply(from = rootProject.file("gradle/pitest.gradle.kts"))

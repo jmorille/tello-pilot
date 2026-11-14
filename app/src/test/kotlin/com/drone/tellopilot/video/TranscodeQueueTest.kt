@@ -270,7 +270,12 @@ class TranscodeQueueTest {
         store.activeId = null // the flight file is closed
         scope.advanceTimeBy(600)
         // The flight list is read on the I/O pool (real threads).
-        repeat(200) { if (exports.isEmpty()) { Thread.sleep(10); scope.advanceTimeBy(10) } }
+        // Bounded by real time, not by a number of turns: a loaded CI machine may need more than 2 s.
+        val deadline = System.nanoTime() + 10_000_000_000
+        while (exports.isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(10)
+            scope.advanceTimeBy(10)
+        }
         assertEquals(1, exports.size)
     }
 
