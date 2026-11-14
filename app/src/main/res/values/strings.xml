@@ -88,7 +88,7 @@
     <string name="axis_presets">Préréglages (mode affiché)</string>
     <string name="axis_preset_cinema">Doux (cinéma)</string>
     <string name="axis_preset_standard">Standard</string>
-    <string name="axis_preset_official">Réactif (officielle)</string>
+    <string name="axis_preset_official">Officiel (app Tello)</string>
     <string name="axis_preset_pitch_boost">Tangage renforcé</string>
     <string name="axis_preset_sport">Sport</string>
     <string name="axis_reset_mode">Réinitialiser ce mode</string>
