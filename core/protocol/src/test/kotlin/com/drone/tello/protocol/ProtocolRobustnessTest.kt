@@ -126,7 +126,14 @@ class ProtocolRobustnessTest {
                 payload[2] = random.nextInt(12, 1200).toByte()
                 payload[3] = random.nextInt(0, 5).toByte()
             }
-            parser.feed(payload)
+            // Whatever gets through the plausibility checks is usable: finite, unit quaternion.
+            for (record in parser.feed(payload)) when (record) {
+                is LogRecord.Imu -> {
+                    val norm = record.qw * record.qw + record.qx * record.qx + record.qy * record.qy + record.qz * record.qz
+                    assertTrue(norm in 0.8f..1.22f && record.velocityNorth.isFinite(), "$record")
+                }
+                is LogRecord.VisualOdometry -> assertTrue(record.x.isFinite() && record.y.isFinite(), "$record")
+            }
         }
     }
 

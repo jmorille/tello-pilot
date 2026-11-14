@@ -63,6 +63,41 @@ class TelemetryTest {
         assertEquals(0, FlightData.parse(p)!!.throwCountdown)
     }
 
+    /**
+     * Each status bit maps to its own flag and to no other: `flying` and `onGround` drive the
+     * landing confirmation and the safety checks, a shifted bit or a constant flag must fail here
+     * (the payload above only ever has `flying` set).
+     */
+    @Test
+    fun `each state and sensor bit sets exactly its own flag`() {
+        val stateFlags = listOf<Pair<String, (FlightData) -> Boolean>>(
+            "flying" to { it.flying }, "onGround" to { it.onGround }, "motorsOn" to { it.motorsOn },
+            "hovering" to { it.hovering }, "droneRecording" to { it.droneRecording },
+            "batteryLow" to { it.batteryLow }, "batteryCritical" to { it.batteryCritical },
+        )
+        for ((bit, flag) in stateFlags.withIndex()) {
+            val p = ByteArray(FlightData.MIN_SIZE).also { it[17] = (1 shl bit).toByte() }
+            val data = FlightData.parse(p)!!
+            stateFlags.forEachIndexed { i, (name, get) -> assertEquals(i == bit, get(data), "byte 17 bit $bit: $name") }
+        }
+        val sensorFlags = mapOf<Int, Pair<String, (FlightData) -> Boolean>>(
+            0 to ("imuError" to { it.imuError }), 1 to ("barometerError" to { it.barometerError }),
+            2 to ("visionSensorError" to { it.visionSensorError }), 4 to ("batteryError" to { it.batteryError }),
+            5 to ("gravityCalibrationNeeded" to { it.gravityCalibrationNeeded }), 7 to ("windWarning" to { it.windWarning }),
+        )
+        for (bit in 0..7) {
+            val data = FlightData.parse(ByteArray(FlightData.MIN_SIZE).also { it[10] = (1 shl bit).toByte() })!!
+            sensorFlags.forEach { (b, named) -> assertEquals(b == bit, named.second(data), "byte 10 bit $bit: ${named.first}") }
+        }
+        // On the ground after a landing: nothing set but onGround, and no landing fly mode.
+        val ground = FlightData.parse(ByteArray(FlightData.MIN_SIZE).also { it[17] = 0b0000_0010; it[18] = 6 })!!
+        assertFalse(ground.flying)
+        assertTrue(ground.onGround)
+        assertFalse(ground.isLanding)
+        assertFalse(ground.positioningUnavailable)
+        assertTrue(FlightData.parse(ByteArray(FlightData.MIN_SIZE).also { it[18] = 1 })!!.positioningUnavailable)
+    }
+
     @Test
     fun `short flight data from older firmware is accepted`() {
         val data = FlightData.parse(flightPayload().copyOf(21))!!
