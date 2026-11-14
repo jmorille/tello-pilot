@@ -1,8 +1,19 @@
 name: Release
 
+# Publishes a signed release for each vMAJOR.MINOR.PATCH[-suffix] tag (a suffix => prerelease).
+# workflow_dispatch runs the same pipeline as a DRY RUN: built, signed and verified with EPHEMERAL
+# keys generated on the fly (no production secret is ever used), and nothing is published.
+# The signing secrets live in the "release" environment, whose deployments are restricted to v* tags:
+# GitHub only hands them to tag runs. The dry run references no environment (see jobs.release.environment).
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Dry run: version to simulate (MAJOR.MINOR.PATCH[-suffix]); empty = next patch after the highest tag, suffixed -dryrun. Nothing is published.'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -20,27 +31,132 @@ jobs:
   release:
     name: Signed release APK
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 40
+    # Real release (tag push) only: the "release" environment (v* tags only) holds the signing secrets.
+    # The dry run (workflow_dispatch from any branch) gets an empty name, i.e. no environment: it is
+    # not blocked by the tag-only policy and receives no environment secret.
+    environment: ${{ github.event_name == 'push' && 'release' || '' }}
+    # Artifact attestations (actions/attest-build-provenance) are not offered here: for private
+    # repositories they require GitHub Enterprise Cloud (README of actions/attest-build-provenance).
+    # Without them, no id-token/attestations permission is granted to the build.
     permissions:
       contents: write     # create the GitHub Release
-      id-token: write     # artifact attestation (only when enabled, see below)
-      attestations: write
+      actions: read       # read the CI status of the tagged commit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0          # tags + history: versionCode check and release notes
+          persist-credentials: false
 
-      - name: Compute version from tag
+      - name: Compute version
         id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-          if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Tag $tag is not vMAJOR.MINOR.PATCH[-suffix]"; exit 1
+          set -euo pipefail
+          # Bounded digit counts: no 64-bit overflow can slip past the bounds below.
+          semver='^([0-9]{1,4})\.([0-9]{1,3})\.([0-9]{1,3})(-[0-9A-Za-z.-]+)?$'
+          vcode() {  # MAJOR MINOR PATCH -> versionCode (base 10, bounded)
+            (( 10#$2 < 1000 && 10#$3 < 1000 )) || return 1
+            echo $(( 10#$1 * 1000000 + 10#$2 * 1000 + 10#$3 ))
+          }
+          if [[ "$EVENT" == "push" ]]; then
+            tag="$GITHUB_REF_NAME"; dry_run=false
+          else
+            dry_run=true; version="$INPUT_VERSION"
+            if [[ -z "$version" ]]; then
+              # Next patch after the highest tag (final or prerelease); 0.0.1 in a repository without tags.
+              max=0
+              while read -r t; do
+                [[ "${t#v}" =~ $semver ]] || continue
+                c=$(vcode "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}") || continue
+                (( c > max )) && max=$c
+              done < <(git tag -l 'v*')
+              ma=$(( max / 1000000 )); mi=$(( max / 1000 % 1000 )); pa=$(( max % 1000 + 1 ))
+              (( pa < 1000 )) || { mi=$(( mi + 1 )); pa=0; }
+              version="${ma}.${mi}.${pa}-dryrun"
+            fi
+            tag="v${version}"
           fi
-          code=$(( BASH_REMATCH[1] * 1000000 + BASH_REMATCH[2] * 1000 + BASH_REMATCH[3] ))
+          version="${tag#v}"
+          if [[ ! "$version" =~ $semver ]]; then
+            echo "::error::$tag is not vMAJOR.MINOR.PATCH[-suffix]"; exit 1
+          fi
+          if ! code=$(vcode "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"); then
+            echo "::error::$tag: MINOR and PATCH must be < 1000"; exit 1
+          fi
+          if (( code > 2100000000 )); then
+            echo "::error::$tag: versionCode $code exceeds the Android maximum 2100000000"; exit 1
+          fi
           (( code > 0 )) || code=1
           prerelease=false; [[ -n "${BASH_REMATCH[4]}" ]] && prerelease=true
-          { echo "tag=$tag"; echo "name=$version"; echo "code=$code"; echo "prerelease=$prerelease"; } >> "$GITHUB_OUTPUT"
-          echo "versionName=$version versionCode=$code prerelease=$prerelease"
+          { echo "tag=$tag"; echo "name=$version"; echo "code=$code"
+            echo "prerelease=$prerelease"; echo "dry_run=$dry_run"; } >> "$GITHUB_OUTPUT"
+          echo "versionName=$version versionCode=$code prerelease=$prerelease dry_run=$dry_run"
+
+      - name: Check that versionCode increases
+        # Android refuses downgrades. Compared with FINAL releases only (an unreleased rc never
+        # blocks a final): a final must be above the latest final, a prerelease (which shares the
+        # versionCode of its final release) at least equal to it.
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          CODE: ${{ steps.version.outputs.code }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          max_final=0; final_tag=-
+          while read -r t; do
+            [[ "$t" == "$TAG" ]] && continue
+            [[ "${t#v}" =~ ^([0-9]{1,4})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || continue
+            (( 10#${BASH_REMATCH[2]} < 1000 && 10#${BASH_REMATCH[3]} < 1000 )) || continue
+            c=$(( 10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]} ))
+            (( c > max_final )) && { max_final=$c; final_tag=$t; }
+          done < <(git tag -l 'v*')
+          echo "versionCode $CODE (prerelease=$PRERELEASE); latest final $final_tag ($max_final)"
+          if [[ "$PRERELEASE" == "false" ]] && (( CODE <= max_final )); then
+            echo "::error::versionCode $CODE does not increase (final release $final_tag has $max_final)"; exit 1
+          fi
+          if [[ "$PRERELEASE" == "true" ]] && (( CODE < max_final )); then
+            echo "::error::prerelease versionCode $CODE is below final release $final_tag ($max_final)"; exit 1
+          fi
+
+      - name: CI status of this commit
+        # Unit tests and lint already ran in CI (ci.yml) on this exact commit: don't run them twice.
+        # Only the MOST RECENT ci.yml run (push/dispatch, this repo, this SHA) counts, and only the
+        # conclusion of its "Build, test & lint" job (the coverage badge job is irrelevant here):
+        #   success => tests skipped here; failure => release refused;
+        #   anything else (no run, still running, cancelled) => tests run in this job.
+        # Tag once CI is green on main to get the fast path.
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          CI_JOB: 'Build, test & lint'
+        run: |
+          set -euo pipefail
+          run_tests() { echo "::notice::$1: unit tests run in this job (tag once CI is green to skip them)"
+                        echo "run_tests=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          latest=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=100" \
+            --jq '[.workflow_runs[]
+                   | select(.event == "push" or .event == "workflow_dispatch")
+                   | select(.head_repository.full_name == env.REPO and .path == ".github/workflows/ci.yml")]
+                  | sort_by(.created_at) | last // empty
+                  | "\(.id) \(.status) \(.html_url)"') || run_tests "CI status unavailable"
+          [[ -n "$latest" ]] || run_tests "No CI run for $SHA"
+          read -r id status url <<<"$latest"
+          [[ "$status" == "completed" ]] || run_tests "Latest CI run $url is $status"
+          concl=$(gh api "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" \
+            --jq '[.jobs[] | select(.name == env.CI_JOB)][0].conclusion // "missing"') \
+            || run_tests "CI jobs of $url unavailable"
+          case "$concl" in
+            success) echo "Job '$CI_JOB' green in the latest CI run on $SHA: $url -> unit tests not re-run"
+                     echo "run_tests=false" >> "$GITHUB_OUTPUT" ;;
+            failure) echo "::error::Job '$CI_JOB' failed in the latest CI run on $SHA ($url): fix it before releasing"
+                     exit 1 ;;
+            *)       run_tests "Job '$CI_JOB' of $url is '$concl'" ;;
+          esac
 
       - name: Set up JDK 17
         uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
@@ -49,65 +165,117 @@ jobs:
           java-version: '17'
 
       - name: Set up Gradle
+        # Dependencies/wrapper/transforms come from the cache written by CI on main; never written here.
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           cache-read-only: true
 
       - name: Restore release keystore
+        if: steps.version.outputs.dry_run == 'false'
         env:
           KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: |
           umask 077
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
 
-      - name: Test and build signed release APK
+      - name: Generate ephemeral keystore (dry run)
+        # Throw-away PKCS12 key: the dry run never touches the production signing secrets.
+        if: steps.version.outputs.dry_run == 'true'
+        id: ephemeral
+        run: |
+          set -euo pipefail
+          pass=$(openssl rand -hex 24)
+          echo "::add-mask::$pass"
+          umask 077
+          keytool -genkeypair -storetype PKCS12 -keystore "$RUNNER_TEMP/release.p12" \
+            -alias dryrun -keyalg RSA -keysize 3072 -validity 2 -dname 'CN=Tello Pilot dry run' \
+            -storepass "$pass" -keypass "$pass" -noprompt
+          echo "pass=$pass" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed release APK
+        # --no-build-cache: the signed APK is compiled from source, never from cached task outputs
+        # (CI only builds the debug variant, so the cache would hardly help: R8 dominates).
+        # assembleRelease always runs lintVitalRelease (fatal lint checks on the release variant),
+        # in parallel with the build. Unit tests are added only when CI is not green on this commit.
         env:
           TELLO_KEYSTORE_FILE: ${{ runner.temp }}/release.p12
-          TELLO_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-          TELLO_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          TELLO_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          TELLO_KEYSTORE_PASSWORD: ${{ steps.version.outputs.dry_run == 'false' && secrets.RELEASE_KEYSTORE_PASSWORD || steps.ephemeral.outputs.pass }}
+          TELLO_KEY_ALIAS: ${{ steps.version.outputs.dry_run == 'false' && secrets.RELEASE_KEY_ALIAS || 'dryrun' }}
+          TELLO_KEY_PASSWORD: ${{ steps.version.outputs.dry_run == 'false' && secrets.RELEASE_KEY_PASSWORD || steps.ephemeral.outputs.pass }}
           TELLO_VERSION_CODE: ${{ steps.version.outputs.code }}
           TELLO_VERSION_NAME: ${{ steps.version.outputs.name }}
-        run: ./gradlew --no-build-cache --no-configuration-cache test :app:assembleRelease --stacktrace
+          RUN_TESTS: ${{ steps.ci.outputs.run_tests }}
+        run: |
+          tasks=(:app:assembleRelease)
+          [[ "$RUN_TESTS" == "true" ]] && tasks=(test "${tasks[@]}")
+          ./gradlew --no-build-cache --no-configuration-cache "${tasks[@]}" --stacktrace
 
       - name: Remove keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/release.p12"
 
-      - name: Collect APK, verify APK signature, compute checksums
+      - name: Collect APK, verify signature and version, compute checksums
         id: dist
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          CODE: ${{ steps.version.outputs.code }}
+          NAME: ${{ steps.version.outputs.name }}
+          DRY_RUN: ${{ steps.version.outputs.dry_run }}
+          MAPPING_IN_RELEASE: ${{ vars.MAPPING_IN_RELEASE }}
         run: |
           set -euo pipefail
-          mkdir dist
+          mkdir dist mapping
           apk="tello-pilot-${TAG}.apk"
-          src=$(ls app/build/outputs/apk/release/*.apk | grep -v unsigned | head -1)
+          map="tello-pilot-${TAG}-mapping.txt"
+          src=$(ls app/build/outputs/apk/release/*.apk | grep -v unsigned | awk 'NR==1')
           cp "$src" "dist/$apk"
-          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner
-          "$apksigner" verify --verbose --print-certs "dist/$apk" | tee apksigner.txt
-          expected=$(tr -d '[:space:]' < .github/release-signing/apk-signing-cert.sha256)
-          actual=$(grep -m1 'certificate SHA-256 digest' apksigner.txt | awk '{print $NF}')
-          if [[ "$actual" != "$expected" ]]; then
-            echo "::error::APK signed with unexpected certificate ($actual, expected $expected)"; exit 1
+          cp app/build/outputs/mapping/release/mapping.txt "mapping/$map"
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | awk 'END{print}')
+          # 1. Signature valid; in a real release, made with the expected certificate (public fingerprint).
+          "${bt}apksigner" verify --verbose --print-certs "dist/$apk" > apksigner.txt
+          cat apksigner.txt
+          actual=$(awk '/certificate SHA-256 digest/{print $NF; exit}' apksigner.txt)
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::Dry run: APK signed with an ephemeral key ($actual), certificate pinning skipped"
+          else
+            expected=$(tr -d '[:space:]' < .github/release-signing/apk-signing-cert.sha256)
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error::APK signed with unexpected certificate ($actual, expected $expected)"; exit 1
+            fi
           fi
-          (cd dist && sha256sum "$apk" > SHA256SUMS && cat SHA256SUMS)
-          echo "apk=$apk" >> "$GITHUB_OUTPUT"
-          echo "cert=$actual" >> "$GITHUB_OUTPUT"
+          # 2. Package and version baked into the APK match the tag.
+          "${bt}aapt2" dump badging "dist/$apk" > badging.txt
+          badging=$(awk 'NR==1' badging.txt)
+          echo "$badging"
+          want="package: name='com.drone.tellopilot' versionCode='${CODE}' versionName='${NAME}'"
+          if [[ "$badging" != "$want"* ]]; then
+            echo "::error::APK manifest does not match the tag (expected: $want)"; exit 1
+          fi
+          # 3. Checksums (signed below). The mapping is covered when it is attached to the release.
+          files=("$apk")
+          if [[ "$MAPPING_IN_RELEASE" == "true" ]]; then cp "mapping/$map" dist/; files+=("$map"); fi
+          (cd dist && sha256sum "${files[@]}" > SHA256SUMS && cat SHA256SUMS)
+          { echo "apk=$apk"; echo "mapping=$map"; echo "cert=$actual"
+            echo "mapping_in_release=${MAPPING_IN_RELEASE:-false}"; } >> "$GITHUB_OUTPUT"
 
       - name: Post-quantum signatures (ML-DSA-65, FIPS 204)
+        # Real release: production key, checked against the committed public key.
+        # Dry run: an ephemeral ML-DSA-65 key generated in the container (no secret).
         env:
-          PQ_SIGNING_KEY: ${{ secrets.PQ_SIGNING_KEY }}
+          PQ_SIGNING_KEY: ${{ steps.version.outputs.dry_run == 'false' && secrets.PQ_SIGNING_KEY || '' }}
+          DRY_RUN: ${{ steps.version.outputs.dry_run }}
           APK: ${{ steps.dist.outputs.apk }}
         run: |
           set -euo pipefail
           keydir=$(mktemp -d "$RUNNER_TEMP/pq.XXXXXX")
-          (umask 077; printf '%s\n' "$PQ_SIGNING_KEY" > "$keydir/key.pem")
           trap 'rm -rf "$keydir"' EXIT
+          if [[ "$DRY_RUN" == "false" ]]; then
+            (umask 077; printf '%s\n' "$PQ_SIGNING_KEY" > "$keydir/key.pem")
+          fi
           docker run --rm \
-            -v "$PWD/dist:/dist" -v "$keydir:/key:ro" \
+            -v "$PWD/dist:/dist" -v "$keydir:/key" \
             -v "$PWD/.github/release-signing:/pub:ro" \
-            -e APK="$APK" "$PQ_IMAGE" sh -euc '
+            -e APK="$APK" -e DRY_RUN="$DRY_RUN" "$PQ_IMAGE" sh -euc '
               apk add --no-cache openssl >/dev/null
               openssl version
               ver=$(openssl version | cut -d" " -f2)
@@ -115,53 +283,123 @@ jobs:
               if [ "$major" -lt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -lt 5 ]; }; then
                 echo "OpenSSL >= 3.5 required, got $ver" >&2; exit 1
               fi
-              # The secret key must match the committed public key.
-              openssl pkey -in /key/key.pem -pubout -out /tmp/derived.pub.pem
-              cmp /tmp/derived.pub.pem /pub/ml-dsa-65.pub.pem
+              if [ "$DRY_RUN" = true ]; then
+                (umask 077; openssl genpkey -algorithm ML-DSA-65 -out /key/key.pem)
+                openssl pkey -in /key/key.pem -pubout -out /dist/ml-dsa-65.pub.pem
+              else
+                # The secret key must match the committed public key.
+                openssl pkey -in /key/key.pem -pubout -out /tmp/derived.pub.pem
+                cmp /tmp/derived.pub.pem /pub/ml-dsa-65.pub.pem
+                cp /pub/ml-dsa-65.pub.pem /dist/
+              fi
               cd /dist
               for f in "$APK" SHA256SUMS; do
                 openssl pkeyutl -sign -inkey /key/key.pem -rawin -in "$f" -out "$f.sig"
-                openssl pkeyutl -verify -pubin -inkey /pub/ml-dsa-65.pub.pem -rawin -in "$f" -sigfile "$f.sig"
+                openssl pkeyutl -verify -pubin -inkey /dist/ml-dsa-65.pub.pem -rawin -in "$f" -sigfile "$f.sig"
               done
               chmod 644 /dist/*'
-          cp .github/release-signing/ml-dsa-65.pub.pem dist/
           ls -l dist
 
-      - name: Artifact attestation (build provenance)
-        # Artifact attestations are not available for private repositories on GitHub Free/Pro/Team
-        # (GitHub Enterprise Cloud only). Set repository variable ATTESTATIONS_ENABLED=true when available.
-        if: vars.ATTESTATIONS_ENABLED == 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      - name: Release notes
+        # Commits since the previous tag (previous final release for a final release, previous tag
+        # of any kind for a prerelease), grouped by kind, followed by the verification instructions.
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          CODE: ${{ steps.version.outputs.code }}
+          APK: ${{ steps.dist.outputs.apk }}
+          MAPPING: ${{ steps.dist.outputs.mapping }}
+          MAPPING_IN_RELEASE: ${{ steps.dist.outputs.mapping_in_release }}
+          CERT: ${{ steps.dist.outputs.cert }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          match=(--match 'v*' --exclude "$TAG")
+          [[ "$PRERELEASE" == "false" ]] && match+=(--exclude 'v*-*')
+          prev=$(git describe --tags --abbrev=0 "${match[@]}" HEAD 2>/dev/null || true)
+          range=${prev:+$prev..}HEAD
+          declare -A sec=()
+          while IFS= read -r line; do
+            subject=${line#* }; lc=${subject,,}
+            if   [[ "$lc" =~ ^bump\ |^(build|chore)\(deps ]];                 then k=deps
+            elif [[ "$lc" =~ ^(ci|build|chore|docs|test|refactor)(\(|:)|^ci\ |codeql|dependabot|workflow ]]; then k=tooling
+            elif [[ "$lc" =~ (^|[^a-z])(fix(es|ed)?|bugs?|crash(es)?|regression)([^a-z]|$) ]]; then k=fix
+            else k=feat; fi
+            # No accidental @mentions: @name is rendered as code.
+            subject=$(sed -E 's/`/'"'"'/g; s/@([A-Za-z0-9_-]+)/`@\1`/g' <<<"$subject")
+            sec[$k]+="- ${subject} (${line%% *})"$'\n'
+          done < <(git log --no-merges --format='%h %s' -n 300 "$range")
+          {
+            echo "Tello Pilot ${TAG} (versionCode ${CODE})."
+            echo
+            [[ -n "$prev" ]] && echo "Changements depuis ${prev} ([comparaison](${SERVER}/${REPO}/compare/${prev}...${TAG}))."
+            for k in feat fix deps tooling; do
+              [[ -n "${sec[$k]:-}" ]] || continue
+              case $k in
+                feat) echo; echo "### Nouveautés et améliorations" ;;
+                fix) echo; echo "### Corrections" ;;
+                deps) echo; echo "### Dépendances" ;;
+                tooling) echo; echo "### Outillage et CI" ;;
+              esac
+              printf '%s' "${sec[$k]}"
+            done
+            echo
+            echo "### Fichiers"
+            echo
+            echo "| Fichier | Contenu |"
+            echo "|---|---|"
+            echo "| \`${APK}\` | APK signé (certificat SHA-256 \`${CERT}\`) |"
+            if [[ "$MAPPING_IN_RELEASE" == "true" ]]; then
+              echo "| \`${MAPPING}\` | Mapping R8 pour désobfusquer les stack traces (\`retrace\`) |"
+              echo "| \`SHA256SUMS\` | Empreintes SHA-256 de l'APK et du mapping |"
+            else
+              echo "| \`SHA256SUMS\` | Empreinte SHA-256 de l'APK |"
+            fi
+            echo "| \`${APK}.sig\`, \`SHA256SUMS.sig\` | Signatures post-quantiques ML-DSA-65 (FIPS 204) |"
+            echo "| \`ml-dsa-65.pub.pem\` | Clé publique (référence : \`.github/release-signing/ml-dsa-65.pub.pem\` dans le dépôt) |"
+            echo
+            echo "Vérification (OpenSSL >= 3.5) :"
+            echo '```sh'
+            echo "sha256sum -c SHA256SUMS"
+            echo "openssl pkeyutl -verify -pubin -inkey ml-dsa-65.pub.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig"
+            echo "openssl pkeyutl -verify -pubin -inkey ml-dsa-65.pub.pem -rawin -in ${APK} -sigfile ${APK}.sig"
+            echo "apksigner verify --print-certs ${APK}"
+            echo '```'
+          } > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep R8 mapping (private workflow artifact)
+        # mapping.txt de-obfuscates crash stack traces (retrace). It reveals the app's internal
+        # structure, so by default it is NOT a release asset: it stays a private artifact of this
+        # private repository (90 days, the maximum). Set repository variable MAPPING_IN_RELEASE=true
+        # to also attach it to the GitHub Release (permanent, covered by the signed SHA256SUMS, but
+        # visible to anyone the release is shared with).
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          subject-path: dist/${{ steps.dist.outputs.apk }}
+          name: tello-pilot-${{ steps.version.outputs.tag }}-mapping
+          path: mapping/${{ steps.dist.outputs.mapping }}
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ steps.version.outputs.dry_run == 'true' && 3 || 90 }}
 
       - name: Create GitHub Release
+        if: steps.version.outputs.dry_run == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
-          APK: ${{ steps.dist.outputs.apk }}
-          CERT: ${{ steps.dist.outputs.cert }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
           set -euo pipefail
-          cat > notes.md <<EOF
-          Tello Pilot ${TAG} (versionCode ${{ steps.version.outputs.code }}).
-
-          | Fichier | Contenu |
-          |---|---|
-          | \`${APK}\` | APK signé (clé release, certificat SHA-256 \`${CERT}\`) |
-          | \`SHA256SUMS\` | Empreinte SHA-256 de l'APK |
-          | \`${APK}.sig\`, \`SHA256SUMS.sig\` | Signatures post-quantiques ML-DSA-65 (FIPS 204) |
-          | \`ml-dsa-65.pub.pem\` | Clé publique (référence : \`.github/release-signing/ml-dsa-65.pub.pem\` dans le dépôt) |
-
-          Vérification (OpenSSL >= 3.5) :
-          \`\`\`sh
-          sha256sum -c SHA256SUMS
-          openssl pkeyutl -verify -pubin -inkey ml-dsa-65.pub.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
-          openssl pkeyutl -verify -pubin -inkey ml-dsa-65.pub.pem -rawin -in ${APK} -sigfile ${APK}.sig
-          apksigner verify --print-certs ${APK}
-          \`\`\`
-          EOF
           flags=()
           [[ "$PRERELEASE" == "true" ]] && flags+=(--prerelease)
-          gh release create "$TAG" --verify-tag --title "Tello Pilot $TAG" --notes-file notes.md "${flags[@]}" dist/*
+          gh release create "$TAG" --verify-tag --title "Tello Pilot $TAG" --notes-file notes.md \
+            "${flags[@]}" dist/*
+
+      - name: Dry run summary
+        if: steps.version.outputs.dry_run == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          echo "::notice::Dry run: release $TAG built, signed with ephemeral keys and verified; nothing published."
+          ls -l dist
