@@ -33,6 +33,44 @@ class GeofenceTest {
     }
 
     @Test
+    fun `exactly at the radius is outside, exactly at 80 percent is near`() {
+        val f = fence()
+        f.onOdometry(0f, 0f, true, 0)
+        f.onOdometry(0.75f, 1f, true, 300)
+        f.onOdometry(1.5f, 2f, true, 600)
+        f.onOdometry(2.25f, 3f, true, 900)
+        f.onOdometry(3f, 4f, true, 1_200) // hypot = 5 exactly
+        assertEquals(5f, f.distance!!)
+        assertEquals(FenceStatus.OUTSIDE, f.status(1f, 1_200))
+        val g = fence()
+        g.onOdometry(0f, 0f, true, 0)
+        g.onOdometry(2f, 0f, true, 300)
+        g.onOdometry(4f, 0f, true, 600) // 4 m = 0.8 x 5 m
+        assertEquals(FenceStatus.NEAR, g.status(1f, 600))
+    }
+
+    @Test
+    fun `the ceiling is exceeded only above it`() {
+        val f = fence(ceiling = 3f)
+        assertEquals(FenceStatus.INSIDE, f.status(3f, 0))
+        assertEquals(FenceStatus.TOO_HIGH, f.status(3.01f, 100))
+    }
+
+    @Test
+    fun `a gap of exactly the timeout still trusts the position, one more millisecond does not`() {
+        val f = fence(radius = 30f)
+        f.onOdometry(0f, 0f, true, 0)
+        f.onOdometry(1f, 0f, true, 1_500)
+        assertTrue(f.positionKnown)
+        assertEquals(FenceStatus.INSIDE, f.status(1f, 3_000)) // 1500 ms without a fix: still known
+        assertEquals(FenceStatus.NO_POSITION, f.status(1f, 3_001))
+        val g = fence(radius = 30f)
+        g.onOdometry(0f, 0f, true, 0)
+        g.onOdometry(1f, 0f, true, 1_501)
+        assertFalse(g.positionKnown)
+    }
+
+    @Test
     fun `the ceiling is checked even without a position`() {
         val f = fence(ceiling = 3f)
         assertEquals(FenceStatus.INSIDE, f.status(2.9f, 0))
