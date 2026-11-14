@@ -64,6 +64,8 @@ sealed interface DroneEvent {
     data class CenterOfGravityCalibrated(val success: Boolean) : DroneEvent
     /** A manoeuvre was refused by the drone itself (reply status != 0). */
     data class ManeuverRefused(val mode: FlightMode) : DroneEvent
+    /** The drone answered the max tilt setting (4184) with a failure status. */
+    data object MaxTiltRefused : DroneEvent
 }
 
 data class ControlConfig(
@@ -157,6 +159,12 @@ class TelloController(
     private var notFlyingSamples = 0 // control thread only
 
     @Volatile private var droneSettings: DroneSettings? = null
+    /**
+     * The stored max tilt still has to be sent, but only once a fresh flight sample shows the
+     * drone on the ground: the limit never changes in flight without the pilot touching it.
+     * Control thread only.
+     */
+    private var maxTiltOnGround = false
     private var lastActivationAt = Long.MIN_VALUE / 2 // control thread only
 
     private val photoDownload = PhotoDownload()
@@ -463,20 +471,41 @@ class TelloController(
      */
     suspend fun applyDroneSettings(settings: DroneSettings): Boolean {
         val s = settings.sanitized()
-        if (s == droneSettings) return false // already sent (and re-sent on every connection)
+        val previous = droneSettings
+        if (s == previous) return false // already sent (and re-sent on every connection)
         droneSettings = s
         if (!isConnected) return false
         sendDroneSettings(s)
+        if (previous != null && previous.maxTiltDeg != s.maxTiltDeg) {
+            // The pilot moved the slider: sent at once, even in flight (as the official app does).
+            maxTiltOnGround = false
+            sendMaxTilt(s)
+        } else if (previous == null) {
+            // First settings of the session (store read after the connection): not a pilot action.
+            maxTiltOnGround = true
+        }
         return true
     }
 
+    /** Everything but the max tilt, which waits for the ground ([maxTiltOnGround]). */
     private suspend fun sendDroneSettings(s: DroneSettings) {
         command(Command.SET_MAX_ALTITUDE, Payloads.maxAltitude(s.maxAltitudeMeters))
         command(Command.SET_LOW_BATTERY_THRESHOLD, Payloads.lowBatteryThreshold(s.lowBatteryPercent))
         command(Command.SET_EXPOSURE, Payloads.exposure(s.exposureSteps))
         command(Command.SET_BITRATE, Payloads.singleByte(s.bitrate.code))
-        // The drone's reply triggers a 4185 query, so the value shown is the one it stored.
+    }
+
+    /** The drone's reply triggers a 4185 query, so the value shown is the one it stored. */
+    private suspend fun sendMaxTilt(s: DroneSettings) {
         command(Command.SET_MAX_TILT, Payloads.maxTilt(s.maxTiltDeg))
+    }
+
+    /** Sends the deferred max tilt once a fresh flight sample shows the drone on the ground. */
+    private suspend fun sendMaxTiltIfOnGround(flight: FlightData) {
+        if (!maxTiltOnGround || flight.flying || !isConnected) return
+        val s = droneSettings ?: return
+        maxTiltOnGround = false
+        sendMaxTilt(s)
     }
 
     /** Tells the drone the phone is recording (as both reference apps do). */
@@ -600,7 +629,11 @@ class TelloController(
         command(Command.QUERY_ACTIVATION_STATE)
         command(Command.QUERY_FIRMWARE)
         command(Command.QUERY_MAX_TILT)
-        droneSettings?.let { sendDroneSettings(it) }
+        droneSettings?.let {
+            sendDroneSettings(it)
+            // Flying state unknown until the next flight sample (old telemetry may be stale).
+            maxTiltOnGround = true
+        }
         requestKeyFrame()
         if (landRequested.get()) sendLand()
     }
@@ -667,6 +700,7 @@ class TelloController(
 
     private fun onLinkLost() {
         centerSticks()
+        _maxTilt.value = null // may change before the next connection (other app, reboot)
         imu.onLinkLost()
         publishImu()
         _link.value = LinkState.RECONNECTING
@@ -701,6 +735,7 @@ class TelloController(
                 val fault = cameraFault(message.data)
                 _telemetry.update { it.copy(flight = message.data, cameraFault = fault) }
                 if (landRequested.get()) confirmLanding(message.data.flying)
+                sendMaxTiltIfOnGround(message.data)
                 // Firmware manoeuvres end on the ground.
                 if (!message.data.flying && _maneuvers.value != ManeuverState()) {
                     _maneuvers.value = ManeuverState()
@@ -783,7 +818,13 @@ class TelloController(
             MessageId.FLIP -> if (!result.success) _events.tryEmit(DroneEvent.ManeuverRefused(FlightMode.Flip))
             MessageId.CENTER_OF_GRAVITY_CALIBRATION -> _events.tryEmit(DroneEvent.CenterOfGravityCalibrated(result.success))
             // Read back what the drone stored (accepted or not).
-            MessageId.MAX_TILT -> command(Command.QUERY_MAX_TILT)
+            MessageId.MAX_TILT -> {
+                if (!result.success) {
+                    diag("max tilt refused by the drone")
+                    _events.tryEmit(DroneEvent.MaxTiltRefused)
+                }
+                command(Command.QUERY_MAX_TILT)
+            }
             MessageId.IMU_CALIBRATION_START -> {
                 imu.onStartResult(result.success)
                 publishImu()
