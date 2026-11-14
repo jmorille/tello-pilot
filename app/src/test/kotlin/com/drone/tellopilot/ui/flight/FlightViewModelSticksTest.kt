@@ -199,6 +199,79 @@ class FlightViewModelSticksTest {
         assertEquals(0.2f, drone.lastSticks!!.pitch, 1e-6f)
     }
 
+    // ------------------------------------------------------------ axis tuning
+
+    private val slowPitch = com.drone.tello.control.FlightTuning.uniform(0f)
+        .copy(pitch = com.drone.tello.control.AxisTuning(gain = 1f, amplitude = 0.5f, expo = 0f))
+    private val boostedPitch = com.drone.tello.control.FlightTuning.uniform(0f)
+        .copy(pitch = com.drone.tello.control.AxisTuning(gain = 1.5f, amplitude = 1f, expo = 0f))
+
+    @Test
+    fun `each flight mode has its own axis profile, switched at once with the stick held`() =
+        test(FlightViewModelRig.linearPilot { copy(axisNormal = slowPitch, axisFast = boostedPitch) }) {
+            vm.onRightStick(0f, 0.5f) // pitch
+            assertEquals(StickInput(pitch = 0.25f), drone.lastSticks)
+            vm.onAction(FlightAction.ToggleFastMode)
+            assertEquals(StickInput(pitch = 0.75f, fastMode = true), drone.lastSticks)
+            vm.onAction(FlightAction.ToggleFastMode)
+            assertEquals(StickInput(pitch = 0.25f), drone.lastSticks)
+            // Tripod on from fast mode: normal profile, then the tripod scale.
+            vm.onAction(FlightAction.ToggleFastMode)
+            vm.onAction(FlightAction.ToggleTripod)
+            assertEquals(0.25f * settings.value.pilot.tripodScale, drone.lastSticks!!.pitch, 1e-6f)
+            assertFalse(drone.lastSticks!!.fastMode)
+        }
+
+    @Test
+    fun `the gamepad goes through the same axis profile`() =
+        test(FlightViewModelRig.linearPilot { copy(axisNormal = boostedPitch) }) {
+            vm.onPadSticks(PadSticks(leftX = 0f, leftY = 0f, rightX = 0f, rightY = 0.4f))
+            assertEquals(0.6f, drone.lastSticks!!.pitch, 1e-6f)
+        }
+
+    private val weakest = com.drone.tello.control.StickAxis.entries.fold(com.drone.tello.control.FlightTuning.uniform(0f)) { t, a ->
+        t.with(a, com.drone.tello.control.AxisTuning(gain = 0.5f, amplitude = 0.2f, expo = 0.8f))
+    }
+
+    @Test
+    fun `a weak axis profile never prevents taking an automatic flight back`() =
+        test(FlightViewModelRig.linearPilot { copy(deadZone = 0.2f, axisNormal = weakest, axisFast = weakest) }) {
+            startMission()
+            // The raw stick decides, not the (tiny) command it would give.
+            vm.onRightStick(0f, 0.6f)
+            assertFalse(autopilot.active)
+            scope.advanceTimeBy(200)
+            assertEquals(UserMessage.AutopilotEnded(AutopilotEnd.PilotTookOver), messages.last())
+            startMission()
+            vm.onPadSticks(PadSticks(0f, 0f, -0.8f, 0f))
+            assertFalse(autopilot.active)
+        }
+
+    @Test
+    fun `automatic flights send their own sticks, untouched by the axis profiles`() {
+        fun flown(pilot: com.drone.tello.control.PilotSettings): List<StickInput> {
+            var sticks = emptyList<StickInput>()
+            runTest(main) {
+                withRig(pilot) {
+                    drone.simulate(scope)
+                    scope.advanceTimeBy(150)
+                    vm.onAction(
+                        FlightAction.StartMission(
+                            Mission("Test", listOf(MissionStep.Rotate(90f), MissionStep.Climb(0.5f), MissionStep.Move(com.drone.tello.control.MoveDirection.FORWARD, 1f))),
+                        ),
+                    )
+                    scope.advanceTimeBy(4_000)
+                    sticks = drone.sticks.toList()
+                }
+            }
+            return sticks
+        }
+        val linear = flown(FlightViewModelRig.linearPilot())
+        val tuned = flown(FlightViewModelRig.linearPilot { copy(deadZone = 0.2f, axisNormal = weakest, axisFast = boostedPitch) })
+        assertTrue("the mission moved the drone", linear.any { it != StickInput.Neutral })
+        assertEquals(linear, tuned)
+    }
+
     // --------------------------------------------------- automatic flight takeover
 
     private fun FlightViewModelRig.startMission() {

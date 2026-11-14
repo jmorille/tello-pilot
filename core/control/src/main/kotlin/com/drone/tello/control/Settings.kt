@@ -80,8 +80,15 @@ enum class TranscodeCodec(val suffix: String) { HEVC("hevc"), AV1("av1") }
 /** Settings that only affect the app (how the pilot's input is interpreted and shown). */
 data class PilotSettings(
     val stickMode: StickMode = StickMode.MODE_2,
+    /** Global stick dead zone (every axis, both flight modes). */
     val deadZone: Float = 0.05f,
-    val expo: Float = 0.3f,
+    /**
+     * Response of each axis in the normal (slow) flight mode: gain, amplitude, expo. The
+     * defaults reproduce the former single expo setting (0.3), which seeds both profiles.
+     */
+    val axisNormal: FlightTuning = FlightTuning.Default,
+    /** Response of each axis while the fast mode is on. */
+    val axisFast: FlightTuning = FlightTuning.Default,
     /** Stick amplitude in tripod mode (slow, smooth shots). */
     val tripodScale: Float = 0.3f,
     val joystickSizeDp: Int = 200,
@@ -149,14 +156,21 @@ data class PilotSettings(
 
     fun shows(item: HudItem): Boolean = item !in hiddenHud
 
-    val shaping: StickShaping get() = StickShaping(
-        (if (deadZone.isNaN()) 0.05f else deadZone).coerceIn(0f, 0.5f),
-        (if (expo.isNaN()) 0.3f else expo).coerceIn(0f, 1f),
+    /** Everything the stick mixer applies to the pilot's sticks, every value within its bounds. */
+    val stickTuning: StickTuning get() = StickTuning(
+        deadZone = (if (deadZone.isNaN()) 0.05f else deadZone).coerceIn(0f, 0.5f),
+        normal = axisNormal.sanitized(),
+        fast = axisFast.sanitized(),
     )
+
+    /** Axis profile of a flight mode. */
+    fun axisTuning(fastMode: Boolean): FlightTuning = if (fastMode) axisFast else axisNormal
+
+    fun withAxisTuning(fastMode: Boolean, tuning: FlightTuning): PilotSettings =
+        if (fastMode) copy(axisFast = tuning) else copy(axisNormal = tuning)
 
     companion object {
         val DEAD_ZONE_RANGE = 0f..0.2f
-        val EXPO_RANGE = 0f..0.8f
         val TRIPOD_RANGE = 0.15f..0.6f
         val TAKEOFF_HEIGHT_RANGE = 0.5f..3f
         const val TAKEOFF_HEIGHT_DEFAULT = 1.5f

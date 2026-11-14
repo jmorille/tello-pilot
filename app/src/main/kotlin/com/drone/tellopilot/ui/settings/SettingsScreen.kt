@@ -190,10 +190,7 @@ private fun ControlSettings(pilot: PilotSettings, updatePilot: ((PilotSettings) 
         label = { stringResource(R.string.settings_dead_zone, (it * 100).roundToInt()) },
         value = pilot.deadZone, range = PilotSettings.DEAD_ZONE_RANGE,
     ) { v -> updatePilot { it.copy(deadZone = v) } }
-    SliderSetting(
-        label = { stringResource(R.string.settings_expo, (it * 100).roundToInt()) },
-        value = pilot.expo, range = PilotSettings.EXPO_RANGE,
-    ) { v -> updatePilot { it.copy(expo = v) } }
+    AxisTuningSection(pilot, updatePilot)
     SliderSetting(
         label = { stringResource(R.string.settings_tripod_scale, (it * 100).roundToInt()) },
         value = pilot.tripodScale, range = PilotSettings.TRIPOD_RANGE,

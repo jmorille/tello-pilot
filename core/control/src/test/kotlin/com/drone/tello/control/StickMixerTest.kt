@@ -8,7 +8,7 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.EnumSource
 
 class StickMixerTest {
-    private val linear = StickShaping(deadZone = 0f, expo = 0f)
+    private val linear = StickTuning.uniform(deadZone = 0f, expo = 0f)
 
     @Test
     fun `mode 2 maps left to yaw-throttle and right to roll-pitch`() {
@@ -53,7 +53,7 @@ class StickMixerTest {
 
     @Test
     fun `shaping is applied, dead zone removes drift`() {
-        val mixer = StickMixer(StickMode.MODE_2, StickShaping(deadZone = 0.1f, expo = 0f))
+        val mixer = StickMixer(StickMode.MODE_2, StickTuning.uniform(deadZone = 0.1f, expo = 0f))
         val input = mixer.setLeft(0.05f, 1f, false)
         assertEquals(0f, input.yaw)
         assertEquals(1f, input.throttle, 1e-6f)
@@ -61,7 +61,7 @@ class StickMixerTest {
 
     @Test
     fun `tripod scale reduces every axis after shaping`() {
-        val mixer = StickMixer(StickMode.MODE_2, StickShaping(deadZone = 0f, expo = 0f))
+        val mixer = StickMixer(StickMode.MODE_2, StickTuning.uniform(deadZone = 0f, expo = 0f))
         mixer.scale = 0.3f
         mixer.setLeft(1f, -1f, false)
         val input = mixer.setRight(0.5f, 1f, false)
@@ -76,7 +76,7 @@ class StickMixerTest {
     @ParameterizedTest
     @EnumSource(StickMode::class)
     fun `tripod scales every axis of every mode and keeps the fast flag`(mode: StickMode) {
-        val shaping = StickShaping() // default dead zone + expo
+        val shaping = StickTuning() // default dead zone + expo
         val full = StickMixer(mode, shaping).apply { setLeft(0.7f, -0.4f, true) }.setRight(-0.9f, 0.6f, true)
         val tripod = StickMixer(mode, shaping).apply { scale = 0.3f; setLeft(0.7f, -0.4f, true) }.setRight(-0.9f, 0.6f, true)
         assertEquals(full.roll * 0.3f, tripod.roll, 1e-6f)

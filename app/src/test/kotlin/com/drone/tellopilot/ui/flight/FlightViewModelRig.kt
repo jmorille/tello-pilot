@@ -118,7 +118,11 @@ internal class FlightViewModelRig(val scope: TestScope, pilot: PilotSettings = l
     companion object {
         /** Linear sticks (no dead zone, no expo): the stick value is the drone's. */
         fun linearPilot(build: PilotSettings.() -> PilotSettings = { this }) =
-            PilotSettings(deadZone = 0f, expo = 0f).build()
+            PilotSettings(
+                deadZone = 0f,
+                axisNormal = com.drone.tello.control.FlightTuning.uniform(expo = 0f),
+                axisFast = com.drone.tello.control.FlightTuning.uniform(expo = 0f),
+            ).build()
 
         const val BOOT_MS = 3_600_000L
     }

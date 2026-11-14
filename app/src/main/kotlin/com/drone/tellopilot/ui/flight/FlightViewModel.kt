@@ -231,7 +231,7 @@ class FlightViewModel internal constructor(
         viewModelScope.launch {
             pilot.collect {
                 mixer.mode = it.stickMode
-                mixer.shaping = it.shaping
+                mixer.tuning = it.stickTuning
                 if (tripod.value) mixer.scale = it.tripodScale
                 gamepad.setBindings(it.padBindings)
             }
@@ -601,12 +601,16 @@ class FlightViewModel internal constructor(
                 fastMode.value = !fastMode.value
                 if (fastMode.value) setTripod(false)
                 session.controller.value?.setFastMode(fastMode.value)
+                // Each flight mode has its own axis profile: a stick held still sends no new
+                // event, so re-mix it at once with the profile of the new mode.
+                pushSticks()
             }
             FlightAction.ToggleTripod -> {
                 setTripod(!tripod.value)
                 if (tripod.value && fastMode.value) {
                     fastMode.value = false
                     session.controller.value?.setFastMode(false)
+                    pushSticks() // normal mode profile at once (setTripod mixed with the fast one)
                 }
             }
             is FlightAction.StartMission -> startAutopilot(tracking = false, fromPad) { autopilot.startMission(action.mission) }

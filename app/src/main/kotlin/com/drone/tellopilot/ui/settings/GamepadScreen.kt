@@ -480,8 +480,8 @@ private fun LiveView(live: PadLive, pilot: PilotSettings) {
 
     SectionTitle(R.string.pad_section_transmission)
     // Same mixing / shaping as the flight screen (stick mode, dead zone, expo).
-    val input = remember(live.sticks, pilot.stickMode, pilot.shaping) {
-        val mixer = StickMixer(pilot.stickMode, pilot.shaping)
+    val input = remember(live.sticks, pilot.stickMode, pilot.stickTuning) {
+        val mixer = StickMixer(pilot.stickMode, pilot.stickTuning)
         mixer.setLeft(live.sticks.leftX, live.sticks.leftY, fastMode = false)
         mixer.setRight(live.sticks.rightX, live.sticks.rightY, fastMode = false)
     }

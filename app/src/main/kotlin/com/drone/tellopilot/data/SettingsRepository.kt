@@ -14,11 +14,14 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.drone.tello.control.AxisTuning
 import com.drone.tello.control.DroneSettings
+import com.drone.tello.control.FlightTuning
 import com.drone.tello.control.GamepadBindings
 import com.drone.tello.control.HorizonAnchor
 import com.drone.tello.control.HorizonPlacement
 import com.drone.tello.control.PilotSettings
+import com.drone.tello.control.StickAxis
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -70,7 +73,8 @@ internal object SettingsCodec {
             takeoffHeight = (p[TAKEOFF_HEIGHT] ?: d.takeoffHeight).let {
                 if (it <= 0f) 0f else it.coerceIn(PilotSettings.TAKEOFF_HEIGHT_RANGE)
             },
-            expo = p[EXPO] ?: d.expo,
+            axisNormal = readAxes(p, fast = false),
+            axisFast = readAxes(p, fast = true),
             joystickSizeDp = p[JOYSTICK_SIZE] ?: d.joystickSizeDp,
             units = p[UNITS].toEnum(d.units),
             confirmTakeoff = p[CONFIRM_TAKEOFF] ?: d.confirmTakeoff,
@@ -109,7 +113,8 @@ internal object SettingsCodec {
         p[DEAD_ZONE] = s.deadZone
         p[TRIPOD_SCALE] = s.tripodScale
         p[TAKEOFF_HEIGHT] = s.takeoffHeight
-        p[EXPO] = s.expo
+        writeAxes(p, fast = false, s.axisNormal)
+        writeAxes(p, fast = true, s.axisFast)
         p[JOYSTICK_SIZE] = s.joystickSizeDp
         p[UNITS] = s.units.name
         p[CONFIRM_TAKEOFF] = s.confirmTakeoff
@@ -136,6 +141,44 @@ internal object SettingsCodec {
         p[MISSION_SPEED_LIMIT] = s.missionSpeedLimit
         p[MISSION_MAX_SPEED] = s.missionMaxSpeed
         p[BATTERY_VOICE_ALERT] = s.batteryVoiceAlert
+    }
+
+    /**
+     * Axis profile of a flight mode, each value bounded (NaN gives the default). Migration: a
+     * missing expo takes the former global expo ([EXPO], no longer written) so that an update
+     * changes nothing; gain and amplitude default to 100 %, i.e. the historical response.
+     */
+    private fun readAxes(p: Preferences, fast: Boolean): FlightTuning {
+        val legacyExpo = p[EXPO]?.takeUnless { it.isNaN() }?.coerceIn(AxisTuning.EXPO_RANGE) ?: AxisTuning.DEFAULT_EXPO
+        return StickAxis.entries.fold(FlightTuning.Default) { tuning, axis ->
+            val keys = axisKeys(fast, axis)
+            tuning.with(
+                axis,
+                AxisTuning(
+                    gain = p[keys.gain] ?: 1f,
+                    amplitude = p[keys.amplitude] ?: 1f,
+                    expo = p[keys.expo] ?: legacyExpo,
+                ).sanitized(defaultExpo = legacyExpo),
+            )
+        }
+    }
+
+    private fun writeAxes(p: MutablePreferences, fast: Boolean, tuning: FlightTuning) {
+        StickAxis.entries.forEach { axis ->
+            val keys = axisKeys(fast, axis)
+            val t = tuning[axis].sanitized()
+            p[keys.gain] = t.gain
+            p[keys.amplitude] = t.amplitude
+            p[keys.expo] = t.expo
+        }
+    }
+
+    private class AxisKeys(val gain: Preferences.Key<Float>, val amplitude: Preferences.Key<Float>, val expo: Preferences.Key<Float>)
+
+    /** `axis_<normal|fast>_<pitch|roll|yaw|throttle>_<gain|amplitude|expo>`. */
+    private fun axisKeys(fast: Boolean, axis: StickAxis): AxisKeys {
+        val prefix = "axis_${if (fast) "fast" else "normal"}_${axis.name.lowercase()}_"
+        return AxisKeys(floatPreferencesKey(prefix + "gain"), floatPreferencesKey(prefix + "amplitude"), floatPreferencesKey(prefix + "expo"))
     }
 
     /** Snapped place by name, [HORIZON_FREE] for a free one (then its fractions). Unknown or corrupt: the default. */
@@ -180,6 +223,7 @@ internal object SettingsCodec {
     private val DEAD_ZONE = floatPreferencesKey("dead_zone")
     private val TRIPOD_SCALE = floatPreferencesKey("tripod_scale")
     private val TAKEOFF_HEIGHT = floatPreferencesKey("takeoff_height_m")
+    // Former global expo: only read, to seed the per-axis expo of an older store.
     private val EXPO = floatPreferencesKey("expo")
     private val JOYSTICK_SIZE = intPreferencesKey("joystick_size_dp")
     private val UNITS = stringPreferencesKey("units")

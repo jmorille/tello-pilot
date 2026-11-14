@@ -46,7 +46,11 @@ class SettingsCodecTest {
         val custom = PilotSettings(
             stickMode = StickMode.MODE_1,
             deadZone = 0.12f,
-            expo = 0.6f,
+            axisNormal = com.drone.tello.control.FlightTuning(
+                pitch = com.drone.tello.control.AxisTuning(gain = 1.4f, amplitude = 1f, expo = 0.15f),
+                yaw = com.drone.tello.control.AxisTuning(gain = 0.8f, amplitude = 0.45f, expo = 0.6f),
+            ),
+            axisFast = com.drone.tello.control.FlightTuning.uniform(0.65f).copy(throttle = com.drone.tello.control.AxisTuning(2f, 0.2f, 0f)),
             joystickSizeDp = 240,
             units = Units.IMPERIAL,
             confirmTakeoff = false,
